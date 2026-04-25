@@ -2,12 +2,14 @@
 
 import * as React from 'react';
 import { ArrowDown, ArrowUp, Plus, Search, X } from 'lucide-react';
+import { keepPreviousData, useQuery } from '@tanstack/react-query';
 
 import { Modal } from '@/components/ui/Modal';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { cn } from '@/lib/cn';
+import { api, ApiError } from '@/lib/api-client';
 
 /**
  * NewApprovalDialog — "결재 상신" form, wraps `<Modal>`.
@@ -17,9 +19,9 @@ import { cn } from '@/lib/cn';
  *
  *   { title: string, approvers: Array<{ userId: string; order: number }> }
  *
- * Approver picker uses an in-memory candidate list (mocked) until BE-2's
- * generic user-search endpoint lands. The picker supports:
- *   - typeahead filter on name / username
+ * Approver picker hits GET /api/v1/users/search?q=...&limit=10 with a
+ * 250ms debounce on the input. The picker supports:
+ *   - typeahead filter on name / username (server-side, ILIKE)
  *   - add to the bottom of the line
  *   - remove
  *   - reorder (move up / move down)
@@ -68,27 +70,48 @@ export interface NewApprovalDialogProps {
   onSubmit?: (payload: NewApprovalSubmitPayload) => Promise<void> | void;
 }
 
-// ── Mock approver candidate list ─────────────────────────────────────────
-// Until BE-2 ships a generic user-search endpoint we ship a small in-memory
-// candidate roster. The signed-in admin can already search via
-// `/api/v1/admin/users` but that endpoint is admin-only — using it here
-// would 403 for regular users. R3c will wire a real picker.
+// ── User-search wire types ───────────────────────────────────────────────
+// Mirrors GET /api/v1/users/search?q=... (R3c-1 contract). The endpoint
+// returns up to `limit` matches, ranked by fullName asc / username asc.
+interface UserSearchHitDTO {
+  id: string;
+  username: string;
+  fullName: string | null;
+  organization: { id: string; name: string } | null;
+}
+interface UserSearchResponseDTO {
+  items: UserSearchHitDTO[];
+}
+
+// What we actually drop into the approver line — display copy is derived
+// here so the renderer doesn't have to re-massage every time.
 interface ApproverCandidate {
   id: string;
   username: string;
   fullName: string;
-  role: string; // freeform display label
+  role: string; // organization.name when present, otherwise blank.
 }
-const MOCK_APPROVERS: ApproverCandidate[] = [
-  { id: 'usr_kim_jw',  username: 'kim.jw',  fullName: '김지원', role: '품질 / 그룹장' },
-  { id: 'usr_park_sm', username: 'park.sm', fullName: '박상민', role: '설계 / 책임' },
-  { id: 'usr_choi_ja', username: 'choi.ja', fullName: '최정아', role: '공정 / 팀장' },
-  { id: 'usr_lee_dh',  username: 'lee.dh',  fullName: '이도현', role: '기계 / 매니저' },
-  { id: 'usr_jung_yj', username: 'jung.yj', fullName: '정유진', role: '전기 / 매니저' },
-  { id: 'usr_son_hj',  username: 'son.hj',  fullName: '손현주', role: '계장 / 책임' },
-  { id: 'usr_oh_jh',   username: 'oh.jh',   fullName: '오재현', role: '안전 / 매니저' },
-  { id: 'usr_ryu_th',  username: 'ryu.th',  fullName: '류태형', role: '생산기술 / 책임' },
-];
+
+function toCandidate(hit: UserSearchHitDTO): ApproverCandidate {
+  return {
+    id: hit.id,
+    username: hit.username,
+    fullName: hit.fullName ?? hit.username,
+    role: hit.organization?.name ?? '',
+  };
+}
+
+// useDebouncedValue — minimal, dependency-free 250ms debounce used to gate
+// the user-search query while the user is still typing. Avoids spamming
+// the BE on every keystroke and keeps cache keys stable for repeat searches.
+function useDebouncedValue<T>(value: T, delayMs: number): T {
+  const [debounced, setDebounced] = React.useState(value);
+  React.useEffect(() => {
+    const t = window.setTimeout(() => setDebounced(value), delayMs);
+    return () => window.clearTimeout(t);
+  }, [value, delayMs]);
+  return debounced;
+}
 
 function defaultTitle(objectNumber?: string, objectName?: string): string {
   if (objectNumber && objectName) return `${objectNumber} ${objectName} — 결재 상신`;
@@ -122,18 +145,41 @@ export function NewApprovalDialog({
     }
   }, [open, objectNumber, objectName]);
 
-  const filteredCandidates = React.useMemo(() => {
-    const q = picker.trim().toLowerCase();
+  // 250ms debounce — `picker` is the controlled input, `debouncedPicker`
+  // is what feeds the query. While the user is typing, react-query keeps
+  // the previous result on screen via keepPreviousData (no flicker).
+  const debouncedPicker = useDebouncedValue(picker, 250);
+  const trimmedQuery = debouncedPicker.trim();
+  const queryEnabled = open && trimmedQuery.length > 0;
+
+  const searchQuery = useQuery<UserSearchResponseDTO, ApiError>({
+    queryKey: ['users', 'search', trimmedQuery],
+    queryFn: () =>
+      api.get<UserSearchResponseDTO>('/api/v1/users/search', {
+        query: { q: trimmedQuery, limit: 10 },
+      }),
+    enabled: queryEnabled,
+    placeholderData: keepPreviousData,
+    staleTime: 30_000,
+    retry: (failureCount, err) => {
+      if (err instanceof ApiError && (err.status === 401 || err.status === 403)) {
+        return false;
+      }
+      return failureCount < 2;
+    },
+  });
+
+  // Hide already-picked approvers from the dropdown — adding the same
+  // person twice would just be a no-op anyway, but the visual is confusing.
+  const filteredCandidates = React.useMemo<ApproverCandidate[]>(() => {
+    const items = searchQuery.data?.items ?? [];
     const chosen = new Set(approvers.map((a) => a.id));
-    return MOCK_APPROVERS.filter(
-      (c) =>
-        !chosen.has(c.id) &&
-        (q === '' ||
-          c.username.toLowerCase().includes(q) ||
-          c.fullName.toLowerCase().includes(q) ||
-          c.role.toLowerCase().includes(q)),
-    ).slice(0, 6);
-  }, [picker, approvers]);
+    return items.filter((u) => !chosen.has(u.id)).map(toCandidate);
+  }, [searchQuery.data, approvers]);
+
+  const showResults = queryEnabled;
+  const isSearching = searchQuery.isFetching && queryEnabled;
+  const searchError = queryEnabled ? searchQuery.error : null;
 
   const addApprover = (cand: ApproverCandidate) => {
     setApprovers((prev) =>
@@ -298,12 +344,30 @@ export function NewApprovalDialog({
                 type="text"
                 value={picker}
                 onChange={(e) => setPicker(e.target.value)}
-                placeholder="결재자 추가… (이름/아이디/부서)"
+                placeholder="결재자 추가… (이름/아이디)"
                 className="flex-1 bg-transparent text-sm text-fg outline-none placeholder:text-fg-subtle"
                 aria-label="결재자 검색"
               />
+              {isSearching ? (
+                <span className="text-[11px] text-fg-subtle">검색 중…</span>
+              ) : null}
             </div>
-            {picker.trim() && filteredCandidates.length > 0 ? (
+
+            {/* Error path — surface the failure inline, no toast. The form
+                stays interactive so the user can retry by editing the input. */}
+            {showResults && searchError ? (
+              <div
+                role="alert"
+                className="mt-1 rounded-md border border-danger/30 bg-danger/10 px-3 py-2 text-xs text-danger"
+              >
+                검색 실패{searchError.message ? `: ${searchError.message}` : ''}
+              </div>
+            ) : null}
+
+            {/* Results dropdown — only render when we have a query and at
+                least one match. keepPreviousData keeps the panel populated
+                while the next request is in flight. */}
+            {showResults && !searchError && filteredCandidates.length > 0 ? (
               <ul className="absolute left-0 right-0 z-20 mt-1 max-h-56 overflow-auto rounded-md border border-border bg-bg shadow-lg">
                 {filteredCandidates.map((c) => (
                   <li key={c.id}>
@@ -315,21 +379,30 @@ export function NewApprovalDialog({
                       <Plus className="h-3.5 w-3.5 text-fg-muted" />
                       <span className="font-medium text-fg">{c.fullName}</span>
                       <span className="text-xs text-fg-muted">@{c.username}</span>
-                      <span className="ml-auto text-[11px] text-fg-subtle">{c.role}</span>
+                      {c.role ? (
+                        <span className="ml-auto text-[11px] text-fg-subtle">
+                          {c.role}
+                        </span>
+                      ) : null}
                     </button>
                   </li>
                 ))}
               </ul>
             ) : null}
-            {picker.trim() && filteredCandidates.length === 0 ? (
+
+            {/* Empty-result path — only after the debounced query has
+                resolved (not while loading) so we don't flash "없음" between
+                keystrokes. */}
+            {showResults &&
+            !searchError &&
+            !isSearching &&
+            searchQuery.isFetched &&
+            filteredCandidates.length === 0 ? (
               <div className="mt-1 rounded-md border border-dashed border-border bg-bg-subtle px-3 py-2 text-center text-xs text-fg-muted">
                 일치하는 사용자가 없습니다.
               </div>
             ) : null}
           </div>
-          <p className="text-[11px] text-fg-subtle">
-            * 사용자 정식 검색 API는 R3c에서 연결됩니다. 현재는 데모 후보 목록을 사용합니다.
-          </p>
         </div>
 
         {error ? (
