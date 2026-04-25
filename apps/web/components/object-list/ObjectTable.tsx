@@ -54,6 +54,8 @@ export interface ObjectRow {
   markupCount?: number;
   transmittedAt?: string;
   lockedBy?: string | null;
+  /** Raw lock owner id — needed by RowMenu to gate self-only actions. */
+  lockedById?: string | null;
   controlState?: ControlState;
   latest?: boolean;
 }
@@ -71,9 +73,33 @@ interface ObjectTableProps {
    * If omitted, the row menu's delete entry stays disabled.
    */
   onDeleteRow?: (row: ObjectRow) => void | Promise<void>;
+  /**
+   * Signed-in user id — forwarded to <RowMenu> so self-only actions
+   * (checkin / cancel-checkout) can be gated when the row is checked out.
+   */
+  meId?: string;
+  // ── Row mutation callbacks (api_contract.md SIDE-C). The table is
+  // a pass-through: callers in search/page.tsx wire these to React Query
+  // mutations. Each callback fires on the corresponding RowMenu item.
+  onCheckoutRow?: (row: ObjectRow) => void;
+  onCheckinRow?: (row: ObjectRow) => void;
+  onCancelCheckoutRow?: (row: ObjectRow) => void;
+  onReleaseRow?: (row: ObjectRow) => void;
 }
 
-export function ObjectTable({ data, selectedId, onSelect, onSelectedCountChange, searchTerm, onDeleteRow }: ObjectTableProps) {
+export function ObjectTable({
+  data,
+  selectedId,
+  onSelect,
+  onSelectedCountChange,
+  searchTerm,
+  onDeleteRow,
+  meId,
+  onCheckoutRow,
+  onCheckinRow,
+  onCancelCheckoutRow,
+  onReleaseRow,
+}: ObjectTableProps) {
   const router = useRouter();
   // Default sort targets a column that actually exists in this table. The
   // earlier `registeredAt` key had no matching accessorKey, so react-table
@@ -254,7 +280,16 @@ export function ObjectTable({ data, selectedId, onSelect, onSelectedCountChange,
               id: row.original.id,
               number: row.original.number,
               name: row.original.name,
+              state: row.original.state,
+              lockedById: row.original.lockedById ?? null,
             }}
+            meId={meId}
+            onCheckout={onCheckoutRow ? () => onCheckoutRow(row.original) : undefined}
+            onCheckin={onCheckinRow ? () => onCheckinRow(row.original) : undefined}
+            onCancelCheckout={
+              onCancelCheckoutRow ? () => onCancelCheckoutRow(row.original) : undefined
+            }
+            onRelease={onReleaseRow ? () => onReleaseRow(row.original) : undefined}
             onDelete={onDeleteRow ? () => setPendingDelete(row.original) : undefined}
           />
         ),
@@ -262,7 +297,15 @@ export function ObjectTable({ data, selectedId, onSelect, onSelectedCountChange,
         enableSorting: false,
       },
     ],
-    [searchTerm, onDeleteRow],
+    [
+      searchTerm,
+      onDeleteRow,
+      meId,
+      onCheckoutRow,
+      onCheckinRow,
+      onCancelCheckoutRow,
+      onReleaseRow,
+    ],
   );
 
   const table = useReactTable({
