@@ -16,6 +16,10 @@ export const queryKeys = {
     detail: (id: string) => ['objects', 'detail', id] as const,
     versions: (id: string) => ['objects', id, 'versions'] as const,
     activity: (id: string) => ['objects', id, 'activity'] as const,
+    // R3c — per-object approval feed (current + history) used by the
+    // detail page's 결재 탭. Distinct from `approvals.*` which scopes to
+    // the global "내 결재함" lists.
+    approvals: (id: string) => ['objects', id, 'approvals'] as const,
     links: (id: string) => ['objects', id, 'links'] as const,
   },
 

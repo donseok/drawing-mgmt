@@ -145,11 +145,85 @@ interface ObjectVM {
     registeredAt: string;
     versions: Array<{ version: string; label: string; current: boolean }>;
   }>;
-  approval: {
-    current: Array<{ step: number; name: string; status: string; at: string }>;
-  };
   links: Array<{ id: string; number: string; name: string; direction: 'in' | 'out' }>;
-  activity: Array<{ time: string; action: string; user: string; ip: string }>;
+}
+
+// R3c — activity DTO returned by GET /api/v1/objects/:id/activity.
+// `metadata` is the raw ActivityLog.metadata JSON column; we don't read it
+// today but keep the shape so future fields (revision, ver, comment) stay
+// reachable without another contract pass.
+interface ActivityItemDTO {
+  id: string;
+  action: string;
+  actor: { id: string; username: string; fullName: string | null };
+  ip: string | null;
+  metadata: unknown;
+  at: string;
+}
+interface ActivityResponseDTO {
+  items: ActivityItemDTO[];
+  nextCursor: string | null;
+}
+
+// R3c — approval DTO returned by GET /api/v1/objects/:id/approval.
+// Mirrors the BE's Approval + ApprovalSteps join exactly.
+interface ApprovalApproverDTO {
+  id: string;
+  username: string;
+  fullName: string | null;
+}
+interface ApprovalStepDTO {
+  order: number;
+  approver: ApprovalApproverDTO;
+  status: 'PENDING' | 'APPROVED' | 'REJECTED';
+  actedAt: string | null;
+  comment: string | null;
+}
+interface ApprovalEntryDTO {
+  id: string;
+  title: string;
+  status: 'PENDING' | 'APPROVED' | 'REJECTED' | 'CANCELLED';
+  revision: number;
+  requestedBy: ApprovalApproverDTO;
+  requestedAt: string;
+  steps: ApprovalStepDTO[];
+}
+interface ApprovalResponseDTO {
+  current: ApprovalEntryDTO | null;
+  history: ApprovalEntryDTO[];
+}
+
+// Render shapes for the two lazy-loaded tabs. The tab components take VMs
+// instead of DTOs so the `obj` shape stays small and the activity / approval
+// queries stay independent.
+interface ApprovalStepVM {
+  step: number;
+  name: string;
+  status: 'PENDING' | 'IN_PROGRESS' | 'APPROVED' | 'REJECTED' | 'SKIPPED';
+  at: string;
+  comment: string | null;
+}
+interface ApprovalEntryVM {
+  id: string;
+  title: string;
+  status: 'PENDING' | 'APPROVED' | 'REJECTED' | 'CANCELLED';
+  revision: number;
+  requestedBy: string;
+  requestedAt: string;
+  steps: ApprovalStepVM[];
+}
+interface ApprovalVM {
+  current: ApprovalEntryVM | null;
+  history: ApprovalEntryVM[];
+}
+
+interface ActivityItemVM {
+  id: string;
+  time: string;
+  action: string;
+  actionRaw: string;
+  user: string;
+  ip: string;
 }
 
 function formatDate(iso: string): string {
@@ -218,9 +292,6 @@ function adaptObjectDetail(dto: ObjectDetailDTO): ObjectVM {
       master: a.isMaster,
     })),
     history,
-    // R3c: separate query for current approval steps. Empty for now — the
-    // tab still renders, just with no rows.
-    approval: { current: [] },
     links: [
       ...dto.links.map((l) => ({
         id: l.target.id,
@@ -235,8 +306,91 @@ function adaptObjectDetail(dto: ObjectDetailDTO): ObjectVM {
         direction: 'in' as const,
       })),
     ],
-    // R3c: separate activity query. Empty array keeps ActivityTab safe.
-    activity: [],
+  };
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// R3c — adapters for the two lazy tab queries.
+// ─────────────────────────────────────────────────────────────────────────
+
+// Activity action → 한국어 표시 라벨. Keys are the BE's ActivityLog.action
+// strings (snake-uppercase). Anything not listed falls back to the raw
+// action token, surfaced verbatim so newly added BE actions don't crash
+// the tab — they just look ugly until the table is updated.
+const ACTIVITY_LABELS: Record<string, string> = {
+  OBJECT_CHECKOUT: '체크아웃',
+  OBJECT_CHECKIN: '체크인',
+  OBJECT_CANCEL_CHECKOUT: '체크아웃 취소',
+  OBJECT_RELEASE: '결재상신',
+  OBJECT_APPROVE: '승인',
+  OBJECT_REJECT: '반려',
+  OBJECT_CANCEL: '결재 취소',
+  OBJECT_UPDATE: '수정',
+  OBJECT_CREATE: '생성',
+  OBJECT_DELETE: '삭제',
+  OBJECT_REVISE: '개정',
+  OBJECT_LINK: '연결',
+  OBJECT_UNLINK: '연결 해제',
+  OBJECT_MOVE: '이동',
+  OBJECT_ATTACH: '첨부 추가',
+  OBJECT_DETACH: '첨부 제거',
+};
+
+function formatActivityTime(iso: string): string {
+  // YYYY-MM-DD HH:MM — readable inline timestamp for the activity rail.
+  // We avoid date-fns to keep this page free of new deps.
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+function adaptActivity(dto: ActivityResponseDTO): ActivityItemVM[] {
+  return dto.items.map((it) => ({
+    id: it.id,
+    time: formatActivityTime(it.at),
+    action: ACTIVITY_LABELS[it.action] ?? it.action,
+    actionRaw: it.action,
+    user: it.actor.fullName ?? it.actor.username,
+    ip: it.ip ?? '—',
+  }));
+}
+
+// Map BE step status → ApprovalLine's wider status enum. The BE only emits
+// PENDING/APPROVED/REJECTED today; we synthesize IN_PROGRESS for the first
+// pending step of the *current* approval so the UI shows a "진행 중" marker.
+function mapApprovalEntry(entry: ApprovalEntryDTO, isCurrent: boolean): ApprovalEntryVM {
+  // First PENDING step of the current entry becomes IN_PROGRESS so users
+  // see where the approval is sitting. History entries skip this — they are
+  // already finalized.
+  const firstPendingIdx = isCurrent
+    ? entry.steps.findIndex((s) => s.status === 'PENDING')
+    : -1;
+  return {
+    id: entry.id,
+    title: entry.title,
+    status: entry.status,
+    revision: entry.revision,
+    requestedBy: entry.requestedBy.fullName ?? entry.requestedBy.username,
+    requestedAt: formatDate(entry.requestedAt),
+    steps: entry.steps.map((s, i) => ({
+      step: s.order,
+      name: s.approver.fullName ?? s.approver.username,
+      status:
+        i === firstPendingIdx
+          ? 'IN_PROGRESS'
+          : (s.status as ApprovalStepVM['status']),
+      at: s.actedAt ? formatActivityTime(s.actedAt) : '',
+      comment: s.comment,
+    })),
+  };
+}
+
+function adaptApproval(dto: ApprovalResponseDTO): ApprovalVM {
+  return {
+    current: dto.current ? mapApprovalEntry(dto.current, true) : null,
+    history: dto.history.map((e) => mapApprovalEntry(e, false)),
   };
 }
 
@@ -342,9 +496,79 @@ export default function ObjectDetailPage() {
     router.replace(`/objects/${params.id}?${sp.toString()}`, { scroll: false });
   };
 
+  // R3c — activity & approval feeds. Lazy: each query only fires once the
+  // user opens the corresponding tab, so the cold detail render stays
+  // single-fetch. staleTime mirrors the detail query (30s) and the retry
+  // policy avoids hammering 404/403 the same way.
+  const skipTransientRetry = (failureCount: number, err: ApiError) => {
+    if (err instanceof ApiError && (err.status === 404 || err.status === 403)) {
+      return false;
+    }
+    return failureCount < 2;
+  };
+
+  const activityQuery = useQuery<ActivityResponseDTO, ApiError>({
+    queryKey: queryKeys.objects.activity(params.id),
+    queryFn: () =>
+      api.get<ActivityResponseDTO>(
+        `/api/v1/objects/${params.id}/activity?limit=50`,
+      ),
+    enabled: tab === 'activity',
+    staleTime: 30_000,
+    retry: skipTransientRetry,
+  });
+
+  const approvalQuery = useQuery<ApprovalResponseDTO, ApiError>({
+    queryKey: queryKeys.objects.approvals(params.id),
+    queryFn: () =>
+      api.get<ApprovalResponseDTO>(`/api/v1/objects/${params.id}/approval`),
+    enabled: tab === 'approval',
+    staleTime: 30_000,
+    retry: skipTransientRetry,
+  });
+
+  // Empty-array fallbacks — keep the tab body safe to render while the
+  // query is pending or errored. The tabs themselves render the explicit
+  // loading / error states; this just guarantees `.map`/`.length` never
+  // explode on `undefined`.
+  const activityList = React.useMemo<ActivityItemVM[]>(
+    () => (activityQuery.data ? adaptActivity(activityQuery.data) : []),
+    [activityQuery.data],
+  );
+  const approvalVM = React.useMemo<ApprovalVM>(
+    () =>
+      approvalQuery.data
+        ? adaptApproval(approvalQuery.data)
+        : { current: null, history: [] },
+    [approvalQuery.data],
+  );
+
+  // Surface non-404 fetch failures via toast. We dedupe on error identity
+  // so re-renders don't keep firing toasts for the same failure.
+  const activityErr = activityQuery.error;
+  React.useEffect(() => {
+    if (!activityErr) return;
+    const isNotFound =
+      activityErr instanceof ApiError &&
+      (activityErr.code === 'E_NOT_FOUND' || activityErr.status === 404);
+    if (isNotFound) return;
+    toast.error('활동 이력 조회 실패', { description: activityErr.message });
+  }, [activityErr]);
+
+  const approvalErr = approvalQuery.error;
+  React.useEffect(() => {
+    if (!approvalErr) return;
+    const isNotFound =
+      approvalErr instanceof ApiError &&
+      (approvalErr.code === 'E_NOT_FOUND' || approvalErr.status === 404);
+    if (isNotFound) return;
+    toast.error('결재 이력 조회 실패', { description: approvalErr.message });
+  }, [approvalErr]);
+
   // Mutation factory: same invalidation set for every state transition we
-  // wire here. On success: refresh detail + grid; on error: surface the BE
-  // message via toast.
+  // wire here. On success: refresh detail + grid + activity/approval feeds
+  // (every action writes an ActivityLog row, and `release` also creates an
+  // Approval); on error: surface the BE message via toast.
   const useObjectMutation = (action: ObjectAction) =>
     useMutation<unknown, ApiError, void>({
       mutationFn: () =>
@@ -352,6 +576,12 @@ export default function ObjectDetailPage() {
       onSuccess: () => {
         void queryClient.invalidateQueries({
           queryKey: queryKeys.objects.detail(params.id),
+        });
+        void queryClient.invalidateQueries({
+          queryKey: queryKeys.objects.activity(params.id),
+        });
+        void queryClient.invalidateQueries({
+          queryKey: queryKeys.objects.approvals(params.id),
         });
         void queryClient.invalidateQueries({ queryKey: queryKeys.objects.all() });
         toast.success(`${ACTION_LABEL[action]} 완료`);
@@ -559,9 +789,21 @@ export default function ObjectDetailPage() {
       <div className="flex-1 overflow-auto p-6">
         {tab === 'info' && <InfoTab obj={obj} />}
         {tab === 'history' && <HistoryTab obj={obj} />}
-        {tab === 'approval' && <ApprovalTab obj={obj} />}
+        {tab === 'approval' && (
+          <ApprovalTab
+            data={approvalVM}
+            isLoading={approvalQuery.isPending && approvalQuery.fetchStatus !== 'idle'}
+            isError={approvalQuery.isError}
+          />
+        )}
         {tab === 'links' && <LinksTab obj={obj} />}
-        {tab === 'activity' && <ActivityTab obj={obj} />}
+        {tab === 'activity' && (
+          <ActivityTab
+            items={activityList}
+            isLoading={activityQuery.isPending && activityQuery.fetchStatus !== 'idle'}
+            isError={activityQuery.isError}
+          />
+        )}
       </div>
     </div>
   );
@@ -775,21 +1017,101 @@ function HistoryTab({ obj }: { obj: ObjectVM }) {
   );
 }
 
-function ApprovalTab({ obj }: { obj: ObjectVM }) {
+function ApprovalTab({
+  data,
+  isLoading,
+  isError,
+}: {
+  data: ApprovalVM;
+  isLoading: boolean;
+  isError: boolean;
+}) {
+  if (isLoading) return <TabBlockSkeleton lines={4} />;
+  if (isError) {
+    return (
+      <EmptyState message="결재 이력을 불러오지 못했습니다. 잠시 후 다시 시도해 주세요." />
+    );
+  }
+
+  const hasCurrent = !!data.current;
+  const hasHistory = data.history.length > 0;
+
+  if (!hasCurrent && !hasHistory) {
+    return <EmptyState message="이 자료에는 결재 이력이 없습니다." />;
+  }
+
   return (
-    <div className="app-panel p-4">
-      <h3 className="mb-3 text-sm font-semibold text-fg">현재 결재선</h3>
-      <ApprovalLine
-        steps={obj.approval.current.map((step) => ({
-          order: step.step,
-          approver: step.name,
-          status: step.status as 'APPROVED',
-          actedAt: step.at,
-        }))}
-      />
+    <div className="space-y-4">
+      <div className="app-panel p-4">
+        <h3 className="mb-3 text-sm font-semibold text-fg">현재 결재선</h3>
+        {data.current ? (
+          <>
+            <div className="mb-3 text-xs text-fg-muted">
+              <span className="font-medium text-fg">{data.current.title}</span>
+              <span className="mx-2">·</span>
+              <span>R{data.current.revision}</span>
+              <span className="mx-2">·</span>
+              <span>
+                상신 {data.current.requestedBy} · {data.current.requestedAt}
+              </span>
+            </div>
+            <ApprovalLine
+              steps={data.current.steps.map((step) => ({
+                order: step.step,
+                approver: step.name,
+                status: step.status,
+                actedAt: step.at || null,
+                comment: step.comment,
+              }))}
+            />
+          </>
+        ) : (
+          <p className="text-xs text-fg-muted">진행 중인 결재가 없습니다.</p>
+        )}
+      </div>
+
+      {hasHistory ? (
+        <div className="app-panel p-4">
+          <h3 className="mb-3 text-sm font-semibold text-fg">결재 이력</h3>
+          <ul className="space-y-3">
+            {data.history.map((entry) => (
+              <li key={entry.id} className="rounded-md border border-border bg-bg p-3">
+                <div className="mb-2 flex items-center gap-2 text-xs text-fg-muted">
+                  <span className="font-medium text-fg">{entry.title}</span>
+                  <span>·</span>
+                  <span>R{entry.revision}</span>
+                  <span>·</span>
+                  <span>
+                    상신 {entry.requestedBy} · {entry.requestedAt}
+                  </span>
+                  <span className="ml-auto rounded bg-bg-muted px-1.5 py-0.5 text-[11px] text-fg">
+                    {APPROVAL_STATUS_LABEL[entry.status]}
+                  </span>
+                </div>
+                <ApprovalLine
+                  steps={entry.steps.map((step) => ({
+                    order: step.step,
+                    approver: step.name,
+                    status: step.status,
+                    actedAt: step.at || null,
+                    comment: step.comment,
+                  }))}
+                />
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
     </div>
   );
 }
+
+const APPROVAL_STATUS_LABEL: Record<ApprovalEntryVM['status'], string> = {
+  PENDING: '진행 중',
+  APPROVED: '승인',
+  REJECTED: '반려',
+  CANCELLED: '취소',
+};
 
 function LinksTab({ obj }: { obj: ObjectVM }) {
   return (
@@ -824,19 +1146,65 @@ function LinksTab({ obj }: { obj: ObjectVM }) {
   );
 }
 
-function ActivityTab({ obj }: { obj: ObjectVM }) {
+function ActivityTab({
+  items,
+  isLoading,
+  isError,
+}: {
+  items: ActivityItemVM[];
+  isLoading: boolean;
+  isError: boolean;
+}) {
+  if (isLoading) return <TabBlockSkeleton lines={6} />;
+  if (isError) {
+    return (
+      <EmptyState message="활동 이력을 불러오지 못했습니다. 잠시 후 다시 시도해 주세요." />
+    );
+  }
+  if (items.length === 0) {
+    return <EmptyState message="기록된 활동이 없습니다." />;
+  }
   return (
     <ol className="space-y-2">
-      {obj.activity.map((a, i) => (
-        <li key={i} className="flex items-center gap-3 rounded-md border border-border bg-bg px-3 py-2 text-sm">
+      {items.map((a) => (
+        <li
+          key={a.id}
+          className="flex items-center gap-3 rounded-md border border-border bg-bg px-3 py-2 text-sm"
+        >
           <Clock className="h-4 w-4 text-fg-muted" />
           <span className="font-mono text-xs text-fg-muted">{a.time}</span>
-          <span className="rounded bg-bg-muted px-1.5 py-0.5 text-[11px] text-fg">{a.action}</span>
+          <span className="rounded bg-bg-muted px-1.5 py-0.5 text-[11px] text-fg">
+            {a.action}
+          </span>
           <span className="text-fg">{a.user}</span>
           <span className="ml-auto font-mono text-xs text-fg-subtle">{a.ip}</span>
         </li>
       ))}
     </ol>
+  );
+}
+
+// Shared block-level skeleton for the lazy tabs. Cheap and matches the
+// detail page chrome already rendered around it.
+function TabBlockSkeleton({ lines = 4 }: { lines?: number }) {
+  return (
+    <div role="status" aria-busy="true" aria-live="polite" className="space-y-2">
+      {Array.from({ length: lines }, (_, i) => (
+        <div
+          key={i}
+          className="h-10 w-full animate-pulse rounded-md border border-border bg-bg-muted/60"
+        />
+      ))}
+      <span className="sr-only">불러오는 중입니다.</span>
+    </div>
+  );
+}
+
+function EmptyState({ message }: { message: string }) {
+  return (
+    <div className="rounded-md border border-dashed border-border bg-bg-subtle px-4 py-8 text-center text-sm text-fg-muted">
+      {message}
+    </div>
   );
 }
 
