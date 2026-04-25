@@ -93,9 +93,9 @@ export function UserMenu({ user }: UserMenuProps) {
             />
           </ul>
 
-          <div className="flex items-center justify-between border-t border-border px-3 py-2">
-            <span className="text-xs text-fg-muted">테마</span>
-            <ThemeToggle />
+          <div className="border-t border-border px-3 py-2">
+            <div className="mb-2 text-xs font-medium text-fg-muted">테마</div>
+            <ThemeToggle variant="segmented" className="w-full justify-between" />
           </div>
 
           <div className="border-t border-border py-1">

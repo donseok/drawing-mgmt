@@ -3,20 +3,39 @@
 import * as React from 'react';
 import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
-import { Plus, X, CheckCircle2, XCircle, Clock4, Inbox, Send, RotateCcw, Archive } from 'lucide-react';
+import {
+  Plus,
+  X,
+  CheckCircle2,
+  XCircle,
+  Clock4,
+  Inbox,
+  Send,
+  RotateCcw,
+  Archive,
+  GitCompare,
+  FileText,
+  AlertTriangle,
+} from 'lucide-react';
 import { SubSidebar } from '@/components/layout/SubSidebar';
 import { ApprovalLine, type ApprovalStep } from '@/components/ApprovalLine';
 import { EmptyState } from '@/components/EmptyState';
 import { cn } from '@/lib/cn';
 
-type BoxKey = 'waiting' | 'done' | 'sent' | 'trash';
+type BoxKey = 'waiting' | 'done' | 'sent' | 'recall';
 
-const BOXES: { key: BoxKey; label: string; count: number; icon: React.ComponentType<{ className?: string }> }[] = [
-  { key: 'waiting', label: '대기', count: 3, icon: Inbox },
-  { key: 'done', label: '처리완료', count: 12, icon: CheckCircle2 },
-  { key: 'sent', label: '상신함', count: 5, icon: Send },
-  { key: 'trash', label: '회수', count: 1, icon: Archive },
+const BOX_META: Omit<BoxRow, 'count'>[] = [
+  { key: 'waiting', label: '대기', icon: Inbox },
+  { key: 'done', label: '처리완료', icon: CheckCircle2 },
+  { key: 'sent', label: '상신함', icon: Send },
+  { key: 'recall', label: '회수', icon: Archive },
 ];
+interface BoxRow {
+  key: BoxKey;
+  label: string;
+  count: number;
+  icon: React.ComponentType<{ className?: string }>;
+}
 
 // MOCK approval rows — TODO api.get('/api/v1/approvals?box=...')
 const MOCK_ROWS = [
@@ -28,6 +47,11 @@ const MOCK_ROWS = [
     objectNumber: 'CGL-MEC-2026-00012',
     objectName: '메인롤러 어셈블리',
     submittedAt: '2026-04-24',
+    dueAt: '2026-04-26',
+    currentStep: '2/3',
+    revision: 'R3',
+    reason: '베어링 사양 변경',
+    issueCount: 2,
     box: 'waiting' as BoxKey,
     steps: [
       { order: 1, approver: '김지원', status: 'APPROVED', actedAt: '4/24 09:12', comment: '검토 완료' },
@@ -43,6 +67,11 @@ const MOCK_ROWS = [
     objectNumber: 'BFM-PRC-2026-00008',
     objectName: '소둔로 공정 P&ID',
     submittedAt: '2026-04-23',
+    dueAt: '2026-04-27',
+    currentStep: '1/2',
+    revision: 'R1',
+    reason: '신규 등록',
+    issueCount: 1,
     box: 'waiting' as BoxKey,
     steps: [
       { order: 1, approver: '김지원', status: 'IN_PROGRESS', actedAt: null },
@@ -57,6 +86,11 @@ const MOCK_ROWS = [
     objectNumber: 'CGL-ELE-2026-00031',
     objectName: '메인 컨트롤 패널',
     submittedAt: '2026-04-22',
+    dueAt: '2026-04-26',
+    currentStep: '2/3',
+    revision: 'R2',
+    reason: '마크업 반영',
+    issueCount: 0,
     box: 'waiting' as BoxKey,
     steps: [
       { order: 1, approver: '김지원', status: 'APPROVED', actedAt: '4/22 10:30' },
@@ -64,7 +98,68 @@ const MOCK_ROWS = [
       { order: 3, approver: '임도현', status: 'PENDING', actedAt: null },
     ] satisfies ApprovalStep[],
   },
+  {
+    id: 'apr-4',
+    objectId: 'obj-2',
+    title: 'R1 신규 결재',
+    sender: '박설계',
+    objectNumber: 'CGL-MEC-2026-00002',
+    objectName: 'CGL #2 컨베이어 조립도',
+    submittedAt: '2026-04-15',
+    dueAt: '2026-04-18',
+    currentStep: '2/2',
+    revision: 'R1',
+    reason: '신규 등록',
+    issueCount: 0,
+    box: 'done' as BoxKey,
+    steps: [
+      { order: 1, approver: '김지원', status: 'APPROVED', actedAt: '4/15 14:02' },
+      { order: 2, approver: '박상민', status: 'APPROVED', actedAt: '4/16 09:11' },
+    ] satisfies ApprovalStep[],
+  },
+  {
+    id: 'apr-5',
+    objectId: 'obj-5',
+    title: 'R1 신규 결재',
+    sender: '박설계',
+    objectNumber: 'CGL-PRC-2026-00005',
+    objectName: 'CGL 공정 P&ID',
+    submittedAt: '2026-04-10',
+    dueAt: '2026-04-17',
+    currentStep: '2/2',
+    revision: 'R1',
+    reason: '현장 배포 전 승인',
+    issueCount: 3,
+    box: 'sent' as BoxKey,
+    steps: [
+      { order: 1, approver: '김지원', status: 'APPROVED', actedAt: '4/10 11:00' },
+      { order: 2, approver: '박상민', status: 'IN_PROGRESS', actedAt: null },
+    ] satisfies ApprovalStep[],
+  },
+  {
+    id: 'apr-6',
+    objectId: 'obj-1',
+    title: 'R2 개정 결재 (회수됨)',
+    sender: '김설계',
+    objectNumber: 'CGL-MEC-2026-00001',
+    objectName: 'CGL #1 라인 펌프 설치도',
+    submittedAt: '2026-04-08',
+    dueAt: '2026-04-12',
+    currentStep: '0/1',
+    revision: 'R2',
+    reason: '승인선 오류',
+    issueCount: 1,
+    box: 'recall' as BoxKey,
+    steps: [
+      { order: 1, approver: '김지원', status: 'PENDING', actedAt: null },
+    ] satisfies ApprovalStep[],
+  },
 ];
+
+const BOXES: BoxRow[] = BOX_META.map((b) => ({
+  ...b,
+  count: MOCK_ROWS.filter((r) => r.box === b.key).length,
+}));
 
 export default function ApprovalPage() {
   const router = useRouter();
@@ -151,9 +246,13 @@ export default function ApprovalPage() {
                 <tr>
                   <th className="w-8"></th>
                   <th>제목</th>
-                  <th>상신자</th>
+                  <th>단계</th>
                   <th>자료번호</th>
+                  <th>Rev</th>
+                  <th>변경 사유</th>
+                  <th>이슈</th>
                   <th>상신일</th>
+                  <th>기한</th>
                 </tr>
               </thead>
               <tbody>
@@ -176,8 +275,15 @@ export default function ApprovalPage() {
                           className="h-3.5 w-3.5 rounded border-border accent-brand"
                         />
                       </td>
-                      <td className="font-medium text-fg">{r.title}</td>
-                      <td className="text-fg-muted">{r.sender}</td>
+                      <td>
+                        <span className="block font-medium text-fg">{r.title}</span>
+                        <span className="text-[12px] text-fg-muted">{r.sender}</span>
+                      </td>
+                      <td>
+                        <span className="inline-flex h-6 items-center rounded-md border border-border bg-bg-subtle px-2 font-mono text-[12px] font-semibold text-fg">
+                          {r.currentStep}
+                        </span>
+                      </td>
                       <td>
                         <Link
                           href={`/objects/${r.objectId}`}
@@ -187,7 +293,16 @@ export default function ApprovalPage() {
                           {r.objectNumber}
                         </Link>
                       </td>
+                      <td className="font-mono text-[12px] font-semibold text-fg">{r.revision}</td>
+                      <td className="max-w-44 truncate text-[12px] text-fg-muted">{r.reason}</td>
+                      <td>
+                        <span className={cn('inline-flex items-center gap-1 text-[12px]', r.issueCount > 0 ? 'text-danger' : 'text-fg-muted')}>
+                          <AlertTriangle className="h-3.5 w-3.5" />
+                          {r.issueCount}
+                        </span>
+                      </td>
                       <td className="font-mono text-[12px] text-fg-muted">{r.submittedAt}</td>
+                      <td className="font-mono text-[12px] text-fg-muted">{r.dueAt}</td>
                     </tr>
                   );
                 })}
@@ -246,6 +361,36 @@ export default function ApprovalPage() {
               {selected.sender} · {selected.submittedAt}
             </p>
 
+            <div className="mt-4 overflow-hidden rounded-lg border border-border bg-bg">
+              <div className="flex h-9 items-center justify-between border-b border-border px-3">
+                <span className="font-mono text-[12px] font-semibold text-fg">{selected.objectNumber}</span>
+                <span className="inline-flex h-6 items-center rounded-md border border-brand/25 bg-brand/10 px-2 font-mono text-[12px] font-semibold text-brand">
+                  {selected.revision}
+                </span>
+              </div>
+              <div className="flex aspect-[4/3] items-center justify-center bg-[linear-gradient(90deg,hsl(var(--viewer-grid))_1px,transparent_1px),linear-gradient(0deg,hsl(var(--viewer-grid))_1px,transparent_1px)] bg-[size:22px_22px]">
+                <div className="flex h-16 w-16 items-center justify-center rounded-lg border border-border bg-bg/90 text-fg-subtle shadow-sm">
+                  <FileText className="h-8 w-8" />
+                </div>
+              </div>
+              <div className="grid grid-cols-3 divide-x divide-border border-t border-border text-[12px]">
+                <div className="p-2">
+                  <div className="text-fg-muted">단계</div>
+                  <div className="font-semibold text-fg">{selected.currentStep}</div>
+                </div>
+                <div className="p-2">
+                  <div className="text-fg-muted">이슈</div>
+                  <div className={cn('font-semibold', selected.issueCount > 0 ? 'text-danger' : 'text-fg')}>
+                    {selected.issueCount}건
+                  </div>
+                </div>
+                <div className="p-2">
+                  <div className="text-fg-muted">기한</div>
+                  <div className="font-mono font-semibold text-fg">{selected.dueAt}</div>
+                </div>
+              </div>
+            </div>
+
             <div className="mt-4 rounded-md border border-border bg-bg-subtle p-3">
               <div className="text-xs text-fg-muted">자료</div>
               <Link
@@ -271,6 +416,27 @@ export default function ApprovalPage() {
                 className="w-full rounded-md border border-border bg-bg-subtle p-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                 placeholder="검토 의견을 입력하세요…"
               />
+            </div>
+          </div>
+          <div className="border-t border-border bg-bg p-3">
+            <div className="mb-2 grid grid-cols-2 gap-2">
+              <button type="button" className="app-action-button h-8">
+                <GitCompare className="h-3.5 w-3.5" />
+                비교 열기
+              </button>
+              <Link href={`/objects/${selected.objectId}`} className="app-action-button h-8">
+                상세 보기
+              </Link>
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              <button type="button" className="inline-flex h-9 items-center justify-center gap-1 rounded-md bg-success px-3 text-sm font-semibold text-white hover:bg-success/90">
+                <CheckCircle2 className="h-4 w-4" />
+                승인
+              </button>
+              <button type="button" className="inline-flex h-9 items-center justify-center gap-1 rounded-md bg-danger px-3 text-sm font-semibold text-white hover:bg-danger/90">
+                <XCircle className="h-4 w-4" />
+                반려
+              </button>
             </div>
           </div>
         </aside>

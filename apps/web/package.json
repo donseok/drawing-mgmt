@@ -13,7 +13,8 @@
     "db:push": "prisma db push",
     "db:seed": "tsx prisma/seed.ts",
     "db:studio": "prisma studio",
-    "ingest": "tsx scripts/ingest-dwg.ts"
+    "ingest": "tsx scripts/ingest-dwg.ts",
+    "seed:previews": "tsx scripts/generate-seed-previews.ts"
   },
   "dependencies": {
     "@drawing-mgmt/shared": "workspace:*",

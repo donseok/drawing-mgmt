@@ -57,9 +57,16 @@ export interface PdfLoadOptions {
  */
 export async function loadPdf(opts: PdfLoadOptions): Promise<PDFDocumentProxy> {
   const pdfjs = await loadPdfjs();
+  // pdfjs transfers the underlying ArrayBuffer to its Worker (postMessage with
+  // transferable), which detaches it from the main thread. Without copying,
+  // a re-mount (React strict mode in dev) or a retry would re-invoke loadPdf
+  // with the same Uint8Array — now backed by a detached buffer — and fail
+  // with "Failed to execute 'postMessage' on 'Worker': ArrayBuffer ... is detached".
+  // .slice() returns a Uint8Array with a fresh ArrayBuffer copy.
+  const dataCopy = opts.data ? opts.data.slice() : undefined;
   const task = pdfjs.getDocument({
     url: opts.url,
-    data: opts.data,
+    data: dataCopy,
     withCredentials: opts.withCredentials ?? true,
     isEvalSupported: false,
     disableAutoFetch: false,

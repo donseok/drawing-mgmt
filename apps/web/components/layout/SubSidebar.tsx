@@ -49,7 +49,7 @@ export function SubSidebar({ title, children, toolbar, footer, className }: SubS
     return (
       <aside
         aria-label={title ?? '보조 사이드바'}
-        className="flex h-full w-8 shrink-0 items-start justify-center border-r border-border bg-bg-subtle"
+        className="flex h-full w-8 shrink-0 items-start justify-center border-r border-border bg-bg/80"
       >
         <button
           type="button"
@@ -69,7 +69,7 @@ export function SubSidebar({ title, children, toolbar, footer, className }: SubS
       aria-label={title ?? '보조 사이드바'}
       style={{ width }}
       className={cn(
-        'relative flex h-full shrink-0 flex-col border-r border-border bg-bg-subtle',
+        'relative flex h-full shrink-0 flex-col border-r border-border bg-bg/80 backdrop-blur',
         className,
       )}
     >

@@ -23,6 +23,7 @@ export interface FolderNode {
   folderCode: string;
   defaultClassId: string | null;
   sortOrder: number;
+  objectCount: number;
   children: FolderNode[];
 }
 
@@ -44,6 +45,7 @@ export async function GET(): Promise<NextResponse> {
       folderCode: true,
       defaultClassId: true,
       sortOrder: true,
+      _count: { select: { objects: { where: { deletedAt: null } } } },
     },
   });
 
@@ -81,11 +83,13 @@ function buildTree(
     folderCode: string;
     defaultClassId: string | null;
     sortOrder: number;
+    _count: { objects: number };
   }>,
 ): FolderNode[] {
   const map = new Map<string, FolderNode>();
   for (const row of rows) {
-    map.set(row.id, { ...row, children: [] });
+    const { _count, ...rest } = row;
+    map.set(row.id, { ...rest, objectCount: _count.objects, children: [] });
   }
   const roots: FolderNode[] = [];
   for (const node of map.values()) {

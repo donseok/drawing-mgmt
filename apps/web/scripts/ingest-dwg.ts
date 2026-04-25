@@ -28,8 +28,13 @@ async function main() {
     process.exit(2);
   }
   const inputArg = argv[0];
+  if (!inputArg) {
+    console.error('Usage: ingest <path-to.dwg> [--id <id>]');
+    process.exit(2);
+  }
   const idIdx = argv.indexOf('--id');
-  const id = idIdx >= 0 ? argv[idIdx + 1] : randomUUID();
+  const idArg = idIdx >= 0 ? argv[idIdx + 1] : undefined;
+  const id = idArg ?? randomUUID();
 
   const input = path.resolve(inputArg);
   const stat = await fs.stat(input);

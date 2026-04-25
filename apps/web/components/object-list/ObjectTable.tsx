@@ -11,7 +11,16 @@ import {
   type RowSelectionState,
 } from '@tanstack/react-table';
 import { useRouter } from 'next/navigation';
-import { ChevronUp, ChevronDown, ChevronsUpDown, MoreVertical, Image as ImageIcon } from 'lucide-react';
+import {
+  ChevronUp,
+  ChevronDown,
+  ChevronsUpDown,
+  MoreVertical,
+  FileText,
+  Lock,
+  MessageSquare,
+  MapPin,
+} from 'lucide-react';
 import { cn } from '@/lib/cn';
 import { StatusBadge } from '@/components/StatusBadge';
 
@@ -37,6 +46,12 @@ export interface ObjectRow {
   registeredAt: string; // YYYY-MM-DD
   thumbnailUrl?: string;
   masterAttachmentId?: string;
+  issueCount?: number;
+  markupCount?: number;
+  transmittedAt?: string;
+  lockedBy?: string | null;
+  controlState?: '작업중' | '검토중' | '승인본' | '현장배포본';
+  latest?: boolean;
 }
 
 interface ObjectTableProps {
@@ -80,65 +95,112 @@ export function ObjectTable({ data, selectedId, onSelect, onSelectedCountChange,
         enableSorting: false,
       },
       {
-        id: 'thumbnail',
-        header: '',
+        accessorKey: 'state',
+        header: '상태',
         cell: ({ row }) => (
-          <div className="flex h-10 w-12 items-center justify-center overflow-hidden rounded-md border border-border bg-bg-subtle">
-            {row.original.thumbnailUrl ? (
-              // eslint-disable-next-line @next/next/no-img-element
-              <img
-                src={row.original.thumbnailUrl}
-                alt=""
-                className="h-full w-full object-cover"
-              />
-            ) : (
-              <ImageIcon className="h-4 w-4 text-fg-subtle" aria-hidden />
-            )}
+          <div className="flex items-center gap-2">
+            <StatusBadge status={row.original.state} size="sm" />
+            {row.original.lockedBy ? (
+              <Lock className="h-3.5 w-3.5 text-warning" aria-label="체크아웃됨" />
+            ) : null}
           </div>
         ),
-        size: 56,
-        enableSorting: false,
+        size: 122,
       },
       {
         accessorKey: 'number',
         header: '도면번호',
         cell: ({ row }) => (
-          <span className="font-mono text-[13px] font-medium text-fg">{highlight(row.original.number, searchTerm)}</span>
+          <span className="inline-flex items-center gap-2">
+            <span className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-border bg-bg-subtle text-fg-subtle">
+              <FileText className="h-3.5 w-3.5" />
+            </span>
+            <span className="font-mono text-[13px] font-semibold text-fg">
+              {highlight(row.original.number, searchTerm)}
+            </span>
+          </span>
         ),
-        size: 200,
+        size: 230,
+      },
+      {
+        id: 'revVer',
+        header: 'Current Rev',
+        cell: ({ row }) => (
+          <span className="font-mono text-[12px] font-semibold text-fg">
+            R{row.original.revision} <span className="font-normal text-fg-muted">v{row.original.version}</span>
+          </span>
+        ),
+        size: 96,
       },
       {
         accessorKey: 'name',
         header: '자료명',
         cell: ({ row }) => (
-          <span className="block max-w-[360px] truncate font-medium text-fg">{highlight(row.original.name, searchTerm)}</span>
+          <span className="block max-w-[420px] truncate font-medium text-fg">
+            {highlight(row.original.name, searchTerm)}
+          </span>
         ),
       },
       {
         accessorKey: 'classLabel',
-        header: '자료유형',
+        header: '분야',
         cell: ({ row }) => (
           <span className="inline-flex h-6 items-center rounded-md border border-border bg-bg-subtle px-2 text-[12px] font-medium text-fg-muted">
             {row.original.classLabel}
           </span>
         ),
-        size: 100,
+        size: 94,
       },
       {
-        accessorKey: 'state',
-        header: '상태',
-        cell: ({ row }) => <StatusBadge status={row.original.state} size="sm" />,
-        size: 104,
-      },
-      {
-        id: 'revVer',
-        header: 'Rev / Ver',
+        id: 'controlState',
+        header: '문서 통제',
         cell: ({ row }) => (
-          <span className="font-mono text-[12px] text-fg-muted">
-            R{row.original.revision} v{row.original.version}
+          <span className="inline-flex items-center gap-1.5">
+            <span
+              className={cn(
+                'inline-flex h-6 items-center rounded-md border px-2 text-[12px] font-medium',
+                row.original.controlState === '현장배포본'
+                  ? 'border-success/25 bg-success/10 text-success'
+                  : row.original.controlState === '검토중'
+                    ? 'border-warning/25 bg-warning/10 text-warning'
+                    : 'border-border bg-bg-subtle text-fg-muted',
+              )}
+            >
+              {row.original.controlState ?? '작업중'}
+            </span>
+            {row.original.latest ? (
+              <span className="text-[11px] font-medium text-brand">최신본</span>
+            ) : null}
           </span>
         ),
-        size: 80,
+        size: 130,
+      },
+      {
+        id: 'signals',
+        header: '이슈 / 마크업',
+        cell: ({ row }) => (
+          <span className="inline-flex items-center gap-2 text-[12px] text-fg-muted">
+            <span className="inline-flex items-center gap-1">
+              <MapPin className="h-3.5 w-3.5 text-danger" />
+              {row.original.issueCount ?? 0}
+            </span>
+            <span className="inline-flex items-center gap-1">
+              <MessageSquare className="h-3.5 w-3.5 text-info" />
+              {row.original.markupCount ?? 0}
+            </span>
+          </span>
+        ),
+        size: 118,
+      },
+      {
+        accessorKey: 'transmittedAt',
+        header: '최근 배포',
+        cell: ({ row }) => (
+          <span className="font-mono text-[12px] text-fg-muted">
+            {row.original.transmittedAt ?? '-'}
+          </span>
+        ),
+        size: 100,
       },
       {
         accessorKey: 'registrant',
@@ -150,14 +212,6 @@ export function ObjectTable({ data, selectedId, onSelect, onSelectedCountChange,
             </span>
             <span className="text-[12px] text-fg">{row.original.registrant}</span>
           </span>
-        ),
-        size: 100,
-      },
-      {
-        accessorKey: 'registeredAt',
-        header: '등록일',
-        cell: ({ row }) => (
-          <span className="font-mono text-[12px] text-fg-muted">{row.original.registeredAt}</span>
         ),
         size: 100,
       },

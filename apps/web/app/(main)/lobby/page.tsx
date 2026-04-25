@@ -2,17 +2,23 @@
 
 import * as React from 'react';
 import Link from 'next/link';
-import { Inbox, Send, Clock4, Paperclip } from 'lucide-react';
+import { Inbox, Send, Clock4, Paperclip, Building2, CalendarDays, X, MoreVertical } from 'lucide-react';
 import { SubSidebar } from '@/components/layout/SubSidebar';
 import { EmptyState } from '@/components/EmptyState';
 import { cn } from '@/lib/cn';
 
 type BoxKey = 'received' | 'sent' | 'expired';
 
-const BOXES: { key: BoxKey; label: string; icon: React.ComponentType<{ className?: string }>; count: number }[] = [
-  { key: 'received', label: '받은 로비함', icon: Inbox, count: 4 },
-  { key: 'sent', label: '보낸 로비함', icon: Send, count: 7 },
-  { key: 'expired', label: '만료된 로비함', icon: Clock4, count: 2 },
+interface BoxMeta {
+  key: BoxKey;
+  label: string;
+  icon: React.ComponentType<{ className?: string }>;
+}
+
+const BOX_META: BoxMeta[] = [
+  { key: 'received', label: '받은 로비함', icon: Inbox },
+  { key: 'sent', label: '보낸 로비함', icon: Send },
+  { key: 'expired', label: '만료된 로비함', icon: Clock4 },
 ];
 
 // MOCK lobby cards — TODO api.get('/api/v1/lobbies?box=...')
@@ -37,11 +43,51 @@ const MOCK_LOBBIES = [
     status: '재확인 요청됨',
     box: 'received' as BoxKey,
   },
+  {
+    id: 'lobby-3',
+    title: 'CGL-1 펌프 도면 송부 (홍성기계)',
+    company: '홍성기계',
+    attachmentCount: 3,
+    expiresAt: '2026-05-15',
+    daysLeft: 19,
+    status: '응답 대기',
+    box: 'sent' as BoxKey,
+  },
+  {
+    id: 'lobby-4',
+    title: 'CGL-2 가이드 가공도 송부',
+    company: '대한설비',
+    attachmentCount: 1,
+    expiresAt: '2026-05-08',
+    daysLeft: 12,
+    status: '응답 완료',
+    box: 'sent' as BoxKey,
+  },
+  {
+    id: 'lobby-5',
+    title: '폐쇄 라인 검토 요청 (만료)',
+    company: '한국기계',
+    attachmentCount: 2,
+    expiresAt: '2026-04-10',
+    daysLeft: -16,
+    status: '만료됨',
+    box: 'expired' as BoxKey,
+  },
 ];
 
 export default function LobbyPage() {
   const [box, setBox] = React.useState<BoxKey>('received');
+  const [selectedId, setSelectedId] = React.useState<string | null>(null);
   const rows = MOCK_LOBBIES.filter((l) => l.box === box);
+  const selected = rows.find((row) => row.id === selectedId) ?? null;
+  const BOXES = BOX_META.map((b) => ({
+    ...b,
+    count: MOCK_LOBBIES.filter((l) => l.box === b.key).length,
+  }));
+
+  React.useEffect(() => {
+    setSelectedId(null);
+  }, [box]);
 
   return (
     <div className="flex h-full min-h-0 flex-1">
@@ -73,49 +119,138 @@ export default function LobbyPage() {
       </SubSidebar>
 
       <section className="flex min-w-0 flex-1 flex-col bg-bg">
-        <div className="border-b border-border px-5 py-4">
+        <div className="border-b border-border px-5 py-3">
           <div className="app-kicker">Partner Lobby</div>
-          <h1 className="mt-1 text-lg font-semibold text-fg">{BOXES.find((b) => b.key === box)?.label}</h1>
-          <p className="mt-1 text-sm text-fg-muted">협력업체와 주고받은 도면 검토 패키지를 확인합니다.</p>
+          <div className="mt-1 flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <h1 className="text-lg font-semibold text-fg">{BOXES.find((b) => b.key === box)?.label}</h1>
+              <p className="mt-1 text-sm text-fg-muted">협력업체 도면 패키지의 첨부, 만료, 응답 상태를 비교합니다.</p>
+            </div>
+            <button type="button" className="app-action-button-primary h-9">
+              <Send className="h-4 w-4" />
+              로비 패키지 발송
+            </button>
+          </div>
         </div>
 
-        <div className="min-h-0 flex-1 overflow-auto p-5">
+        <div className="min-h-0 flex-1 overflow-auto">
           {rows.length === 0 ? (
             <EmptyState icon={Inbox} title="해당 로비함에 항목이 없습니다." className="min-h-80" />
           ) : (
-          <ul className="grid grid-cols-1 gap-3 xl:grid-cols-2">
-            {rows.map((l) => (
-              <li
-                key={l.id}
-                className="rounded-lg border border-border bg-bg transition-colors hover:border-border-strong hover:bg-bg-subtle"
-              >
-                <Link href={`/lobby/${l.id}`} className="block p-4">
-                  <div className="flex items-start justify-between gap-3">
-                    <span className="min-w-0">
-                      <h2 className="truncate text-sm font-semibold text-fg">{l.title}</h2>
-                      <p className="mt-1 text-xs text-fg-muted">{l.company}</p>
-                    </span>
-                    <span className="shrink-0 rounded-full border border-border bg-bg-subtle px-2 py-0.5 text-[11px] font-medium text-fg">
-                      {l.status}
-                    </span>
-                  </div>
-                  <div className="mt-4 flex flex-wrap items-center gap-3 border-t border-border pt-3 text-xs text-fg-muted">
-                    <span className="inline-flex items-center gap-1">
-                      <Paperclip className="h-3.5 w-3.5" />
-                      첨부 {l.attachmentCount}건
-                    </span>
-                    <span className="inline-flex items-center gap-1">
-                      <Clock4 className="h-3.5 w-3.5" />
-                      만료 {l.expiresAt} (D-{l.daysLeft})
-                    </span>
-                  </div>
-                </Link>
-              </li>
-            ))}
-          </ul>
+            <table className="app-table">
+              <thead>
+                <tr>
+                  <th>패키지</th>
+                  <th>협력업체</th>
+                  <th>상태</th>
+                  <th>첨부</th>
+                  <th>만료일</th>
+                  <th className="w-8"></th>
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map((l) => {
+                  const active = selected?.id === l.id;
+                  return (
+                    <tr
+                      key={l.id}
+                      onClick={() => setSelectedId(l.id)}
+                      className={cn(
+                        'cursor-pointer hover:bg-bg-subtle',
+                        active && 'bg-brand/5 shadow-[inset_3px_0_0_hsl(var(--brand))]',
+                      )}
+                    >
+                      <td>
+                        <Link href={`/lobby/${l.id}`} className="block min-w-0" onClick={(e) => e.stopPropagation()}>
+                          <span className="block truncate font-medium text-fg hover:text-brand">{l.title}</span>
+                          <span className="font-mono text-[12px] text-fg-muted">{l.id.toUpperCase()}</span>
+                        </Link>
+                      </td>
+                      <td>
+                        <span className="inline-flex items-center gap-1.5 text-sm text-fg">
+                          <Building2 className="h-3.5 w-3.5 text-fg-subtle" />
+                          {l.company}
+                        </span>
+                      </td>
+                      <td>
+                        <span className="inline-flex h-6 items-center rounded-md border border-border bg-bg-subtle px-2 text-[12px] font-medium text-fg">
+                          {l.status}
+                        </span>
+                      </td>
+                      <td className="text-[12px] text-fg-muted">
+                        <span className="inline-flex items-center gap-1">
+                          <Paperclip className="h-3.5 w-3.5" />
+                          {l.attachmentCount}건
+                        </span>
+                      </td>
+                      <td className="font-mono text-[12px] text-fg-muted">
+                        {l.expiresAt} <span className={l.daysLeft <= 7 ? 'text-warning' : ''}>(D-{l.daysLeft})</span>
+                      </td>
+                      <td>
+                        <button type="button" className="app-icon-button h-7 w-7" aria-label="패키지 메뉴" onClick={(e) => e.stopPropagation()}>
+                          <MoreVertical className="h-4 w-4" />
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
           )}
         </div>
       </section>
+
+      {selected && (
+        <aside className="hidden h-full w-[360px] shrink-0 flex-col border-l border-border bg-bg lg:flex" aria-label="로비 상세">
+          <div className="app-panel-header min-h-11">
+            <span className="app-kicker">패키지 상세</span>
+            <button type="button" className="app-icon-button h-7 w-7" aria-label="닫기" onClick={() => setSelectedId(null)}>
+              <X className="h-4 w-4" />
+            </button>
+          </div>
+          <div className="flex-1 overflow-auto p-4">
+            <h2 className="text-base font-semibold text-fg">{selected.title}</h2>
+            <p className="mt-1 text-sm text-fg-muted">{selected.company}</p>
+
+            <div className="mt-4 grid grid-cols-2 gap-2 text-[12px]">
+              <div className="rounded-md border border-border bg-bg-subtle p-3">
+                <div className="text-fg-muted">첨부</div>
+                <div className="mt-1 font-semibold text-fg">{selected.attachmentCount}건</div>
+              </div>
+              <div className="rounded-md border border-border bg-bg-subtle p-3">
+                <div className="text-fg-muted">상태</div>
+                <div className="mt-1 font-semibold text-fg">{selected.status}</div>
+              </div>
+            </div>
+
+            <div className="mt-4 rounded-md border border-border">
+              <div className="app-meta-row">
+                <CalendarDays className="h-3.5 w-3.5 text-fg-subtle" />
+                <span className="w-20 text-fg-muted">만료일</span>
+                <span className="font-mono font-medium text-fg">{selected.expiresAt}</span>
+              </div>
+              <div className="app-meta-row">
+                <Clock4 className="h-3.5 w-3.5 text-fg-subtle" />
+                <span className="w-20 text-fg-muted">남은 기간</span>
+                <span className="font-mono font-medium text-fg">D-{selected.daysLeft}</span>
+              </div>
+              <div className="app-meta-row border-b-0">
+                <Paperclip className="h-3.5 w-3.5 text-fg-subtle" />
+                <span className="w-20 text-fg-muted">패키지</span>
+                <span className="font-medium text-fg">PDF/DWG 검토 세트</span>
+              </div>
+            </div>
+          </div>
+          <div className="flex gap-2 border-t border-border p-3">
+            <Link href={`/lobby/${selected.id}`} className="app-action-button-primary h-9 flex-1">
+              열기
+            </Link>
+            <button type="button" className="app-action-button h-9">
+              재발송
+            </button>
+          </div>
+        </aside>
+      )}
     </div>
   );
 }
