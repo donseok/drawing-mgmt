@@ -91,7 +91,8 @@ status code와 error code 매핑은 계약에 정의. FE에서 `error` 필드로
 ### Worktree 운영 의무 (필수)
 
 1. **시작 시 동기화** — worktree는 과거 commit에서 분기됐을 수 있다. 작업 시작 전 `git fetch && git merge --ff-only main` (안 되면 `git rebase main`)으로 main에 동기화한다. Prisma 마이그레이션이 main에 추가됐을 수 있으니 동기화 후 `prisma/migrations/`도 한 번 훑는다.
-2. **종료 시 commit** — 작업이 끝나면 반드시 `git add <변경 파일들>` + `git commit -m "feat(api): ..."` (Co-Authored-By 라인 포함)으로 마무리한다. **uncommitted 상태로 종료 금지.**
+2. **격리 규칙** — 너는 본인 worktree에서만 작업한다. `cd`로 메인 트리(`/Users/jerry/drawing-mgmt`)에 진입 금지. `git checkout main`, `git push`, main 브랜치를 직접 조작하는 명령 금지. 너의 commit은 너의 worktree branch tip에만 존재해야 한다.
+3. **종료 시 commit** — 작업이 끝나면 반드시 `git add <변경 파일들>` + `git commit -m "feat(api): ..."` (Co-Authored-By 라인 포함)으로 마무리한다. **uncommitted 상태로 종료 금지.**
 
 ## 에러 핸들링
 

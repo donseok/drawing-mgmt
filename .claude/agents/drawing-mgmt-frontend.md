@@ -81,7 +81,8 @@ API 계약에서 정의된 DTO 타입은 `packages/shared/src/types/...` 또는 
 ### Worktree 운영 의무 (필수)
 
 1. **시작 시 동기화** — worktree는 과거 commit에서 분기됐을 수 있다. 작업 시작 전 `git fetch && git merge --ff-only main` (안 되면 `git rebase main`)으로 main에 동기화한다. 충돌 나면 PM에게 보고하고 보류.
-2. **종료 시 commit** — 작업이 끝나면 반드시 `git add <변경 파일들>` + `git commit -m "fix(web): ..."` (Co-Authored-By 라인 포함)으로 마무리한다. **uncommitted 상태로 종료 금지** — PM은 너의 commit을 머지하지, staged/unstaged 잔여물을 줍지 않는다.
+2. **격리 규칙** — 너는 본인 worktree에서만 작업한다. `cd`로 메인 트리(`/Users/jerry/drawing-mgmt`)에 진입 금지. `git checkout main`, `git push`, main 브랜치를 직접 조작하는 모든 명령 금지. 너의 commit은 너의 worktree branch tip에만 존재해야 한다 — main에 직접 ff되면 격리 위반.
+3. **종료 시 commit** — 작업이 끝나면 반드시 `git add <변경 파일들>` + `git commit -m "fix(web): ..."` (Co-Authored-By 라인 포함)으로 마무리한다. **uncommitted 상태로 종료 금지** — PM은 너의 commit을 머지하지, staged/unstaged 잔여물을 줍지 않는다.
 
 자세한 명령은 호출 prompt에 PM이 포함시킬 것이지만, 누락되면 위 원칙이 진실이다.
 

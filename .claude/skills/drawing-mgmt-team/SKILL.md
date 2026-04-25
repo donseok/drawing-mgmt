@@ -82,12 +82,13 @@ API 계약과 디자인 스펙이 확정되면 세 에이전트를 동시 호출
 ### Phase 3 호출 전 PM 체크리스트
 
 1. **main HEAD 기록** — 호출 직전 `git rev-parse main`으로 SHA를 메모. Phase 4에서 worktree base가 이 SHA인지 검증한다.
-2. **각 prompt에 다음 5개 블록을 반드시 포함:**
+2. **각 prompt에 다음 6개 블록을 반드시 포함:**
    1. 기능 카드 요약
    2. **워크트리 동기화 지침** (아래 "Worktree 동기화 가드" 섹션을 그대로 복붙)
-   3. 입력 파일 경로 (`_workspace/api_contract.md`, `_workspace/design_spec_*.md`, `_workspace/viewer_spec.md` 중 해당)
-   4. 작업 범위 (어디까지 만지고 어디는 만지지 마는지)
-   5. **종료 시 commit 의무 + 검증 명령** (아래 "Commit 의무 가드" 섹션을 그대로 복붙)
+   3. **격리 규칙** (아래 "Worktree isolation 가드" 섹션을 그대로 복붙)
+   4. 입력 파일 경로 (`_workspace/api_contract.md`, `_workspace/design_spec_*.md`, `_workspace/viewer_spec.md` 중 해당)
+   5. 작업 범위 (어디까지 만지고 어디는 만지지 마는지)
+   6. **종료 시 commit 의무 + 검증 명령** (아래 "Commit 의무 가드" 섹션을 그대로 복붙)
 
 ### Worktree 동기화 가드 (모든 구현 에이전트 prompt에 복붙)
 
@@ -105,6 +106,19 @@ API 계약과 디자인 스펙이 확정되면 세 에이전트를 동시 호출
 > rebase 충돌이 나면 작업 보류하고 PM에게 보고. 임의 충돌 해결 금지 — main 머지 이력의 의미를 모르면 의도 충돌이 난다.
 >
 > 동기화 후 `git log --oneline main..HEAD`가 비어 있어야 정상(아직 너의 커밋 0개). 비어있지 않으면 이전 세션의 잔여물이니 PM에게 보고.
+
+### Worktree isolation 가드 (모든 구현 에이전트 prompt에 복붙)
+
+> ## ⚠️ 격리 규칙 (절대 위반 금지)
+> 너는 본인의 worktree 디렉토리에서만 작업한다. 다음은 **금지**:
+> - 메인 트리(`/Users/jerry/drawing-mgmt`)로 `cd` 이동
+> - `git checkout main`, `git push`, `git reset main`, `git branch -f main` 등 main 브랜치를 직접 조작하는 모든 명령
+> - main 트리의 파일을 직접 수정 (`/Users/jerry/drawing-mgmt/apps/...` 같은 절대경로 쓰기)
+> - 너의 commit이 main 브랜치에 ff되도록 유도하는 모든 행위
+>
+> 너의 commit은 **반드시 너의 worktree branch**(`worktree-agent-XXX`)의 tip에만 존재해야 한다. PM이 너의 branch를 main에 머지한다 — 너는 절대 main을 만지지 않는다.
+>
+> 종료 후 `git rev-parse HEAD`(너의 worktree에서)와 `git rev-parse worktree-agent-XXX`가 같아야 정상. PM은 통합 시 이 두 값이 같은지 검증한다.
 
 ### Commit 의무 가드 (모든 구현 에이전트 prompt에 복붙)
 
@@ -132,7 +146,8 @@ API 계약과 디자인 스펙이 확정되면 세 에이전트를 동시 호출
 
 1. **base 검증 (가장 먼저)** — `git merge-base main worktree-agent-XXX`가 Phase 3 시작 시 기록한 main SHA와 일치하는지 확인. 더 과거면 에이전트가 동기화 가드를 안 따른 것 → 에이전트 재호출(동기화 명시 후) 또는 PM이 직접 worktree에서 `git rebase main` 후 진행.
 2. **commit 검증** — `git log --oneline main..worktree-agent-XXX`로 에이전트가 commit했는지 확인. 비어있으면 에이전트가 commit 누락 → 부분 재호출. PM이 직접 commit하지 말 것 (의도 추적 어려워짐).
-3. **diff 읽기** — `git diff main..worktree-agent-XXX --stat` 으로 변경 파악. 의도와 무관한 광범위 diff(수십 파일/수천 라인 추가/삭제)면 base 문제이므로 1로 돌아가라.
+3. **isolation 검증 (R3a 후 추가)** — `git rev-parse main`이 Phase 3 시작 시 기록한 SHA와 같은지 확인. 만약 main HEAD가 변했는데 PM이 머지를 안 했으면, 에이전트가 격리를 깨고 main을 직접 ff시킨 것. 의심 후보: agent가 `cd`로 메인 트리에 진입했거나, worktree에서 main에 force-push/manipulation. 결과가 OK하더라도 가드 위반이므로 사용자에게 보고. 향후 격리 가드 강화 검토.
+4. **diff 읽기** — `git diff main..worktree-agent-XXX --stat` 으로 변경 파악. 의도와 무관한 광범위 diff(수십 파일/수천 라인 추가/삭제)면 base 문제이므로 1로 돌아가라.
 4. **머지 순서:** backend → viewer-engineer → frontend (의존 방향대로). 가능하면 `git merge --no-ff worktree-agent-XXX -m "merge ..."`로 머지 커밋 보존.
 5. **충돌 해결:** 같은 파일을 여러 명이 만진 경우 PM이 직접 봉합. 의미 충돌이면 계약 다시 쓰고 부분 재실행. 진단 불가 규모의 충돌이면 abort 후 수동 포팅(`git merge --abort` + 한 파일씩 적용).
 6. **점진 QA** (각 머지 직후 즉시):
