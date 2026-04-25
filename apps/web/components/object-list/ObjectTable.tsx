@@ -25,7 +25,7 @@ import { toast } from 'sonner';
 import { cn } from '@/lib/cn';
 import { StatusBadge } from '@/components/StatusBadge';
 import { ConfirmDialog } from '@/components/ConfirmDialog';
-import { RowMenu } from '@/components/object-list/RowMenu';
+import { RowMenu, type RowMenuMe } from '@/components/object-list/RowMenu';
 import { CONTROL_STATE, type ControlState } from '@/lib/control-state';
 
 export type ObjectState =
@@ -56,6 +56,8 @@ export interface ObjectRow {
   lockedBy?: string | null;
   /** Raw lock owner id — needed by RowMenu to gate self-only actions. */
   lockedById?: string | null;
+  /** Object owner id — needed by RowMenu to gate the admin-only delete rule. */
+  ownerId?: string | null;
   controlState?: ControlState;
   latest?: boolean;
 }
@@ -64,7 +66,14 @@ interface ObjectTableProps {
   data: ObjectRow[];
   selectedId?: string;
   onSelect?: (row: ObjectRow | null) => void;
+  /** Legacy count-only callback (kept for callers not yet upgraded). */
   onSelectedCountChange?: (count: number) => void;
+  /**
+   * Selection callback that surfaces the actual selected ids — needed by
+   * the toolbar bulk actions wired in R3c-3 #5 (delete / download).
+   * Fired alongside `onSelectedCountChange` so old call sites keep working.
+   */
+  onSelectedIdsChange?: (ids: string[]) => void;
   /** highlight matches in name/number; case-insensitive */
   searchTerm?: string;
   /**
@@ -76,8 +85,14 @@ interface ObjectTableProps {
   /**
    * Signed-in user id — forwarded to <RowMenu> so self-only actions
    * (checkin / cancel-checkout) can be gated when the row is checked out.
+   * @deprecated Pass `me` instead so the admin-delete gate (R3c-3 #4) works.
    */
   meId?: string;
+  /**
+   * Signed-in user — forwarded to <RowMenu>. Carries `id` (lock owner check)
+   * and `role` (admin-delete gate, R3c-3 #4).
+   */
+  me?: RowMenuMe;
   // ── Row mutation callbacks (api_contract.md SIDE-C). The table is
   // a pass-through: callers in search/page.tsx wire these to React Query
   // mutations. Each callback fires on the corresponding RowMenu item.
@@ -92,9 +107,11 @@ export function ObjectTable({
   selectedId,
   onSelect,
   onSelectedCountChange,
+  onSelectedIdsChange,
   searchTerm,
   onDeleteRow,
   meId,
+  me,
   onCheckoutRow,
   onCheckinRow,
   onCancelCheckoutRow,
@@ -282,7 +299,9 @@ export function ObjectTable({
               name: row.original.name,
               state: row.original.state,
               lockedById: row.original.lockedById ?? null,
+              ownerId: row.original.ownerId ?? null,
             }}
+            me={me}
             meId={meId}
             onCheckout={onCheckoutRow ? () => onCheckoutRow(row.original) : undefined}
             onCheckin={onCheckinRow ? () => onCheckinRow(row.original) : undefined}
@@ -300,6 +319,7 @@ export function ObjectTable({
     [
       searchTerm,
       onDeleteRow,
+      me,
       meId,
       onCheckoutRow,
       onCheckinRow,
@@ -320,8 +340,21 @@ export function ObjectTable({
   });
 
   React.useEffect(() => {
-    onSelectedCountChange?.(Object.values(rowSelection).filter(Boolean).length);
-  }, [onSelectedCountChange, rowSelection]);
+    // rowSelection is keyed by react-table row.id which (since we don't pass
+    // a custom getRowId) maps to the row's index in `data`. Translate to the
+    // ObjectRow.id ourselves so callers can run mutations off the selection.
+    const selectedIndices = Object.entries(rowSelection)
+      .filter(([, on]) => on)
+      .map(([k]) => Number(k))
+      .filter((n) => Number.isFinite(n));
+    onSelectedCountChange?.(selectedIndices.length);
+    if (onSelectedIdsChange) {
+      const ids = selectedIndices
+        .map((idx) => data[idx]?.id)
+        .filter((id): id is string => typeof id === 'string');
+      onSelectedIdsChange(ids);
+    }
+  }, [onSelectedCountChange, onSelectedIdsChange, rowSelection, data]);
 
   return (
     <div className="min-h-0 overflow-auto">

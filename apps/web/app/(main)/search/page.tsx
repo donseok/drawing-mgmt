@@ -15,6 +15,7 @@ import {
   type FilterFormValue,
 } from '@/components/object-list/ObjectTableToolbar';
 import { ObjectPreviewPanel } from '@/components/object-list/ObjectPreviewPanel';
+import { ConfirmDialog } from '@/components/ConfirmDialog';
 import { useUiStore } from '@/stores/uiStore';
 import { queryKeys } from '@/lib/queries';
 import { api, ApiError } from '@/lib/api-client';
@@ -99,14 +100,18 @@ function adaptObject(o: ServerObjectSummary): ObjectRow {
     transmittedAt,
     lockedBy: o.lockedById ? '체크아웃' : null,
     lockedById: o.lockedById,
+    // Surfaces the BE ownerId so RowMenu's admin-delete gate (R3c-3 #4) can
+    // compare against `me.id`.
+    ownerId: o.ownerId,
     controlState,
     latest: true,
   };
 }
 
-// /api/v1/me payload — only the field we use for lock-ownership checks.
+// /api/v1/me payload — id for lock checks, role for admin-delete gate.
 interface MeResponse {
   id: string;
+  role?: 'SUPER_ADMIN' | 'ADMIN' | 'USER' | 'PARTNER';
 }
 
 // Object mutation actions wired in R3b SIDE-C. Mirrors the per-row
@@ -250,14 +255,23 @@ export default function SearchPage() {
   const [selectedFolder, setSelectedFolder] = React.useState<FolderNode | null>(null);
   const [selectedRow, setSelectedRow] = React.useState<ObjectRow | null>(null);
   const [search, setSearch] = React.useState('');
-  const [selectedCount, setSelectedCount] = React.useState(0);
+  const [selectedIds, setSelectedIds] = React.useState<string[]>([]);
+  const selectedCount = selectedIds.length;
   const [sort, setSort] = React.useState<SortValue>(DEFAULT_SORT);
   const [filters, setFilters] = React.useState<FilterFormValue>({});
+  // R3c-3 #3 — replaces window.confirm. Holds the row pending cancel-checkout.
+  const [cancelTarget, setCancelTarget] = React.useState<ObjectRow | null>(null);
+  // R3c-3 #5 — bulk delete confirm is wired in the toolbar; this state lives
+  // there. Bulk download uses no confirmation (safe action).
   const detailPanelOpen = useUiStore((s) => s.detailPanelOpen);
   const setDetailPanelOpen = useUiStore((s) => s.setDetailPanelOpen);
 
-  const { data } = useQuery({
-    queryKey: queryKeys.objects.list({
+  // listKeyParams is the single source of truth for the active grid query
+  // key. Memoized so the optimistic-update mutations below can capture it
+  // and target the exact cache slot without re-deriving the shape (and
+  // risking drift between the read and the write).
+  const listKeyParams = React.useMemo(
+    () => ({
       folder: selectedFolder?.id,
       q: search,
       sortField: sort.field,
@@ -268,6 +282,21 @@ export default function SearchPage() {
       registeredTo: filters.registeredTo,
       registrant: filters.registrant,
     }),
+    [
+      selectedFolder?.id,
+      search,
+      sort.field,
+      sort.dir,
+      filters.classCode,
+      filters.state,
+      filters.registeredFrom,
+      filters.registeredTo,
+      filters.registrant,
+    ],
+  );
+
+  const { data } = useQuery({
+    queryKey: queryKeys.objects.list(listKeyParams),
     queryFn: () =>
       fetchSearchData({
         folderId: selectedFolder?.id,
@@ -437,6 +466,12 @@ export default function SearchPage() {
   // navigates back). `release` carries a body; the rest are empty POSTs.
   // Delete is a separate mutation because the verb / no-body shape differs
   // and the table guards it behind a ConfirmDialog already.
+  //
+  // R3c-3 #6 — Optimistic updates. onMutate snapshots the current list cache
+  // (keyed by listKeyParams), patches the row's state/lockedById to the next
+  // state derived from the action, and returns the snapshot for rollback.
+  // onError restores it; onSettled invalidates so the BE truth wins on the
+  // next read.
   type RowMutationVars =
     | { action: 'checkout' | 'checkin' | 'cancelCheckout'; objectId: string }
     | {
@@ -445,42 +480,124 @@ export default function SearchPage() {
         body: { title: string; approvers: { userId: string; order: number }[] };
       };
 
-  const rowMutation = useMutation<unknown, ApiError, RowMutationVars>({
+  // Map an action to the (state, lockedById) tuple it produces. Mirrors the
+  // state machine in apps/web/lib/state-machine.ts.
+  const projectRow = React.useCallback(
+    (
+      row: ObjectRow,
+      action: RowMutationVars['action'],
+      meId: string | undefined,
+    ): ObjectRow => {
+      switch (action) {
+        case 'checkout':
+          return {
+            ...row,
+            state: 'CHECKED_OUT',
+            lockedById: meId ?? row.lockedById ?? null,
+            lockedBy: '체크아웃',
+            controlState: deriveControlState('CHECKED_OUT'),
+          };
+        case 'checkin':
+        case 'cancelCheckout':
+          return {
+            ...row,
+            state: 'CHECKED_IN',
+            lockedById: null,
+            lockedBy: null,
+            controlState: deriveControlState('CHECKED_IN'),
+          };
+        case 'release':
+          return {
+            ...row,
+            state: 'IN_APPROVAL',
+            lockedById: null,
+            lockedBy: null,
+            controlState: deriveControlState('IN_APPROVAL'),
+          };
+        default:
+          return row;
+      }
+    },
+    [],
+  );
+
+  const rowMutation = useMutation<
+    unknown,
+    ApiError,
+    RowMutationVars,
+    { prev: SearchData | undefined; key: ReturnType<typeof queryKeys.objects.list> }
+  >({
     mutationFn: (vars) => {
       const path = `/api/v1/objects/${vars.objectId}/${ACTION_PATH[vars.action]}`;
       if (vars.action === 'release') return api.post(path, vars.body);
       return api.post(path);
     },
+    onMutate: async (vars) => {
+      const key = queryKeys.objects.list(listKeyParams);
+      // Stop in-flight refetches that would clobber our optimistic write.
+      await queryClient.cancelQueries({ queryKey: queryKeys.objects.all() });
+      const prev = queryClient.getQueryData<SearchData>(key);
+      if (prev) {
+        const next: SearchData = {
+          ...prev,
+          objects: prev.objects.map((row) =>
+            row.id === vars.objectId ? projectRow(row, vars.action, me?.id) : row,
+          ),
+        };
+        queryClient.setQueryData(key, next);
+      }
+      return { prev, key };
+    },
     onSuccess: (_data, vars) => {
-      void queryClient.invalidateQueries({ queryKey: queryKeys.objects.all() });
-      void queryClient.invalidateQueries({
-        queryKey: queryKeys.objects.detail(vars.objectId),
-      });
       toast.success(`${ACTION_LABEL[vars.action]} 완료`);
     },
-    onError: (err, vars) => {
+    onError: (err, vars, ctx) => {
+      if (ctx?.prev) queryClient.setQueryData(ctx.key, ctx.prev);
       toast.error(`${ACTION_LABEL[vars.action]} 실패`, {
         description: err.message,
       });
     },
-  });
-
-  const deleteMutation = useMutation<unknown, ApiError, { objectId: string; number: string }>({
-    mutationFn: ({ objectId }) => api.delete(`/api/v1/objects/${objectId}`),
-    onSuccess: (_data, vars) => {
+    onSettled: (_data, _err, vars) => {
+      // BE truth wins: refetch the list and the affected detail.
       void queryClient.invalidateQueries({ queryKey: queryKeys.objects.all() });
       void queryClient.invalidateQueries({
         queryKey: queryKeys.objects.detail(vars.objectId),
       });
-      void queryClient.invalidateQueries({ queryKey: queryKeys.folders.tree() });
-      // ObjectTable surfaces its own success toast on confirm-resolve; we
-      // don't double-toast here.
     },
-    onError: (err) => {
+  });
+
+  const deleteMutation = useMutation<
+    unknown,
+    ApiError,
+    { objectId: string; number: string },
+    { prev: SearchData | undefined; key: ReturnType<typeof queryKeys.objects.list> }
+  >({
+    mutationFn: ({ objectId }) => api.delete(`/api/v1/objects/${objectId}`),
+    onMutate: async (vars) => {
+      const key = queryKeys.objects.list(listKeyParams);
+      await queryClient.cancelQueries({ queryKey: queryKeys.objects.all() });
+      const prev = queryClient.getQueryData<SearchData>(key);
+      if (prev) {
+        // Drop the row from the visible list; the next refetch reconciles
+        // (e.g. if the BE soft-deletes and we still want to show it in trash).
+        const next: SearchData = {
+          ...prev,
+          objects: prev.objects.filter((row) => row.id !== vars.objectId),
+        };
+        queryClient.setQueryData(key, next);
+      }
+      return { prev, key };
+    },
+    onError: (err, _vars, ctx) => {
+      if (ctx?.prev) queryClient.setQueryData(ctx.key, ctx.prev);
       // Error toast is handled by ObjectTable.handleConfirmDelete via the
       // throw below — keep this as the last-resort surface so it's never
       // swallowed silently.
       toast.error('삭제 실패', { description: err.message });
+    },
+    onSettled: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.objects.all() });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.folders.tree() });
     },
   });
 
@@ -496,19 +613,22 @@ export default function SearchPage() {
     },
     [rowMutation],
   );
-  const handleCancelCheckoutRow = React.useCallback(
-    (row: ObjectRow) => {
-      // The detail page guards cancel-checkout with a ConfirmDialog; the
-      // grid row currently relies on the dropdown's destructive-style
-      // entry — we still confirm via window.confirm to avoid a silent
-      // loss of work on misclick. Replacing this with a proper dialog is
-      // tracked for R3c.
-      const ok = window.confirm(`${row.number} — 개정을 취소하시겠습니까?`);
-      if (!ok) return;
-      rowMutation.mutate({ action: 'cancelCheckout', objectId: row.id });
-    },
-    [rowMutation],
-  );
+  const handleCancelCheckoutRow = React.useCallback((row: ObjectRow) => {
+    // R3c-3 #3 — promote the previous window.confirm to a proper
+    // ConfirmDialog (DESIGN §9.3) so the grid row matches the detail page
+    // (apps/web/app/(main)/objects/[id]/page.tsx). Same copy + destructive
+    // variant; the actual mutate call fires from the dialog's onConfirm
+    // below.
+    setCancelTarget(row);
+  }, []);
+  const handleConfirmCancelCheckout = React.useCallback(async () => {
+    if (!cancelTarget) return;
+    await rowMutation.mutateAsync({
+      action: 'cancelCheckout',
+      objectId: cancelTarget.id,
+    });
+    setCancelTarget(null);
+  }, [cancelTarget, rowMutation]);
 
   // 결재 상신 — opens NewApprovalDialog. The dialog collects the title and
   // approver line, then resolves into the rowMutation `release` call.
@@ -540,6 +660,87 @@ export default function SearchPage() {
     },
     [deleteMutation],
   );
+
+  // ── Bulk actions (R3c-3 #5) ────────────────────────────────────────────
+  // Toolbar-level operations that fan-out the per-row mutation across the
+  // current selection. The toolbar handles its own ConfirmDialog for delete
+  // (DESIGN §9.3) — we just provide the side-effect.
+  const allObjectsRef = React.useRef(allObjects);
+  allObjectsRef.current = allObjects;
+  const findRow = React.useCallback(
+    (id: string) => allObjectsRef.current.find((r) => r.id === id),
+    [],
+  );
+
+  const handleBulkDelete = React.useCallback(async () => {
+    if (selectedIds.length === 0) return;
+    const targets = selectedIds
+      .map(findRow)
+      .filter((r): r is ObjectRow => r !== undefined);
+    // Promise.all so the optimistic onMutate runs across the whole selection
+    // first; one failure won't roll back the others (each mutation owns its
+    // own snapshot, by design — partial failure is the realistic outcome).
+    const results = await Promise.allSettled(
+      targets.map((row) =>
+        deleteMutation.mutateAsync({ objectId: row.id, number: row.number }),
+      ),
+    );
+    const failed = results.filter((r) => r.status === 'rejected').length;
+    if (failed > 0) {
+      // Re-throw so the toolbar's ConfirmDialog surfaces the error toast
+      // (it expects either resolve = success or throw = fail).
+      throw new Error(`${failed}건 삭제에 실패했습니다.`);
+    }
+    setSelectedIds([]);
+  }, [selectedIds, findRow, deleteMutation]);
+
+  const handleBulkDownload = React.useCallback(() => {
+    if (selectedIds.length === 0) return;
+    const targets = selectedIds
+      .map(findRow)
+      .filter((r): r is ObjectRow => r !== undefined)
+      .filter((r) => !!r.masterAttachmentId);
+    if (targets.length === 0) {
+      toast.warning('다운로드할 첨부가 없습니다.', {
+        description: '선택한 자료에 마스터 파일이 등록되어 있지 않습니다.',
+      });
+      return;
+    }
+    // Browsers throttle simultaneous downloads — stagger per attachment so
+    // each <a download> click is processed individually. 80ms is a touch
+    // more than the 50ms baseline to give Chrome's download dialog headroom.
+    targets.forEach((row, idx) => {
+      const url = `/api/v1/attachments/${row.masterAttachmentId}/file?download=1`;
+      window.setTimeout(() => {
+        const a = document.createElement('a');
+        a.href = url;
+        a.rel = 'noopener';
+        // Hint a filename — server-side Content-Disposition still wins.
+        a.download = row.number;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+      }, idx * 80);
+    });
+    toast.success(`${targets.length}건 다운로드를 시작했습니다.`);
+  }, [selectedIds, findRow]);
+
+  const handleBulkPlaceholder = React.useCallback(
+    (label: string) => () => {
+      // 이동/복사: 폴더 picker 미구현이라 placeholder. 결재상신은 의미가 약해
+      // (선택 N건이 동일 결재선이 될 가능성이 낮음) 별도 안내.
+      toast(`${label} 준비 중`, {
+        description: '다음 라운드에서 제공될 예정입니다.',
+      });
+    },
+    [],
+  );
+
+  const handleBulkSubmitApproval = React.useCallback(() => {
+    toast.warning('결재 상신은 단건 모드에서만 사용해주세요.', {
+      description: '여러 자료를 동일 결재선으로 묶어 상신하는 흐름은 별도 카드로 다룹니다.',
+    });
+  }, []);
 
   return (
     <div className="flex h-full min-h-0 min-w-0 flex-1 overflow-hidden">
@@ -608,6 +809,12 @@ export default function SearchPage() {
           onSortChange={setSort}
           filterValue={filters}
           onFilterChange={setFilters}
+          // R3c-3 #5 — bulk actions wired to the selection.
+          onDelete={handleBulkDelete}
+          onDownload={handleBulkDownload}
+          onMove={handleBulkPlaceholder('이동')}
+          onCopy={handleBulkPlaceholder('복사')}
+          onSubmitApproval={handleBulkSubmitApproval}
         />
 
         {/* min-w-0 lets the section flex shrink so the preview keeps its
@@ -618,9 +825,9 @@ export default function SearchPage() {
               data={filtered}
               selectedId={selectedRow?.id}
               onSelect={handleSelectRow}
-              onSelectedCountChange={setSelectedCount}
+              onSelectedIdsChange={setSelectedIds}
               searchTerm={search}
-              meId={me?.id}
+              me={me}
               onCheckoutRow={handleCheckoutRow}
               onCheckinRow={handleCheckinRow}
               onCancelCheckoutRow={handleCancelCheckoutRow}
@@ -663,6 +870,21 @@ export default function SearchPage() {
         objectNumber={releaseTarget?.number}
         objectName={releaseTarget?.name}
         onSubmit={handleReleaseSubmit}
+      />
+
+      {/* R3c-3 #3 — Grid cancel-checkout confirm. Copy is intentionally
+          identical to the detail page (objects/[id]/page.tsx ConfirmDialog)
+          so the user gets a consistent prompt regardless of entry point. */}
+      <ConfirmDialog
+        open={cancelTarget !== null}
+        onOpenChange={(open) => {
+          if (!open) setCancelTarget(null);
+        }}
+        title="개정을 취소하시겠습니까?"
+        description="체크아웃이 해제되고 작업 중인 변경 내용이 사라질 수 있습니다."
+        confirmText="개정 취소"
+        variant="destructive"
+        onConfirm={handleConfirmCancelCheckout}
       />
     </div>
   );
