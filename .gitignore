@@ -29,5 +29,18 @@ prisma/migrations/dev.db*
 
 # Runtime data (local dev)
 /data/
+.data/
 *.sqlite
 *.sqlite-journal
+
+# pnpm
+.pnpm-store/
+
+# Turbo / build artifacts
+.turbo/
+
+# Sample fixtures (large)
+fixtures/dwg/*.dwg
+fixtures/pdf/*.pdf
+fixtures/dxf/*.dxf
+!fixtures/.gitkeep

@@ -1,0 +1,32 @@
+{
+  "name": "drawing-mgmt",
+  "version": "0.1.0",
+  "private": true,
+  "packageManager": "pnpm@9.12.0",
+  "scripts": {
+    "dev": "pnpm --filter @drawing-mgmt/web dev",
+    "build": "pnpm -r build",
+    "lint": "pnpm -r lint",
+    "typecheck": "pnpm -r typecheck",
+    "db:generate": "pnpm --filter @drawing-mgmt/web db:generate",
+    "db:migrate": "pnpm --filter @drawing-mgmt/web db:migrate",
+    "db:push": "pnpm --filter @drawing-mgmt/web db:push",
+    "db:seed": "pnpm --filter @drawing-mgmt/web db:seed",
+    "db:studio": "pnpm --filter @drawing-mgmt/web db:studio",
+    "worker:dev": "pnpm --filter @drawing-mgmt/worker dev",
+    "docker:up": "docker compose up -d",
+    "docker:down": "docker compose down"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.0"
+  },
+  "pnpm": {
+    "overrides": {
+      "@auth/core": "0.37.2"
+    }
+  },
+  "engines": {
+    "node": ">=20.0.0",
+    "pnpm": ">=9.0.0"
+  }
+}

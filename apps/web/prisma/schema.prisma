@@ -1,0 +1,581 @@
+// Drawing Management System — Prisma schema
+// 기반: docs/TRD.md §3
+// pgvector는 raw SQL로 별도 활성화 (prisma/migrations/manual/pgvector.sql)
+
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["postgresqlExtensions"]
+}
+
+datasource db {
+  provider   = "postgresql"
+  url        = env("DATABASE_URL")
+  extensions = [pgcrypto, vector]
+}
+
+// ─────────────────────────────────────────────────────────────
+// USER · ORG · GROUP
+// ─────────────────────────────────────────────────────────────
+model User {
+  id               String         @id @default(cuid())
+  username         String         @unique
+  passwordHash     String
+  email            String?
+  fullName         String
+  organizationId   String?
+  employmentType   EmploymentType @default(ACTIVE)
+  role             Role           @default(USER)
+  securityLevel    Int            @default(5) // 1(highest) ~ 5(lowest)
+  signatureFile    String?
+  failedLoginCount Int            @default(0)
+  lockedUntil      DateTime?
+  lastLoginAt      DateTime?
+  createdAt        DateTime       @default(now())
+  updatedAt        DateTime       @updatedAt
+
+  organization Organization?  @relation(fields: [organizationId], references: [id])
+  groups       UserGroup[]
+  ownedObjects ObjectEntity[] @relation("ObjectOwner")
+  lockedObjects ObjectEntity[] @relation("ObjectLocker")
+  approvalsRequested Approval[]    @relation("ApprovalRequester")
+  approvalSteps      ApprovalStep[]
+  activityLogs       ActivityLog[]
+  chatSessions       ChatSession[]
+
+  @@index([organizationId])
+  @@index([role])
+}
+
+model Organization {
+  id        String  @id @default(cuid())
+  name      String
+  parentId  String?
+  sortOrder Int     @default(0)
+  createdAt DateTime @default(now())
+
+  parent   Organization?  @relation("OrgTree", fields: [parentId], references: [id])
+  children Organization[] @relation("OrgTree")
+  users    User[]
+
+  @@index([parentId])
+}
+
+model Group {
+  id        String      @id @default(cuid())
+  name      String      @unique
+  description String?
+  createdAt DateTime    @default(now())
+  users     UserGroup[]
+}
+
+model UserGroup {
+  userId  String
+  groupId String
+
+  user  User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  group Group @relation(fields: [groupId], references: [id], onDelete: Cascade)
+
+  @@id([userId, groupId])
+  @@index([groupId])
+}
+
+// ─────────────────────────────────────────────────────────────
+// FOLDER · PERMISSION
+// ─────────────────────────────────────────────────────────────
+model Folder {
+  id             String   @id @default(cuid())
+  parentId       String?
+  name           String
+  folderCode     String   @unique
+  defaultClassId String?
+  sortOrder      Int      @default(0)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  parent      Folder?            @relation("FolderTree", fields: [parentId], references: [id])
+  children    Folder[]           @relation("FolderTree")
+  defaultClass ObjectClass?      @relation(fields: [defaultClassId], references: [id])
+  permissions FolderPermission[]
+  objects     ObjectEntity[]
+
+  @@index([parentId])
+  @@index([folderCode])
+}
+
+model FolderPermission {
+  id            String        @id @default(cuid())
+  folderId      String
+  principalType PrincipalType
+  principalId   String
+  // 권한 비트
+  viewFolder    Boolean       @default(false)
+  editFolder    Boolean       @default(false)
+  viewObject    Boolean       @default(false)
+  editObject    Boolean       @default(false)
+  deleteObject  Boolean       @default(false)
+  approveObject Boolean       @default(false)
+  download      Boolean       @default(false)
+  print         Boolean       @default(false)
+
+  folder Folder @relation(fields: [folderId], references: [id], onDelete: Cascade)
+
+  @@unique([folderId, principalType, principalId])
+  @@index([principalType, principalId])
+}
+
+// ─────────────────────────────────────────────────────────────
+// OBJECT (자료) · CLASS · ATTRIBUTE
+// ─────────────────────────────────────────────────────────────
+model ObjectEntity {
+  id              String      @id @default(cuid())
+  number          String      @unique // 도면번호
+  name            String
+  description     String?
+  folderId        String
+  classId         String
+  securityLevel   Int         @default(5)
+  state           ObjectState @default(NEW)
+  ownerId         String
+  currentRevision Int         @default(0)
+  currentVersion  Decimal     @default(0.0) @db.Decimal(5, 1)
+  lockedById      String?
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
+  deletedAt       DateTime?
+
+  folder     Folder                  @relation(fields: [folderId], references: [id])
+  class      ObjectClass             @relation(fields: [classId], references: [id])
+  owner      User                    @relation("ObjectOwner", fields: [ownerId], references: [id])
+  lockedBy   User?                   @relation("ObjectLocker", fields: [lockedById], references: [id])
+  revisions  Revision[]
+  attributes ObjectAttributeValue[]
+  links      LinkedObject[]          @relation("LinkSource")
+  linkedFrom LinkedObject[]          @relation("LinkTarget")
+  activities ActivityLog[]
+
+  @@index([folderId, state])
+  @@index([number])
+  @@index([ownerId])
+  @@index([classId])
+  @@index([state, deletedAt])
+}
+
+model ObjectClass {
+  id          String            @id @default(cuid())
+  code        String            @unique
+  name        String
+  description String?
+  attributes  ObjectAttribute[]
+  folders     Folder[]
+  objects     ObjectEntity[]
+}
+
+model ObjectAttribute {
+  id           String   @id @default(cuid())
+  classId      String
+  code         String
+  label        String
+  dataType     AttrType
+  required     Boolean  @default(false)
+  defaultValue String?
+  comboItems   Json?
+  sortOrder    Int      @default(0)
+
+  class  ObjectClass            @relation(fields: [classId], references: [id], onDelete: Cascade)
+  values ObjectAttributeValue[]
+
+  @@unique([classId, code])
+  @@index([classId])
+}
+
+model ObjectAttributeValue {
+  id          String @id @default(cuid())
+  objectId    String
+  attributeId String
+  value       String
+
+  object    ObjectEntity    @relation(fields: [objectId], references: [id], onDelete: Cascade)
+  attribute ObjectAttribute @relation(fields: [attributeId], references: [id], onDelete: Cascade)
+
+  @@unique([objectId, attributeId])
+  @@index([attributeId, value])
+}
+
+model LinkedObject {
+  id           String   @id @default(cuid())
+  sourceId     String
+  targetId     String
+  relationType String?
+  createdAt    DateTime @default(now())
+
+  source ObjectEntity @relation("LinkSource", fields: [sourceId], references: [id], onDelete: Cascade)
+  target ObjectEntity @relation("LinkTarget", fields: [targetId], references: [id], onDelete: Cascade)
+
+  @@unique([sourceId, targetId])
+}
+
+// ─────────────────────────────────────────────────────────────
+// REVISION · VERSION · ATTACHMENT
+// ─────────────────────────────────────────────────────────────
+model Revision {
+  id        String   @id @default(cuid())
+  objectId  String
+  rev       Int
+  createdAt DateTime @default(now())
+
+  object   ObjectEntity @relation(fields: [objectId], references: [id], onDelete: Cascade)
+  versions Version[]
+  approval Approval?
+
+  @@unique([objectId, rev])
+}
+
+model Version {
+  id         String   @id @default(cuid())
+  revisionId String
+  ver        Decimal  @db.Decimal(5, 1)
+  createdAt  DateTime @default(now())
+  createdBy  String
+  comment    String?
+
+  revision    Revision     @relation(fields: [revisionId], references: [id], onDelete: Cascade)
+  attachments Attachment[]
+
+  @@unique([revisionId, ver])
+}
+
+model Attachment {
+  id               String           @id @default(cuid())
+  versionId        String
+  filename         String
+  storagePath      String           @unique
+  mimeType         String
+  size             BigInt
+  isMaster         Boolean          @default(false)
+  checksumSha256   String
+  pdfPath          String?
+  dxfPath          String?
+  svgPath          String?
+  thumbnailPath    String?
+  conversionStatus ConversionStatus @default(PENDING)
+  createdAt        DateTime         @default(now())
+
+  version        Version         @relation(fields: [versionId], references: [id], onDelete: Cascade)
+  conversionJobs ConversionJob[]
+
+  @@index([versionId])
+  @@index([conversionStatus])
+}
+
+// ─────────────────────────────────────────────────────────────
+// NUMBER RULE
+// ─────────────────────────────────────────────────────────────
+model NumberRule {
+  id        String           @id @default(cuid())
+  name      String
+  classId   String?
+  isDefault Boolean          @default(false)
+  parts     NumberRulePart[]
+}
+
+model NumberRulePart {
+  id      String   @id @default(cuid())
+  ruleId  String
+  type    PartType
+  value   String?
+  digits  Int?
+  initial Int?
+  order   Int
+
+  rule NumberRule @relation(fields: [ruleId], references: [id], onDelete: Cascade)
+
+  @@index([ruleId])
+}
+
+// ─────────────────────────────────────────────────────────────
+// APPROVAL
+// ─────────────────────────────────────────────────────────────
+model Approval {
+  id          String         @id @default(cuid())
+  revisionId  String         @unique
+  title       String
+  status      ApprovalStatus @default(PENDING)
+  requesterId String
+  createdAt   DateTime       @default(now())
+  completedAt DateTime?
+
+  revision  Revision       @relation(fields: [revisionId], references: [id], onDelete: Cascade)
+  requester User           @relation("ApprovalRequester", fields: [requesterId], references: [id])
+  steps     ApprovalStep[]
+
+  @@index([status, createdAt])
+  @@index([requesterId])
+}
+
+model ApprovalStep {
+  id            String     @id @default(cuid())
+  approvalId    String
+  approverId    String
+  order         Int
+  status        StepStatus @default(WAITING)
+  comment       String?
+  signatureFile String?
+  actedAt       DateTime?
+
+  approval Approval @relation(fields: [approvalId], references: [id], onDelete: Cascade)
+  approver User     @relation(fields: [approverId], references: [id])
+
+  @@unique([approvalId, order])
+  @@index([approverId, status])
+}
+
+// ─────────────────────────────────────────────────────────────
+// LOBBY
+// ─────────────────────────────────────────────────────────────
+model Lobby {
+  id          String      @id @default(cuid())
+  folderId    String
+  title       String
+  description String?
+  expiresAt   DateTime?
+  status      LobbyStatus @default(NEW)
+  createdBy   String
+  createdAt   DateTime    @default(now())
+
+  attachments LobbyAttachment[]
+  targets     LobbyTargetCompany[]
+}
+
+model LobbyAttachment {
+  id          String   @id @default(cuid())
+  lobbyId     String
+  filename    String
+  storagePath String
+  mimeType    String
+  size        BigInt
+  createdAt   DateTime @default(now())
+
+  lobby Lobby @relation(fields: [lobbyId], references: [id], onDelete: Cascade)
+}
+
+model LobbyTargetCompany {
+  id        String @id @default(cuid())
+  lobbyId   String
+  companyId String
+
+  lobby Lobby @relation(fields: [lobbyId], references: [id], onDelete: Cascade)
+
+  @@unique([lobbyId, companyId])
+}
+
+// ─────────────────────────────────────────────────────────────
+// CONVERSION JOB
+// ─────────────────────────────────────────────────────────────
+model ConversionJob {
+  id           String           @id @default(cuid())
+  attachmentId String
+  status       ConversionStatus @default(PENDING)
+  attempt      Int              @default(0)
+  errorMessage String?
+  startedAt    DateTime?
+  finishedAt   DateTime?
+  createdAt    DateTime         @default(now())
+
+  attachment Attachment @relation(fields: [attachmentId], references: [id], onDelete: Cascade)
+
+  @@index([status, createdAt])
+  @@index([attachmentId])
+}
+
+// ─────────────────────────────────────────────────────────────
+// ACTIVITY · SYSTEM LOG · NOTICE
+// ─────────────────────────────────────────────────────────────
+model ActivityLog {
+  id        String   @id @default(cuid())
+  objectId  String?
+  action    String
+  userId    String
+  ipAddress String?
+  userAgent String?
+  metadata  Json?
+  createdAt DateTime @default(now())
+
+  user   User          @relation(fields: [userId], references: [id])
+  object ObjectEntity? @relation(fields: [objectId], references: [id], onDelete: SetNull)
+
+  @@index([userId, createdAt])
+  @@index([objectId, createdAt])
+  @@index([action, createdAt])
+}
+
+model SystemLog {
+  id        String   @id @default(cuid())
+  level     String
+  category  String
+  message   String
+  metadata  Json?
+  createdAt DateTime @default(now())
+
+  @@index([level, createdAt])
+  @@index([category, createdAt])
+}
+
+model Notice {
+  id          String    @id @default(cuid())
+  title       String
+  body        String
+  isPopup     Boolean   @default(false)
+  isActive    Boolean   @default(true)
+  publishFrom DateTime
+  publishTo   DateTime?
+  createdAt   DateTime  @default(now())
+}
+
+// ─────────────────────────────────────────────────────────────
+// CHAT (AI 챗봇)
+// ─────────────────────────────────────────────────────────────
+model ChatSession {
+  id        String   @id @default(cuid())
+  userId    String
+  title     String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user     User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  messages ChatMessage[]
+
+  @@index([userId, updatedAt])
+}
+
+model ChatMessage {
+  id          String   @id @default(cuid())
+  sessionId   String
+  role        ChatRole
+  content     String
+  toolCalls   Json?
+  toolResults Json?
+  tokensIn    Int?
+  tokensOut   Int?
+  model       String?
+  mode        ChatMode
+  createdAt   DateTime @default(now())
+
+  session ChatSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId, createdAt])
+}
+
+// 매뉴얼 RAG 청크 (pgvector). vector 컬럼은 raw SQL로 alter (prisma 미지원).
+model ManualChunk {
+  id        String   @id @default(cuid())
+  source    String
+  title     String
+  content   String
+  // embedding vector(1536) — raw SQL 마이그레이션로 alter
+  updatedAt DateTime @updatedAt
+
+  @@index([source])
+}
+
+// ─────────────────────────────────────────────────────────────
+// API KEY (외부 연계)
+// ─────────────────────────────────────────────────────────────
+model ApiKey {
+  id          String    @id @default(cuid())
+  name        String
+  keyHash     String    @unique
+  prefix      String    @unique
+  scopes      String[]  // ["integration:read"]
+  isActive    Boolean   @default(true)
+  lastUsedAt  DateTime?
+  expiresAt   DateTime?
+  createdAt   DateTime  @default(now())
+  createdBy   String
+}
+
+// ─────────────────────────────────────────────────────────────
+// ENUMS
+// ─────────────────────────────────────────────────────────────
+enum Role {
+  SUPER_ADMIN
+  ADMIN
+  USER
+  PARTNER
+}
+
+enum EmploymentType {
+  ACTIVE
+  RETIRED
+  PARTNER
+}
+
+enum ObjectState {
+  NEW
+  CHECKED_OUT
+  CHECKED_IN
+  IN_APPROVAL
+  APPROVED
+  DELETED
+}
+
+enum ApprovalStatus {
+  PENDING
+  IN_PROGRESS
+  APPROVED
+  REJECTED
+  CANCELLED
+}
+
+enum StepStatus {
+  WAITING
+  APPROVED
+  REJECTED
+}
+
+enum AttrType {
+  TEXT
+  NUMBER
+  BOOLEAN
+  DATE
+  COMBO
+}
+
+enum PartType {
+  FOLDER_CODE
+  LITERAL
+  SEQUENCE
+  YEAR
+}
+
+enum PrincipalType {
+  USER
+  ORG
+  GROUP
+}
+
+enum LobbyStatus {
+  NEW
+  IN_REVIEW
+  IN_APPROVAL
+  COMPLETED
+  EXPIRED
+}
+
+enum ConversionStatus {
+  PENDING
+  PROCESSING
+  DONE
+  FAILED
+}
+
+enum ChatRole {
+  SYSTEM
+  USER
+  ASSISTANT
+  TOOL
+}
+
+enum ChatMode {
+  RAG
+  RULE
+}

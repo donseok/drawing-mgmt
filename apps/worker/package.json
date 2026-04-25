@@ -1,0 +1,28 @@
+{
+  "name": "@drawing-mgmt/worker",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "start": "node dist/index.js",
+    "build": "tsc",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@drawing-mgmt/shared": "workspace:*",
+    "@prisma/client": "^5.22.0",
+    "bullmq": "^5.21.0",
+    "execa": "^9.5.1",
+    "ioredis": "^5.4.1",
+    "pino": "^9.5.0",
+    "pino-pretty": "^11.3.0",
+    "sharp": "^0.33.5",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/node": "^22.7.5",
+    "tsx": "^4.19.1",
+    "typescript": "^5.5.0"
+  }
+}

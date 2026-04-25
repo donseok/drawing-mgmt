@@ -1,0 +1,318 @@
+/* ─────────────────────────────────────────────────────────────────
+ * Drawing Management — globals.css
+ * DESIGN.md §2 (Design System), §2.5 (CSS Variables)
+ * Loaded fonts:
+ *   - Pretendard Variable (Korean + Latin)  — DESIGN §2.2
+ *   - JetBrains Mono     (drawing numbers, codes, hashes) — DESIGN §2.2
+ * ───────────────────────────────────────────────────────────────── */
+@import url("https://cdn.jsdelivr.net/gh/orioncactus/pretendard/dist/web/variable/pretendardvariable.css");
+@import url("https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&display=swap");
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ─────────────────────────────────────────────────────────────────
+ * Design Tokens (HSL — keep names compatible with shadcn/ui)
+ * Light mode default, .dark override
+ * ───────────────────────────────────────────────────────────────── */
+@layer base {
+  :root {
+    /* Surface / Foreground */
+    --bg: 0 0% 100%;
+    --bg-subtle: 240 5% 98%;
+    --bg-muted: 240 5% 96%;
+    --fg: 240 10% 4%;
+    --fg-muted: 240 4% 46%;
+    --fg-subtle: 240 4% 65%;
+
+    /* Border / Ring */
+    --border: 240 6% 90%;
+    --border-strong: 240 5% 84%;
+    --input: 240 6% 90%;
+    --ring: 221 83% 53%;
+
+    /* Brand */
+    --brand: 221 83% 53%;
+    --brand-foreground: 0 0% 100%;
+
+    /* shadcn-compatible semantic surfaces */
+    --background: 0 0% 100%;
+    --foreground: 240 10% 4%;
+
+    --card: 0 0% 100%;
+    --card-foreground: 240 10% 4%;
+
+    --popover: 0 0% 100%;
+    --popover-foreground: 240 10% 4%;
+
+    --primary: 221 83% 53%;
+    --primary-foreground: 0 0% 100%;
+
+    --secondary: 240 5% 96%;
+    --secondary-foreground: 240 10% 4%;
+
+    --muted: 240 5% 96%;
+    --muted-foreground: 240 4% 46%;
+
+    --accent: 240 5% 96%;
+    --accent-foreground: 240 10% 4%;
+
+    --destructive: 347 77% 50%;
+    --destructive-foreground: 0 0% 100%;
+
+    /* Status colors (DESIGN §2.1 — color preserved across modes,
+       lightness shifts in dark mode for contrast) */
+    --status-new: 215 14% 47%;
+    --status-checked-out: 38 92% 50%;
+    --status-checked-in: 199 89% 48%;
+    --status-in-approval: 258 90% 66%;
+    --status-approved: 160 84% 39%;
+    --status-rejected: 347 77% 50%;
+    --status-deleted: 25 5% 45%;
+
+    /* Semantic colors */
+    --success: 160 84% 39%;
+    --warning: 38 92% 50%;
+    --danger: 347 77% 50%;
+    --info: 199 89% 48%;
+
+    /* Radius (DESIGN §2.3) */
+    --radius: 0.375rem; /* 6px */
+  }
+
+  .dark {
+    /* Surface / Foreground */
+    --bg: 240 10% 4%;
+    --bg-subtle: 240 6% 10%;
+    --bg-muted: 240 5% 15%;
+    --fg: 0 0% 98%;
+    --fg-muted: 240 5% 65%;
+    --fg-subtle: 240 4% 55%;
+
+    /* Border / Ring */
+    --border: 240 4% 16%;
+    --border-strong: 240 4% 22%;
+    --input: 240 4% 16%;
+    --ring: 217 91% 60%;
+
+    /* Brand */
+    --brand: 217 91% 60%;
+    --brand-foreground: 0 0% 100%;
+
+    /* shadcn-compatible */
+    --background: 240 10% 4%;
+    --foreground: 0 0% 98%;
+
+    --card: 240 6% 10%;
+    --card-foreground: 0 0% 98%;
+
+    --popover: 240 6% 10%;
+    --popover-foreground: 0 0% 98%;
+
+    --primary: 217 91% 60%;
+    --primary-foreground: 0 0% 100%;
+
+    --secondary: 240 5% 15%;
+    --secondary-foreground: 0 0% 98%;
+
+    --muted: 240 5% 15%;
+    --muted-foreground: 240 5% 65%;
+
+    --accent: 240 5% 15%;
+    --accent-foreground: 0 0% 98%;
+
+    --destructive: 347 77% 60%;
+    --destructive-foreground: 0 0% 100%;
+
+    /* Status — same hue, lighter for dark surfaces */
+    --status-new: 215 14% 60%;
+    --status-checked-out: 38 92% 60%;
+    --status-checked-in: 199 89% 60%;
+    --status-in-approval: 258 90% 72%;
+    --status-approved: 160 70% 50%;
+    --status-rejected: 347 77% 60%;
+    --status-deleted: 25 5% 55%;
+  }
+}
+
+/* ─────────────────────────────────────────────────────────────────
+ * Base resets
+ * ───────────────────────────────────────────────────────────────── */
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  html {
+    -webkit-text-size-adjust: 100%;
+    text-rendering: optimizeLegibility;
+  }
+
+  body {
+    background-color: hsl(var(--bg));
+    color: hsl(var(--fg));
+    font-family:
+      "Pretendard Variable",
+      Pretendard,
+      -apple-system,
+      BlinkMacSystemFont,
+      "Apple SD Gothic Neo",
+      "Malgun Gothic",
+      system-ui,
+      sans-serif;
+    font-feature-settings: "ss01", "ss02";
+    font-synthesis-weight: none;
+    text-rendering: optimizeLegibility;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  /* Code / mono — DESIGN §2.2 */
+  code,
+  kbd,
+  samp,
+  pre {
+    font-family:
+      "JetBrains Mono",
+      "D2Coding",
+      ui-monospace,
+      SFMono-Regular,
+      Menlo,
+      Consolas,
+      monospace;
+  }
+
+  /* Focus visible — DESIGN §11 (a11y) */
+  :focus-visible {
+    outline: 2px solid hsl(var(--ring));
+    outline-offset: 2px;
+    border-radius: 2px;
+  }
+
+  /* Selection */
+  ::selection {
+    background-color: hsl(var(--brand) / 0.25);
+    color: hsl(var(--fg));
+  }
+
+  /* Scrollbar — engineering tone, dense */
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background-color: hsl(var(--border-strong));
+    border-radius: 6px;
+    border: 2px solid transparent;
+    background-clip: padding-box;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background-color: hsl(var(--fg-subtle));
+    border: 2px solid transparent;
+    background-clip: padding-box;
+  }
+
+  /* Reduced motion — DESIGN §13 */
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0ms !important;
+      scroll-behavior: auto !important;
+    }
+  }
+}
+
+/* ─────────────────────────────────────────────────────────────────
+ * Utility classes
+ * ───────────────────────────────────────────────────────────────── */
+@layer utilities {
+  /* Tabular numerals — drawing numbers, version, dates */
+  .font-mono-num {
+    font-family:
+      "JetBrains Mono",
+      "D2Coding",
+      ui-monospace,
+      SFMono-Regular,
+      Menlo,
+      Consolas,
+      monospace;
+    font-variant-numeric: tabular-nums;
+    font-feature-settings: "tnum";
+  }
+
+  .tabular-nums {
+    font-variant-numeric: tabular-nums;
+    font-feature-settings: "tnum";
+  }
+
+  /* Keyboard shortcut chip — used by <Kbd> component */
+  .kbd {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 1.25rem;
+    height: 1.25rem;
+    padding: 0 0.375rem;
+    font-family:
+      "JetBrains Mono",
+      "D2Coding",
+      ui-monospace,
+      SFMono-Regular,
+      Menlo,
+      Consolas,
+      monospace;
+    font-size: 11px;
+    font-weight: 500;
+    line-height: 1;
+    color: hsl(var(--fg-muted));
+    background-color: hsl(var(--bg-subtle));
+    border: 1px solid hsl(var(--border));
+    border-bottom-width: 2px;
+    border-radius: 4px;
+    box-shadow: 0 1px 0 hsl(var(--border));
+    user-select: none;
+    white-space: nowrap;
+  }
+
+  /* No-scrollbar (used in tab strips, chip rows) */
+  .no-scrollbar::-webkit-scrollbar {
+    display: none;
+  }
+  .no-scrollbar {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+
+  /* Status dot ─ status color helper consumed by StatusBadge */
+  .status-dot-new        { background-color: hsl(var(--status-new)); }
+  .status-dot-checked-out { background-color: hsl(var(--status-checked-out)); }
+  .status-dot-checked-in  { background-color: hsl(var(--status-checked-in)); }
+  .status-dot-in-approval { background-color: hsl(var(--status-in-approval)); }
+  .status-dot-approved    { background-color: hsl(var(--status-approved)); }
+  .status-dot-rejected    { background-color: hsl(var(--status-rejected)); }
+  .status-dot-deleted     { background-color: hsl(var(--status-deleted)); }
+
+  /* Status surface tint (for table row left border, chips) */
+  .status-tint-new        { background-color: hsl(var(--status-new) / 0.12); color: hsl(var(--status-new)); }
+  .status-tint-checked-out { background-color: hsl(var(--status-checked-out) / 0.14); color: hsl(var(--status-checked-out)); }
+  .status-tint-checked-in  { background-color: hsl(var(--status-checked-in) / 0.14); color: hsl(var(--status-checked-in)); }
+  .status-tint-in-approval { background-color: hsl(var(--status-in-approval) / 0.14); color: hsl(var(--status-in-approval)); }
+  .status-tint-approved    { background-color: hsl(var(--status-approved) / 0.14); color: hsl(var(--status-approved)); }
+  .status-tint-rejected    { background-color: hsl(var(--status-rejected) / 0.14); color: hsl(var(--status-rejected)); }
+  .status-tint-deleted     { background-color: hsl(var(--status-deleted) / 0.14); color: hsl(var(--status-deleted)); }
+
+  /* Border-first elevation tokens (DESIGN §2.3 — shadow-light) */
+  .elevation-popover {
+    box-shadow: 0 4px 12px hsl(0 0% 0% / 0.08);
+  }
+  .elevation-modal {
+    box-shadow: 0 12px 32px hsl(0 0% 0% / 0.12);
+  }
+}
