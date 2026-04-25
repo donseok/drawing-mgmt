@@ -256,11 +256,14 @@ export default function ObjectDetailPage() {
             onClick={() => checkinMutation.mutate()}
           />
           <ActionButton icon={<Send className="h-3.5 w-3.5" />} label="결재상신" visible={vis.submit} />
+          {/* R3 차단: /api/v1/objects/[id]/release 는 결재 상신용(CHECKED_IN→IN_APPROVAL)이라
+              체크아웃 취소 의미가 아니다. R3에서 별도 unlock 엔드포인트(또는 state-machine 확장)
+              추가 후 활성화한다. */}
           <ActionButton
             icon={<Undo2 className="h-3.5 w-3.5" />}
-            label={releaseMutation.isPending ? '취소 중…' : '개정 취소'}
+            label="개정 취소"
             visible={showCancel}
-            disabled={pendingMutation}
+            disabled
             onClick={() => setConfirmReleaseOpen(true)}
           />
           <ActionButton icon={<Download className="h-3.5 w-3.5" />} label="다운로드" visible={vis.download} dropdown />
