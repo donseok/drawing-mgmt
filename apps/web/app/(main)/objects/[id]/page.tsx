@@ -39,68 +39,206 @@ import {
 import { queryKeys } from '@/lib/queries';
 import { api, ApiError } from '@/lib/api-client';
 
-// MOCK detail — TODO: api.get(`/api/v1/objects/${id}`)
-// `lockedBy` is `{ id, name } | null` so the page can compare against the
-// signed-in user (BUG-05). Same shape the real GET /api/v1/objects/:id will
-// return when we replace the mock with a live query.
-const MOCK_OBJECT = {
-  id: 'obj-1',
-  number: 'CGL-MEC-2026-00012',
-  name: '메인롤러 어셈블리',
-  state: 'APPROVED' as ObjectState,
-  revision: 3,
-  version: '0.2',
-  classLabel: '기계 / 조립도',
-  folderPath: '본사 / 기계 / CGL-2 / 메인라인',
-  securityLevel: 3,
-  registrant: '박영호',
-  registeredAt: '2026-04-12',
-  modifiedAt: '2026-04-15',
-  masterFile: 'CGL-MEC-2026-00012.dwg',
-  masterAttachmentId: 'att-1',
-  lockedBy: null as { id: string; name: string } | null,
-  attributes: [
-    { label: '라인', value: 'CGL-2' },
-    { label: '부위', value: '메인롤러' },
-    { label: '재질', value: 'SS400' },
-  ],
-  attachments: [
-    { id: 'att-1', name: 'CGL-MEC-2026-00012.dwg', size: '2.4MB', master: true },
-    { id: 'att-2', name: 'spec.pdf', size: '890KB', master: false },
-    { id: 'att-3', name: 'bom.xlsx', size: '120KB', master: false },
-  ],
-  history: [
-    {
-      revision: 'R3',
-      registrant: '박영호',
-      registeredAt: '2026-04-15',
-      versions: [
-        { version: 'v0.2', label: '체크인됨', current: true },
-        { version: 'v0.1', label: '—', current: false },
-      ],
-    },
-    { revision: 'R2', registrant: '박영호', registeredAt: '2026-03-02', versions: [] },
-    { revision: 'R1', registrant: '박영호', registeredAt: '2026-02-10', versions: [] },
-  ],
+// ─────────────────────────────────────────────────────────────────────────
+// Detail DTO — shape returned by GET /api/v1/objects/:id (route.ts
+// `detailInclude`). BigInt and Decimal columns serialize as strings via
+// safeJsonStringify in lib/api-response.ts, so `size`, `currentVersion`, and
+// `ver` are all `string` on the wire.
+// ─────────────────────────────────────────────────────────────────────────
+interface AttachmentDTO {
+  id: string;
+  filename: string;
+  size: string; // BigInt → string
+  mimeType: string;
+  isMaster: boolean;
+}
+
+interface VersionDTO {
+  id: string;
+  ver: string; // Decimal → string (e.g. "0.2")
+  createdAt: string;
+  createdBy: string;
+  attachments: AttachmentDTO[];
+}
+
+interface RevisionDTO {
+  id: string;
+  rev: number;
+  createdAt: string;
+  versions: VersionDTO[];
+}
+
+interface ObjectLinkRefDTO {
+  id: string;
+  number: string;
+  name: string;
+  state: ObjectState;
+}
+
+interface ObjectAttributeValueDTO {
+  attributeId: string;
+  value: string;
+  attribute: {
+    id: string;
+    code: string;
+    label: string;
+    dataType: string;
+    required: boolean;
+    sortOrder: number;
+  };
+}
+
+interface ObjectDetailDTO {
+  id: string;
+  number: string;
+  name: string;
+  description: string | null;
+  state: ObjectState;
+  currentRevision: number;
+  currentVersion: string; // Decimal → string
+  securityLevel: number;
+  classId: string;
+  folderId: string;
+  ownerId: string;
+  lockedById: string | null;
+  createdAt: string;
+  updatedAt: string;
+  folder: { id: string; name: string; folderCode: string };
+  class: { id: string; code: string; name: string };
+  owner: {
+    id: string;
+    username: string;
+    fullName: string | null;
+    organizationId: string | null;
+  };
+  lockedBy: { id: string; username: string; fullName: string | null } | null;
+  attributes: ObjectAttributeValueDTO[];
+  links: Array<{ id: string; targetId: string; target: ObjectLinkRefDTO }>;
+  linkedFrom: Array<{ id: string; sourceId: string; source: ObjectLinkRefDTO }>;
+  revisions: RevisionDTO[];
+}
+
+// ObjectVM — the page's render shape. Kept stable so the tab subcomponents
+// (InfoTab/HistoryTab/ApprovalTab/LinksTab/ActivityTab) read fields with the
+// same names regardless of how the DTO shifts.
+interface ObjectVM {
+  id: string;
+  number: string;
+  name: string;
+  state: ObjectState;
+  revision: number;
+  version: string;
+  classLabel: string;
+  folderPath: string;
+  securityLevel: number;
+  registrant: string;
+  registeredAt: string;
+  modifiedAt: string;
+  masterFile: string | null;
+  masterAttachmentId: string | null;
+  lockedBy: { id: string; name: string } | null;
+  attributes: Array<{ label: string; value: string }>;
+  attachments: Array<{ id: string; name: string; size: string; master: boolean }>;
+  history: Array<{
+    revision: string;
+    registrant: string;
+    registeredAt: string;
+    versions: Array<{ version: string; label: string; current: boolean }>;
+  }>;
   approval: {
-    current: [
-      { step: 1, name: '김지원', status: 'APPROVED', at: '2026-04-12 09:12' },
-      { step: 2, name: '박상민', status: 'APPROVED', at: '2026-04-12 14:33' },
-      { step: 3, name: '최정아', status: 'APPROVED', at: '2026-04-13 10:01' },
+    current: Array<{ step: number; name: string; status: string; at: string }>;
+  };
+  links: Array<{ id: string; number: string; name: string; direction: 'in' | 'out' }>;
+  activity: Array<{ time: string; action: string; user: string; ip: string }>;
+}
+
+function formatDate(iso: string): string {
+  // ISO timestamp → YYYY-MM-DD. Keeps the existing UI format.
+  return iso ? iso.slice(0, 10) : '';
+}
+
+function formatBytes(n: number): string {
+  if (!Number.isFinite(n) || n <= 0) return '0 B';
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  if (n < 1024 * 1024 * 1024) return `${(n / 1024 / 1024).toFixed(1)} MB`;
+  return `${(n / 1024 / 1024 / 1024).toFixed(2)} GB`;
+}
+
+function adaptObjectDetail(dto: ObjectDetailDTO): ObjectVM {
+  const latestRevision = dto.revisions[0];
+  const latestVersion = latestRevision?.versions[0];
+  const latestAttachments = latestVersion?.attachments ?? [];
+  const masterAttachment = latestAttachments.find((a) => a.isMaster) ?? null;
+
+  // History: each revision shows its versions; flag the current one (top of
+  // the latest revision). Empty `versions` is fine — RevisionTree handles it.
+  const history = dto.revisions.map((rev, revIdx) => ({
+    revision: `R${rev.rev}`,
+    registrant: dto.owner.fullName ?? dto.owner.username,
+    registeredAt: formatDate(rev.createdAt),
+    versions: rev.versions.map((v, vIdx) => ({
+      version: `v${v.ver}`,
+      label: revIdx === 0 && vIdx === 0 ? '최신' : '—',
+      current: revIdx === 0 && vIdx === 0,
+    })),
+  }));
+
+  const folderPath = `${dto.folder.folderCode} / ${dto.folder.name}`;
+
+  return {
+    id: dto.id,
+    number: dto.number,
+    name: dto.name,
+    state: dto.state,
+    revision: dto.currentRevision,
+    version: dto.currentVersion,
+    classLabel: dto.class.name,
+    folderPath,
+    securityLevel: dto.securityLevel,
+    registrant: dto.owner.fullName ?? dto.owner.username,
+    registeredAt: formatDate(dto.createdAt),
+    modifiedAt: formatDate(dto.updatedAt),
+    masterFile: masterAttachment?.filename ?? null,
+    masterAttachmentId: masterAttachment?.id ?? null,
+    lockedBy: dto.lockedBy
+      ? {
+          id: dto.lockedBy.id,
+          name: dto.lockedBy.fullName ?? dto.lockedBy.username,
+        }
+      : null,
+    attributes: dto.attributes
+      .slice()
+      .sort((a, b) => a.attribute.sortOrder - b.attribute.sortOrder)
+      .map((a) => ({ label: a.attribute.label, value: a.value })),
+    attachments: latestAttachments.map((a) => ({
+      id: a.id,
+      name: a.filename,
+      size: formatBytes(Number(a.size)),
+      master: a.isMaster,
+    })),
+    history,
+    // R3c: separate query for current approval steps. Empty for now — the
+    // tab still renders, just with no rows.
+    approval: { current: [] },
+    links: [
+      ...dto.links.map((l) => ({
+        id: l.target.id,
+        number: l.target.number,
+        name: l.target.name,
+        direction: 'out' as const,
+      })),
+      ...dto.linkedFrom.map((l) => ({
+        id: l.source.id,
+        number: l.source.number,
+        name: l.source.name,
+        direction: 'in' as const,
+      })),
     ],
-  },
-  links: [
-    { id: 'obj-9', number: 'CGL-MEC-2026-00009', name: '냉각롤러 조립도', direction: 'out' },
-    { id: 'obj-2', number: 'CGL-MEC-2026-00013', name: '가이드롤러 베이스', direction: 'in' },
-  ],
-  activity: [
-    { time: '2026-04-15 10:23', action: '체크인', user: '박영호', ip: '10.0.1.42' },
-    { time: '2026-04-13 10:01', action: '승인', user: '최정아', ip: '10.0.1.18' },
-    { time: '2026-04-12 14:33', action: '승인', user: '박상민', ip: '10.0.1.7' },
-    { time: '2026-04-12 09:12', action: '승인', user: '김지원', ip: '10.0.1.3' },
-    { time: '2026-04-12 09:00', action: '결재상신', user: '박영호', ip: '10.0.1.42' },
-  ],
-};
+    // R3c: separate activity query. Empty array keeps ActivityTab safe.
+    activity: [],
+  };
+}
 
 const TABS = [
   { key: 'info', label: '정보' },
@@ -153,8 +291,38 @@ export default function ObjectDetailPage() {
   const searchParams = useSearchParams();
   const queryClient = useQueryClient();
 
-  // TODO: const { data: obj } = useQuery(['object', params.id], () => api.get(`/api/v1/objects/${params.id}`));
-  const obj = MOCK_OBJECT;
+  // R3b — live detail query. Mutation invalidate of `objects.detail(id)`
+  // (in `useObjectMutation` below) drives auto-refetch, so state-badge
+  // refresh after checkout/checkin (BUG-08) is now automatic.
+  const detailQuery = useQuery<ObjectDetailDTO, ApiError>({
+    queryKey: queryKeys.objects.detail(params.id),
+    queryFn: () => api.get<ObjectDetailDTO>(`/api/v1/objects/${params.id}`),
+    staleTime: 30_000,
+    retry: (failureCount, err) => {
+      // Don't hammer 404/403 — they aren't transient.
+      if (err instanceof ApiError && (err.status === 404 || err.status === 403)) {
+        return false;
+      }
+      return failureCount < 2;
+    },
+  });
+
+  const obj = React.useMemo<ObjectVM | null>(
+    () => (detailQuery.data ? adaptObjectDetail(detailQuery.data) : null),
+    [detailQuery.data],
+  );
+
+  // Surface non-404 fetch failures via toast once per error instance.
+  // 404 stays silent — DetailError already explains it inline.
+  const fetchErr = detailQuery.error;
+  React.useEffect(() => {
+    if (!fetchErr) return;
+    const isNotFound =
+      fetchErr instanceof ApiError &&
+      (fetchErr.code === 'E_NOT_FOUND' || fetchErr.status === 404);
+    if (isNotFound) return;
+    toast.error('자료 조회 실패', { description: fetchErr.message });
+  }, [fetchErr]);
 
   // Current user — used to gate CHECKED_OUT actions (only the locker can
   // checkin / cancel-revision). SessionProvider isn't wired yet, so we read
@@ -173,17 +341,6 @@ export default function ObjectDetailPage() {
     sp.set('tab', next);
     router.replace(`/objects/${params.id}?${sp.toString()}`, { scroll: false });
   };
-
-  const vis = ACTION_VISIBILITY[obj.state];
-
-  // BUG-05 — lock ownership determines whether CHECKED_OUT actions are
-  // available. When the object is locked by someone else, we show a lock
-  // banner instead of action buttons.
-  const isLocker =
-    obj.state === 'CHECKED_OUT' && !!obj.lockedBy && obj.lockedBy.id === me?.id;
-  const lockedByOther =
-    obj.state === 'CHECKED_OUT' && !!obj.lockedBy && obj.lockedBy.id !== me?.id;
-  const isInApproval = obj.state === 'IN_APPROVAL';
 
   // Mutation factory: same invalidation set for every state transition we
   // wire here. On success: refresh detail + grid; on error: surface the BE
@@ -211,6 +368,31 @@ export default function ObjectDetailPage() {
   const cancelCheckoutMutation = useObjectMutation('cancelCheckout');
 
   const [confirmCancelOpen, setConfirmCancelOpen] = React.useState(false);
+
+  // Loading / error gates land AFTER all hooks. The fetch error code drives
+  // 404 vs generic-error UI; the data-shaped path runs on success.
+  if (detailQuery.isPending) {
+    return <DetailSkeleton />;
+  }
+
+  if (detailQuery.isError || !obj) {
+    const err = detailQuery.error;
+    const notFound =
+      err instanceof ApiError && (err.code === 'E_NOT_FOUND' || err.status === 404);
+    return <DetailError notFound={notFound} message={err?.message} />;
+  }
+
+  // From here `obj` is non-null.
+  const vis = ACTION_VISIBILITY[obj.state];
+
+  // BUG-05 — lock ownership determines whether CHECKED_OUT actions are
+  // available. When the object is locked by someone else, we show a lock
+  // banner instead of action buttons.
+  const isLocker =
+    obj.state === 'CHECKED_OUT' && !!obj.lockedBy && obj.lockedBy.id === me?.id;
+  const lockedByOther =
+    obj.state === 'CHECKED_OUT' && !!obj.lockedBy && obj.lockedBy.id !== me?.id;
+  const isInApproval = obj.state === 'IN_APPROVAL';
 
   const pendingMutation =
     checkoutMutation.isPending ||
@@ -448,7 +630,7 @@ function ActionButton({
   );
 }
 
-function InfoTab({ obj }: { obj: typeof MOCK_OBJECT }) {
+function InfoTab({ obj }: { obj: ObjectVM }) {
   return (
     <div className="grid grid-cols-1 gap-6 lg:grid-cols-[1fr_380px]">
       <div className="space-y-4">
@@ -564,7 +746,7 @@ function InfoTab({ obj }: { obj: typeof MOCK_OBJECT }) {
   );
 }
 
-function HistoryTab({ obj }: { obj: typeof MOCK_OBJECT }) {
+function HistoryTab({ obj }: { obj: ObjectVM }) {
   return (
     <RevisionTree
       revisions={obj.history.map((rev) => ({
@@ -593,7 +775,7 @@ function HistoryTab({ obj }: { obj: typeof MOCK_OBJECT }) {
   );
 }
 
-function ApprovalTab({ obj }: { obj: typeof MOCK_OBJECT }) {
+function ApprovalTab({ obj }: { obj: ObjectVM }) {
   return (
     <div className="app-panel p-4">
       <h3 className="mb-3 text-sm font-semibold text-fg">현재 결재선</h3>
@@ -609,7 +791,7 @@ function ApprovalTab({ obj }: { obj: typeof MOCK_OBJECT }) {
   );
 }
 
-function LinksTab({ obj }: { obj: typeof MOCK_OBJECT }) {
+function LinksTab({ obj }: { obj: ObjectVM }) {
   return (
     <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
       <section>
@@ -642,7 +824,7 @@ function LinksTab({ obj }: { obj: typeof MOCK_OBJECT }) {
   );
 }
 
-function ActivityTab({ obj }: { obj: typeof MOCK_OBJECT }) {
+function ActivityTab({ obj }: { obj: ObjectVM }) {
   return (
     <ol className="space-y-2">
       {obj.activity.map((a, i) => (
@@ -663,4 +845,87 @@ function DT({ children }: { children: React.ReactNode }) {
 }
 function DD({ children, mono }: { children: React.ReactNode; mono?: boolean }) {
   return <dd className={cn('text-fg', mono && 'font-mono')}>{children}</dd>;
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Loading / error UIs — only the main content area; the chrome (header bar,
+// breadcrumb, tabs) needs the loaded object so we render a placeholder for
+// the entire page during the first fetch. Subsequent refetches keep the old
+// data via React Query's cache, so this only flashes on first navigation.
+// ─────────────────────────────────────────────────────────────────────────
+function DetailSkeleton() {
+  return (
+    <div
+      role="status"
+      aria-live="polite"
+      aria-busy="true"
+      className="flex h-full min-w-0 flex-1 flex-col overflow-auto"
+    >
+      <div className="flex items-center gap-2 border-b border-border bg-bg px-4 py-2 text-xs">
+        <div className="h-7 w-7 animate-pulse rounded bg-bg-muted" />
+        <div className="h-4 w-64 animate-pulse rounded bg-bg-muted" />
+        <div className="ml-auto h-7 w-7 animate-pulse rounded bg-bg-muted" />
+      </div>
+      <div className="border-b border-border bg-bg px-6 py-5">
+        <div className="h-3 w-24 animate-pulse rounded bg-bg-muted" />
+        <div className="mt-2 h-6 w-72 animate-pulse rounded bg-bg-muted" />
+        <div className="mt-2 h-3 w-96 animate-pulse rounded bg-bg-muted" />
+        <div className="mt-3 flex gap-1.5">
+          <div className="h-8 w-20 animate-pulse rounded bg-bg-muted" />
+          <div className="h-8 w-24 animate-pulse rounded bg-bg-muted" />
+          <div className="h-8 w-24 animate-pulse rounded bg-bg-muted" />
+        </div>
+      </div>
+      <div className="flex-1 p-6">
+        <div className="grid grid-cols-1 gap-6 lg:grid-cols-[1fr_380px]">
+          <div className="space-y-4">
+            <div className="h-[420px] animate-pulse rounded bg-bg-muted" />
+            <div className="h-32 animate-pulse rounded bg-bg-muted" />
+          </div>
+          <div className="h-72 animate-pulse rounded bg-bg-muted" />
+        </div>
+      </div>
+      <span className="sr-only">자료를 불러오는 중입니다.</span>
+    </div>
+  );
+}
+
+function DetailError({
+  notFound,
+  message,
+}: {
+  notFound: boolean;
+  message?: string;
+}) {
+  return (
+    <div className="flex h-full min-w-0 flex-1 flex-col overflow-auto">
+      <div className="flex items-center gap-2 border-b border-border bg-bg px-4 py-2 text-xs">
+        <Link
+          href="/search"
+          aria-label="검색으로 돌아가기"
+          className="app-icon-button h-7 w-7"
+        >
+          <ArrowLeft className="h-4 w-4" />
+        </Link>
+        <span className="text-fg-muted">자료 상세</span>
+      </div>
+      <div
+        role="alert"
+        className="m-6 flex flex-col items-center gap-3 rounded-md border border-border bg-bg p-10 text-center"
+      >
+        <h2 className="text-lg font-semibold text-fg">
+          {notFound ? '자료를 찾을 수 없습니다' : '자료를 불러오지 못했습니다'}
+        </h2>
+        <p className="max-w-md text-sm text-fg-muted">
+          {notFound
+            ? '요청하신 자료가 존재하지 않거나 접근 권한이 없습니다. 검색 페이지에서 다른 자료를 확인해 주세요.'
+            : (message ?? '잠시 후 다시 시도해 주세요.')}
+        </p>
+        <Link href="/search" className="app-action-button mt-2">
+          <ArrowLeft className="h-3.5 w-3.5" />
+          검색으로 이동
+        </Link>
+      </div>
+    </div>
+  );
 }
