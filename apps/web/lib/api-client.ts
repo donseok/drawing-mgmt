@@ -17,10 +17,11 @@ export class ApiError extends Error {
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? '';
 
-type Json = Record<string, unknown> | unknown[] | string | number | boolean | null;
-
+// `body` is widened to `unknown` so callers with their own request shape
+// (e.g. CreateObjectBody) don't need a `Record<string, unknown>` cast at the
+// call site. We only branch on FormData; everything else is JSON-stringified.
 export interface ApiRequestOptions extends Omit<RequestInit, 'body'> {
-  body?: Json | FormData;
+  body?: unknown;
   query?: Record<string, string | number | boolean | undefined | null>;
 }
 
@@ -77,11 +78,11 @@ export async function apiRequest<T = unknown>(path: string, options: ApiRequestO
 
 export const api = {
   get: <T>(path: string, options?: ApiRequestOptions) => apiRequest<T>(path, { ...options, method: 'GET' }),
-  post: <T>(path: string, body?: Json | FormData, options?: ApiRequestOptions) =>
+  post: <T>(path: string, body?: unknown, options?: ApiRequestOptions) =>
     apiRequest<T>(path, { ...options, method: 'POST', body }),
-  patch: <T>(path: string, body?: Json | FormData, options?: ApiRequestOptions) =>
+  patch: <T>(path: string, body?: unknown, options?: ApiRequestOptions) =>
     apiRequest<T>(path, { ...options, method: 'PATCH', body }),
-  put: <T>(path: string, body?: Json | FormData, options?: ApiRequestOptions) =>
+  put: <T>(path: string, body?: unknown, options?: ApiRequestOptions) =>
     apiRequest<T>(path, { ...options, method: 'PUT', body }),
   delete: <T>(path: string, options?: ApiRequestOptions) => apiRequest<T>(path, { ...options, method: 'DELETE' }),
 };

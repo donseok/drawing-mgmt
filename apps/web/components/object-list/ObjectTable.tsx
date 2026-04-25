@@ -75,7 +75,10 @@ interface ObjectTableProps {
 
 export function ObjectTable({ data, selectedId, onSelect, onSelectedCountChange, searchTerm, onDeleteRow }: ObjectTableProps) {
   const router = useRouter();
-  const [sorting, setSorting] = React.useState<SortingState>([{ id: 'registeredAt', desc: true }]);
+  // Default sort targets a column that actually exists in this table. The
+  // earlier `registeredAt` key had no matching accessorKey, so react-table
+  // logged a warning and the initial sort was silently dropped.
+  const [sorting, setSorting] = React.useState<SortingState>([{ id: 'transmittedAt', desc: true }]);
   const [rowSelection, setRowSelection] = React.useState<RowSelectionState>({});
   const [pendingDelete, setPendingDelete] = React.useState<ObjectRow | null>(null);
 

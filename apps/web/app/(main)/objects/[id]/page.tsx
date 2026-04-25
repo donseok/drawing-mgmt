@@ -29,6 +29,13 @@ import { ApprovalLine } from '@/components/ApprovalLine';
 import { RevisionTree } from '@/components/RevisionTree';
 import { DrawingPlaceholder } from '@/components/DrawingPlaceholder';
 import { ConfirmDialog } from '@/components/ConfirmDialog';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
 import { queryKeys } from '@/lib/queries';
 import { api, ApiError } from '@/lib/api-client';
 
@@ -118,14 +125,26 @@ interface MeResponse {
   id: string;
 }
 
-// Object mutation actions wired in BUG-05. Approval submission is intentionally
-// left out and tracked for R3 (per the BUG-05 scope note).
-type ObjectAction = 'checkout' | 'checkin' | 'release';
+// Object mutation actions wired in BUG-05 + R3 SIDE-A.
+// `release` is approval submission (CHECKED_IN → IN_APPROVAL) — wired to
+// "결재상신" in a later round.
+// `cancelCheckout` is the dedicated unlock endpoint added in R3 SIDE-A.
+type ObjectAction = 'checkout' | 'checkin' | 'release' | 'cancelCheckout';
+
+// Endpoint paths use kebab-case; the action union stays camelCase to read
+// well at call sites. Keep both aligned via this map.
+const ACTION_PATH: Record<ObjectAction, string> = {
+  checkout: 'checkout',
+  checkin: 'checkin',
+  release: 'release',
+  cancelCheckout: 'cancel-checkout',
+};
 
 const ACTION_LABEL: Record<ObjectAction, string> = {
   checkout: '체크아웃',
   checkin: '체크인',
-  release: '개정 취소',
+  release: '결재상신',
+  cancelCheckout: '개정 취소',
 };
 
 export default function ObjectDetailPage() {
@@ -171,7 +190,8 @@ export default function ObjectDetailPage() {
   // message via toast.
   const useObjectMutation = (action: ObjectAction) =>
     useMutation<unknown, ApiError, void>({
-      mutationFn: () => api.post(`/api/v1/objects/${params.id}/${action}`),
+      mutationFn: () =>
+        api.post(`/api/v1/objects/${params.id}/${ACTION_PATH[action]}`),
       onSuccess: () => {
         void queryClient.invalidateQueries({
           queryKey: queryKeys.objects.detail(params.id),
@@ -188,14 +208,14 @@ export default function ObjectDetailPage() {
 
   const checkoutMutation = useObjectMutation('checkout');
   const checkinMutation = useObjectMutation('checkin');
-  const releaseMutation = useObjectMutation('release');
+  const cancelCheckoutMutation = useObjectMutation('cancelCheckout');
 
-  const [confirmReleaseOpen, setConfirmReleaseOpen] = React.useState(false);
+  const [confirmCancelOpen, setConfirmCancelOpen] = React.useState(false);
 
   const pendingMutation =
     checkoutMutation.isPending ||
     checkinMutation.isPending ||
-    releaseMutation.isPending;
+    cancelCheckoutMutation.isPending;
 
   const showCheckout = vis.checkout && !lockedByOther && !isInApproval;
   const showCheckin = vis.checkin && isLocker;
@@ -215,13 +235,35 @@ export default function ObjectDetailPage() {
         </button>
         <Breadcrumb path={obj.folderPath} number={obj.number} />
         <StatusBadge status={obj.state} size="sm" className="ml-1" />
-        <button
-          type="button"
-          aria-label="더보기"
-          className="app-icon-button ml-auto h-7 w-7"
-        >
-          <MoreHorizontal className="h-4 w-4" />
-        </button>
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <button
+              type="button"
+              aria-label="더보기"
+              className="app-icon-button ml-auto h-7 w-7"
+            >
+              <MoreHorizontal className="h-4 w-4" />
+            </button>
+          </DropdownMenuTrigger>
+          {/* Items are placeholders — wiring the trigger is the BUG-09 fix
+              (menu must open). Real handlers land in later rounds. */}
+          <DropdownMenuContent align="end" sideOffset={4} className="min-w-[10rem]">
+            <DropdownMenuItem onSelect={() => toast('다운로드 (준비 중)')}>
+              <Download className="text-fg-muted" />
+              다운로드
+            </DropdownMenuItem>
+            <DropdownMenuItem onSelect={() => toast('공유 링크 복사 (준비 중)')}>
+              <Share2 className="text-fg-muted" />
+              공유
+            </DropdownMenuItem>
+            <DropdownMenuItem onSelect={() => toast('이동 (준비 중)')}>
+              <ChevronRight className="text-fg-muted" />
+              이동
+            </DropdownMenuItem>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem disabled>삭제</DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
       </div>
 
       {/* Title + actions */}
@@ -256,15 +298,12 @@ export default function ObjectDetailPage() {
             onClick={() => checkinMutation.mutate()}
           />
           <ActionButton icon={<Send className="h-3.5 w-3.5" />} label="결재상신" visible={vis.submit} />
-          {/* R3 차단: /api/v1/objects/[id]/release 는 결재 상신용(CHECKED_IN→IN_APPROVAL)이라
-              체크아웃 취소 의미가 아니다. R3에서 별도 unlock 엔드포인트(또는 state-machine 확장)
-              추가 후 활성화한다. */}
           <ActionButton
             icon={<Undo2 className="h-3.5 w-3.5" />}
-            label="개정 취소"
+            label={cancelCheckoutMutation.isPending ? '개정 취소 중…' : '개정 취소'}
             visible={showCancel}
-            disabled
-            onClick={() => setConfirmReleaseOpen(true)}
+            disabled={pendingMutation}
+            onClick={() => setConfirmCancelOpen(true)}
           />
           <ActionButton icon={<Download className="h-3.5 w-3.5" />} label="다운로드" visible={vis.download} dropdown />
           <ActionButton icon={<Share2 className="h-3.5 w-3.5" />} label="공유" visible />
@@ -295,16 +334,16 @@ export default function ObjectDetailPage() {
       </div>
 
       <ConfirmDialog
-        open={confirmReleaseOpen}
-        onOpenChange={setConfirmReleaseOpen}
+        open={confirmCancelOpen}
+        onOpenChange={setConfirmCancelOpen}
         title="개정을 취소하시겠습니까?"
         description="체크아웃이 해제되고 작업 중인 변경 내용이 사라질 수 있습니다."
         confirmText="개정 취소"
         variant="destructive"
-        disabled={releaseMutation.isPending}
+        disabled={cancelCheckoutMutation.isPending}
         onConfirm={async () => {
-          await releaseMutation.mutateAsync();
-          setConfirmReleaseOpen(false);
+          await cancelCheckoutMutation.mutateAsync();
+          setConfirmCancelOpen(false);
         }}
       />
 
@@ -442,32 +481,49 @@ function InfoTab({ obj }: { obj: typeof MOCK_OBJECT }) {
             </span>
           </div>
           <ul>
-            {obj.attachments.map((a, i) => (
-              <li
-                key={a.id}
-                className={cn(
-                  'flex items-center gap-3 px-4 py-2.5 text-sm',
-                  i !== obj.attachments.length - 1 && 'border-b border-border',
-                )}
-              >
-                {a.master ? (
-                  <span className="inline-flex h-6 w-6 items-center justify-center rounded bg-brand text-[10px] font-bold text-brand-foreground">
-                    M
-                  </span>
-                ) : (
-                  <FileText className="h-4 w-4 text-fg-muted" />
-                )}
-                <span className="font-mono text-[12px] text-fg">{a.name}</span>
-                <span className="ml-auto font-mono text-xs text-fg-muted">{a.size}</span>
-                <button
-                  type="button"
-                  aria-label="다운로드"
-                  className="app-icon-button h-7 w-7"
+            {obj.attachments.map((a, i) => {
+              // BUG-07 — DWG/DXF/PDF attachments open in the viewer when their
+              // name is clicked (mirrors ObjectTable double-click + preview
+              // panel "열기"). Other formats stay non-clickable for now.
+              const ext = a.name.split('.').pop()?.toLowerCase();
+              const viewable = ext === 'dwg' || ext === 'dxf' || ext === 'pdf';
+              const nameClass = 'font-mono text-[12px] text-fg';
+              return (
+                <li
+                  key={a.id}
+                  className={cn(
+                    'flex items-center gap-3 px-4 py-2.5 text-sm',
+                    i !== obj.attachments.length - 1 && 'border-b border-border',
+                  )}
                 >
-                  <Download className="h-3.5 w-3.5" />
-                </button>
-              </li>
-            ))}
+                  {a.master ? (
+                    <span className="inline-flex h-6 w-6 items-center justify-center rounded bg-brand text-[10px] font-bold text-brand-foreground">
+                      M
+                    </span>
+                  ) : (
+                    <FileText className="h-4 w-4 text-fg-muted" />
+                  )}
+                  {viewable ? (
+                    <Link
+                      href={`/viewer/${a.id}`}
+                      className={cn(nameClass, 'hover:underline')}
+                    >
+                      {a.name}
+                    </Link>
+                  ) : (
+                    <span className={nameClass}>{a.name}</span>
+                  )}
+                  <span className="ml-auto font-mono text-xs text-fg-muted">{a.size}</span>
+                  <button
+                    type="button"
+                    aria-label="다운로드"
+                    className="app-icon-button h-7 w-7"
+                  >
+                    <Download className="h-3.5 w-3.5" />
+                  </button>
+                </li>
+              );
+            })}
           </ul>
         </div>
       </div>
