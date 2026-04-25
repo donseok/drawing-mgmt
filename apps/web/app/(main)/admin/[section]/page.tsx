@@ -1,7 +1,8 @@
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
-import { ArrowLeft, Plus, Search, Settings2 } from 'lucide-react';
+import { ArrowLeft } from 'lucide-react';
 import { AdminSidebar } from '../AdminSidebar';
+import { SectionAddButton, SectionPanelHeader } from './SectionToolbar';
 
 interface SectionMeta {
   title: string;
@@ -140,28 +141,12 @@ export default function AdminSectionPage({
             <h1 className="mt-1 text-2xl font-semibold text-fg">{meta.title}</h1>
             <p className="mt-1 text-sm text-fg-muted">{meta.description}</p>
           </div>
-          <button type="button" className="app-action-button-primary h-9">
-            <Plus className="h-4 w-4" />
-            추가
-          </button>
+          <SectionAddButton />
         </div>
 
         <div className="p-6">
           <div className="app-panel overflow-hidden">
-            <div className="app-panel-header">
-              <div className="relative w-80">
-                <Search className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-fg-subtle" />
-                <input
-                  type="text"
-                  placeholder={`${meta.title} 검색...`}
-                  className="h-8 w-full rounded-md border border-border bg-bg px-8 text-sm placeholder:text-fg-subtle focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                />
-              </div>
-              <button type="button" className="app-action-button h-8">
-                <Settings2 className="h-4 w-4" />
-                보기 설정
-              </button>
-            </div>
+            <SectionPanelHeader title={meta.title} />
 
             <table className="app-table">
               <thead>

@@ -17,8 +17,10 @@ import {
   Archive,
   X,
 } from 'lucide-react';
+import { toast } from 'sonner';
 import { cn } from '@/lib/cn';
 import { FilterChip } from '@/components/FilterChip';
+import { ConfirmDialog } from '@/components/ConfirmDialog';
 import {
   Popover,
   PopoverContent,
@@ -53,7 +55,11 @@ interface ObjectTableToolbarProps {
   onMove?: () => void;
   onCopy?: () => void;
   onDownload?: () => void;
-  onDelete?: () => void;
+  /**
+   * Bulk delete. Toolbar guards this behind a ConfirmDialog (DESIGN §9.3) — caller
+   * just performs the actual mutation and may throw on failure for a toast.
+   */
+  onDelete?: () => void | Promise<void>;
   onSubmitApproval?: () => void;
 }
 
@@ -96,6 +102,19 @@ export function ObjectTableToolbar({
 }: ObjectTableToolbarProps) {
   const [filterOpen, setFilterOpen] = React.useState(false);
   const [draft, setDraft] = React.useState<FilterFormValue>(filterValue ?? {});
+  const [confirmDeleteOpen, setConfirmDeleteOpen] = React.useState(false);
+
+  const handleConfirmDelete = async () => {
+    try {
+      await onDelete?.();
+      toast.success(`${selectedCount}건을 삭제했습니다.`);
+      setConfirmDeleteOpen(false);
+    } catch (err) {
+      toast.error('삭제에 실패했습니다.', {
+        description: err instanceof Error ? err.message : undefined,
+      });
+    }
+  };
 
   // Sync draft -> external when popover opens.
   React.useEffect(() => {
@@ -310,11 +329,21 @@ export function ObjectTableToolbar({
           <ToolbarAction
             icon={<Trash2 className="h-3.5 w-3.5" />}
             label="삭제"
-            onClick={onDelete}
+            onClick={onDelete ? () => setConfirmDeleteOpen(true) : undefined}
             destructive
           />
         </div>
       )}
+
+      <ConfirmDialog
+        open={confirmDeleteOpen}
+        onOpenChange={setConfirmDeleteOpen}
+        title={`선택한 ${selectedCount}건을 삭제하시겠습니까?`}
+        description="이 작업은 되돌릴 수 없습니다. 삭제된 항목은 휴지통으로 이동합니다."
+        confirmText="삭제"
+        variant="destructive"
+        onConfirm={handleConfirmDelete}
+      />
     </div>
   );
 }

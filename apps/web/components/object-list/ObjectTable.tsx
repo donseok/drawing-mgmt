@@ -21,8 +21,10 @@ import {
   MessageSquare,
   MapPin,
 } from 'lucide-react';
+import { toast } from 'sonner';
 import { cn } from '@/lib/cn';
 import { StatusBadge } from '@/components/StatusBadge';
+import { ConfirmDialog } from '@/components/ConfirmDialog';
 import { RowMenu } from '@/components/object-list/RowMenu';
 import { CONTROL_STATE, type ControlState } from '@/lib/control-state';
 
@@ -63,12 +65,35 @@ interface ObjectTableProps {
   onSelectedCountChange?: (count: number) => void;
   /** highlight matches in name/number; case-insensitive */
   searchTerm?: string;
+  /**
+   * Per-row delete. Table guards this behind a ConfirmDialog (DESIGN §9.3).
+   * Caller performs the mutation; throwing surfaces an error toast.
+   * If omitted, the row menu's delete entry stays disabled.
+   */
+  onDeleteRow?: (row: ObjectRow) => void | Promise<void>;
 }
 
-export function ObjectTable({ data, selectedId, onSelect, onSelectedCountChange, searchTerm }: ObjectTableProps) {
+export function ObjectTable({ data, selectedId, onSelect, onSelectedCountChange, searchTerm, onDeleteRow }: ObjectTableProps) {
   const router = useRouter();
   const [sorting, setSorting] = React.useState<SortingState>([{ id: 'registeredAt', desc: true }]);
   const [rowSelection, setRowSelection] = React.useState<RowSelectionState>({});
+  const [pendingDelete, setPendingDelete] = React.useState<ObjectRow | null>(null);
+
+  const handleConfirmDelete = async () => {
+    if (!pendingDelete || !onDeleteRow) {
+      setPendingDelete(null);
+      return;
+    }
+    try {
+      await onDeleteRow(pendingDelete);
+      toast.success('삭제했습니다.', { description: pendingDelete.number });
+      setPendingDelete(null);
+    } catch (err) {
+      toast.error('삭제에 실패했습니다.', {
+        description: err instanceof Error ? err.message : undefined,
+      });
+    }
+  };
 
   const columns = React.useMemo<ColumnDef<ObjectRow>[]>(
     () => [
@@ -227,13 +252,14 @@ export function ObjectTable({ data, selectedId, onSelect, onSelectedCountChange,
               number: row.original.number,
               name: row.original.name,
             }}
+            onDelete={onDeleteRow ? () => setPendingDelete(row.original) : undefined}
           />
         ),
         size: 32,
         enableSorting: false,
       },
     ],
-    [searchTerm],
+    [searchTerm, onDeleteRow],
   );
 
   const table = useReactTable({
@@ -253,6 +279,21 @@ export function ObjectTable({ data, selectedId, onSelect, onSelectedCountChange,
 
   return (
     <div className="min-h-0 overflow-auto">
+      <ConfirmDialog
+        open={pendingDelete !== null}
+        onOpenChange={(next) => {
+          if (!next) setPendingDelete(null);
+        }}
+        title={pendingDelete ? `${pendingDelete.number} 자료를 삭제하시겠습니까?` : '자료를 삭제하시겠습니까?'}
+        description={
+          pendingDelete
+            ? `${pendingDelete.name} — 이 작업은 되돌릴 수 없습니다. 삭제된 항목은 휴지통으로 이동합니다.`
+            : '이 작업은 되돌릴 수 없습니다.'
+        }
+        confirmText="삭제"
+        variant="destructive"
+        onConfirm={handleConfirmDelete}
+      />
       <table className="app-table">
         <thead>
           {table.getHeaderGroups().map((hg) => (
