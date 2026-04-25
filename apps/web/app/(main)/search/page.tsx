@@ -1,10 +1,11 @@
 'use client';
 
 import * as React from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ChevronRight, FolderOpen, Layers3, Plus, CheckCircle2, Lock, Send, MapPin } from 'lucide-react';
 import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
+import { toast } from 'sonner';
 import { SubSidebar } from '@/components/layout/SubSidebar';
 import { FolderTree } from '@/components/folder-tree/FolderTree';
 import type { FolderNode } from '@/components/folder-tree/types';
@@ -16,10 +17,13 @@ import {
 import { ObjectPreviewPanel } from '@/components/object-list/ObjectPreviewPanel';
 import { useUiStore } from '@/stores/uiStore';
 import { queryKeys } from '@/lib/queries';
-import { api } from '@/lib/api-client';
+import { api, ApiError } from '@/lib/api-client';
 import { CONTROL_STATE, deriveControlState } from '@/lib/control-state';
 import type { SortValue } from '@/components/object-list/SortMenu';
-import { NewObjectDialog } from '@/components/object-list/NewObjectDialog';
+import {
+  NewObjectDialog,
+  type NewObjectFormValues,
+} from '@/components/object-list/NewObjectDialog';
 
 // ── Server response shapes (mirror /api/v1/{folders,objects}) ─────────────
 interface ServerFolderNode {
@@ -194,10 +198,21 @@ const MemoSubSidebar = React.memo(function MemoSubSidebar({
   );
 });
 
+// POST /api/v1/objects request body — mirrors the BE create schema.
+interface CreateObjectBody {
+  folderId: string;
+  classCode: string;
+  name: string;
+  description?: string;
+  number?: string;
+  securityLevel: number;
+}
+
 export default function SearchPage() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const action = searchParams?.get('action') ?? null;
+  const queryClient = useQueryClient();
 
   const [selectedFolder, setSelectedFolder] = React.useState<FolderNode | null>(null);
   const [selectedRow, setSelectedRow] = React.useState<ObjectRow | null>(null);
@@ -331,6 +346,53 @@ export default function SearchPage() {
     router.replace(qs ? `/search?${qs}` : '/search');
   }, [router, searchParams]);
 
+  // BUG-04 — Create object mutation. On success, invalidate the list/folder/
+  // workspace caches so the grid count + folder counts + home tiles refresh.
+  // Also closes the dialog (NewObjectDialog awaits the returned promise and
+  // will close itself on resolve; explicit closeNewDialog covers the URL state).
+  const createObjectMutation = useMutation<
+    ServerObjectSummary,
+    ApiError,
+    NewObjectFormValues
+  >({
+    mutationFn: (values) => {
+      const payload: CreateObjectBody = {
+        folderId: values.folderId,
+        classCode: values.classCode,
+        name: values.name,
+        securityLevel: values.securityLevel,
+        ...(values.number ? { number: values.number } : {}),
+        ...(values.description ? { description: values.description } : {}),
+      };
+      return api.post<ServerObjectSummary>(
+        '/api/v1/objects',
+        payload as unknown as Record<string, unknown>,
+      );
+    },
+    onSuccess: (data) => {
+      // Per api_contract.md (BUG-04): invalidate list/folder/workspace keys.
+      void queryClient.invalidateQueries({ queryKey: queryKeys.objects.all() });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.folders.tree() });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.workspace.home() });
+      toast.success('자료가 등록되었습니다.', {
+        description: data.number ? `도면번호 ${data.number}` : undefined,
+      });
+      closeNewDialog();
+    },
+    onError: (err) => {
+      toast.error('자료 등록 실패', {
+        description: err.message,
+      });
+    },
+  });
+
+  const handleCreateObject = React.useCallback(
+    async (values: NewObjectFormValues) => {
+      await createObjectMutation.mutateAsync(values);
+    },
+    [createObjectMutation],
+  );
+
   return (
     <div className="flex h-full min-h-0 min-w-0 flex-1 overflow-hidden">
       <MemoSubSidebar
@@ -435,6 +497,7 @@ export default function SearchPage() {
           if (!open) closeNewDialog();
         }}
         folderId={selectedFolder?.id}
+        onSubmit={handleCreateObject}
       />
     </div>
   );
