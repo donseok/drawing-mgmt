@@ -2,22 +2,24 @@
 // Server-side enforced; clients must not be trusted with the next state.
 //
 // Transitions:
-//   NEW          ─ checkout    ─→ CHECKED_OUT
-//   NEW          ─ checkin     ─→ CHECKED_IN
-//   CHECKED_IN   ─ checkout    ─→ CHECKED_OUT
-//   CHECKED_OUT  ─ checkin     ─→ CHECKED_IN
-//   CHECKED_IN   ─ release     ─→ IN_APPROVAL
-//   IN_APPROVAL  ─ approve     ─→ APPROVED
-//   IN_APPROVAL  ─ reject      ─→ CHECKED_IN
-//   APPROVED     ─ newRevision ─→ CHECKED_OUT
-//   *            ─ delete      ─→ DELETED
-//   DELETED      ─ restore     ─→ (previous state — handled by caller)
+//   NEW          ─ checkout       ─→ CHECKED_OUT
+//   NEW          ─ checkin        ─→ CHECKED_IN
+//   CHECKED_IN   ─ checkout       ─→ CHECKED_OUT
+//   CHECKED_OUT  ─ checkin        ─→ CHECKED_IN
+//   CHECKED_OUT  ─ cancelCheckout ─→ CHECKED_IN  (self lock only; no version bump)
+//   CHECKED_IN   ─ release        ─→ IN_APPROVAL
+//   IN_APPROVAL  ─ approve        ─→ APPROVED
+//   IN_APPROVAL  ─ reject         ─→ CHECKED_IN
+//   APPROVED     ─ newRevision    ─→ CHECKED_OUT
+//   *            ─ delete         ─→ DELETED
+//   DELETED      ─ restore        ─→ (previous state — handled by caller)
 
 import { ObjectState } from '@prisma/client';
 
 export type ObjectAction =
   | 'checkout'
   | 'checkin'
+  | 'cancelCheckout'
   | 'release'
   | 'approve'
   | 'reject'
@@ -41,6 +43,9 @@ const ALLOWED: Record<ObjectAction, Partial<Record<ObjectState, ObjectState>>> =
   },
   checkin: {
     [ObjectState.NEW]: ObjectState.CHECKED_IN,
+    [ObjectState.CHECKED_OUT]: ObjectState.CHECKED_IN,
+  },
+  cancelCheckout: {
     [ObjectState.CHECKED_OUT]: ObjectState.CHECKED_IN,
   },
   release: {
@@ -81,8 +86,9 @@ export interface TransitionResult {
 /**
  * Validate a state transition. Does not mutate; pure function.
  * Lock ownership rules:
- *   - checkin   from CHECKED_OUT: caller must own lockedById.
- *   - checkout  from CHECKED_IN/NEW/APPROVED: object must not be locked by another user.
+ *   - checkin        from CHECKED_OUT: caller must own lockedById.
+ *   - cancelCheckout from CHECKED_OUT: caller must own lockedById (self lock only).
+ *   - checkout       from CHECKED_IN/NEW/APPROVED: object must not be locked by another user.
  */
 export function canTransition(
   from: ObjectState,
@@ -104,6 +110,16 @@ export function canTransition(
         ok: false,
         reason: 'NOT_LOCKED_BY_USER',
         message: '본인이 체크아웃한 자료만 체크인할 수 있습니다.',
+      };
+    }
+  }
+
+  if (action === 'cancelCheckout') {
+    if (!ctx.lockedById || ctx.lockedById !== ctx.userId) {
+      return {
+        ok: false,
+        reason: 'NOT_LOCKED_BY_USER',
+        message: '본인이 체크아웃한 자료만 취소할 수 있습니다.',
       };
     }
   }
