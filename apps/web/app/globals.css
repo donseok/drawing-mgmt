@@ -260,13 +260,17 @@
     @apply hover:bg-bg-muted hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring;
   }
 
+  /* BUG-022: shrink-0 + whitespace-nowrap so toolbar action buttons
+   * (e.g. "신규 등록") never wrap or get truncated when the toolbar runs
+   * out of horizontal space. Lets the surrounding flex container clip
+   * lower-priority items first instead of breaking the button label. */
   .app-action-button {
-    @apply inline-flex h-8 items-center justify-center gap-1.5 rounded-md border border-border bg-bg px-3 text-sm font-medium text-fg transition-colors;
+    @apply inline-flex h-8 shrink-0 items-center justify-center gap-1.5 whitespace-nowrap rounded-md border border-border bg-bg px-3 text-sm font-medium text-fg transition-colors;
     @apply hover:border-border-strong hover:bg-bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring;
   }
 
   .app-action-button-primary {
-    @apply inline-flex h-8 items-center justify-center gap-1.5 rounded-md bg-brand px-3 text-sm font-semibold text-brand-foreground transition-colors;
+    @apply inline-flex h-8 shrink-0 items-center justify-center gap-1.5 whitespace-nowrap rounded-md bg-brand px-3 text-sm font-semibold text-brand-foreground transition-colors;
     @apply hover:bg-brand-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring;
   }
 
@@ -281,19 +285,42 @@
 
   .app-table thead {
     @apply sticky top-0 z-10 bg-bg-subtle;
+    /* Crisper separation in dark mode where bg-subtle is very close to body bg.
+     * box-shadow (instead of border) so it doesn't shift cell heights. */
+    box-shadow: inset 0 -1px 0 hsl(var(--border));
   }
 
+  /* BUG-021: keep header / cell text on one line so the table grows wider
+   * inside an `.app-table-scroll` wrapper instead of wrapping characters
+   * (which made narrow viewports look broken at ~1100-1200px). */
   .app-table th {
-    @apply h-9 px-3 text-left text-[11px] font-semibold uppercase text-fg-muted;
+    @apply h-9 px-3 text-left text-[11px] font-semibold uppercase text-fg-muted whitespace-nowrap;
     letter-spacing: 0;
   }
 
   .app-table td {
-    @apply px-3 py-2 align-middle;
+    @apply px-3 py-2 align-middle whitespace-nowrap;
   }
 
   .app-table tr {
     @apply border-b border-border;
+  }
+
+  /* BUG-021 — Tables are dense (drawing#, version, date, status, owner, …)
+   * and easily exceed narrow viewports. Wrap any `.app-table` in a container
+   * with this class so columns scroll horizontally instead of forcing the
+   * page to widen. The table itself sets `whitespace-nowrap` on th/td.
+   *
+   * Usage:
+   *   <div class="app-table-scroll">
+   *     <table class="app-table"> … </table>
+   *   </div>
+   *
+   * The wrapper also re-roots the sticky thead so it pins to the wrapper's
+   * top edge rather than the page's. */
+  .app-table-scroll {
+    @apply relative w-full overflow-x-auto;
+    overscroll-behavior-x: contain;
   }
 }
 

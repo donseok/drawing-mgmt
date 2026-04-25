@@ -52,6 +52,15 @@ interface FolderRowProps {
   onSelect?: (node: FolderNode) => void;
 }
 
+/** Map permission flag to a Korean SR description used in the row aria-label.
+ *  BUG-024: previously the row had no accessible name, so screen readers
+ *  read it as a bare "treeitem". */
+const PERMISSION_LABEL: Record<NonNullable<FolderNode['permission']>, string> = {
+  public: '공개',
+  restricted: '제한 공개',
+  locked: '비공개',
+};
+
 function FolderRow({ node, depth, expanded, selectedId, onToggle, onSelect }: FolderRowProps) {
   const hasChildren = !!node.children && node.children.length > 0;
   const isExpanded = expanded.has(node.id);
@@ -80,10 +89,25 @@ function FolderRow({ node, depth, expanded, selectedId, onToggle, onSelect }: Fo
     }
   };
 
+  // BUG-024: bundle name + count + permission into a single SR-friendly label.
+  // e.g. "기계 폴더, 412개 자료, 공개"
+  const ariaLabel = React.useMemo(() => {
+    const parts: string[] = [`${node.name} 폴더`];
+    if (typeof node.objectCount === 'number') {
+      parts.push(`${node.objectCount}개 자료`);
+    }
+    if (node.permission && PERMISSION_LABEL[node.permission]) {
+      parts.push(PERMISSION_LABEL[node.permission]);
+    }
+    return parts.join(', ');
+  }, [node.name, node.objectCount, node.permission]);
+
   return (
     <li role="treeitem" aria-expanded={hasChildren ? isExpanded : undefined} aria-selected={isSelected}>
       <div
         tabIndex={0}
+        role="button"
+        aria-label={ariaLabel}
         onClick={onRowClick}
         onKeyDown={onKey}
         // TODO: right-click context menu (신규등록 / 하위폴더 생성 / 이름변경 / 이동 / 복사)
@@ -102,6 +126,7 @@ function FolderRow({ node, depth, expanded, selectedId, onToggle, onSelect }: Fo
           type="button"
           tabIndex={-1}
           aria-label={hasChildren ? (isExpanded ? '접기' : '펼치기') : undefined}
+          aria-hidden={!hasChildren}
           onClick={onChevronClick}
           className={cn(
             'flex h-4 w-4 shrink-0 items-center justify-center text-fg-muted',
@@ -113,17 +138,24 @@ function FolderRow({ node, depth, expanded, selectedId, onToggle, onSelect }: Fo
           />
         </button>
         {isExpanded && hasChildren ? (
-          <FolderOpen className="h-4 w-4 shrink-0 text-brand-500" />
+          <FolderOpen className="h-4 w-4 shrink-0 text-brand-500" aria-hidden="true" />
         ) : (
-          <Folder className="h-4 w-4 shrink-0 text-fg-muted" />
+          <Folder className="h-4 w-4 shrink-0 text-fg-muted" aria-hidden="true" />
         )}
         <span className="truncate font-medium">{node.name}</span>
         {typeof node.objectCount === 'number' && (
-          <span className="ml-auto pl-2 text-xs tabular-nums text-fg-muted">{node.objectCount}</span>
+          <span
+            className="ml-auto pl-2 text-xs tabular-nums text-fg-muted"
+            aria-hidden="true"
+          >
+            {node.objectCount}
+          </span>
         )}
-        {node.permission === 'locked' && <Lock className="ml-1 h-3.5 w-3.5 text-fg-muted" aria-label="제한 폴더" />}
+        {node.permission === 'locked' && (
+          <Lock className="ml-1 h-3.5 w-3.5 text-fg-muted" aria-hidden="true" />
+        )}
         {node.permission === 'public' && (
-          <Globe2 className="ml-1 h-3.5 w-3.5 text-fg-muted" aria-label="공개 폴더" />
+          <Globe2 className="ml-1 h-3.5 w-3.5 text-fg-muted" aria-hidden="true" />
         )}
       </div>
       {hasChildren && isExpanded && (
