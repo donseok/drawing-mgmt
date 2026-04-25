@@ -38,6 +38,7 @@ prisma/migrations/dev.db*
 
 # Turbo / build artifacts
 .turbo/
+*.tsbuildinfo
 
 # Sample fixtures (large)
 fixtures/dwg/*.dwg
