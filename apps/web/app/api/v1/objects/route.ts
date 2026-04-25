@@ -22,12 +22,36 @@ import { ok, error, ErrorCode } from '@/lib/api-response';
 import { extractRequestMeta, logActivity } from '@/lib/audit';
 import { evaluateNumberRule } from '@/lib/db-helpers';
 
+const SORT_FIELDS = ['registeredAt', 'number', 'name', 'revision', 'state'] as const;
+const SORT_DIRS = ['asc', 'desc'] as const;
+
 const querySchema = z.object({
   folderId: z.string().optional(),
   q: z.string().trim().min(1).optional(),
   classCode: z.string().optional(),
   state: z.nativeEnum(ObjectState).optional(),
   dateRange: z.string().optional(), // e.g. "2026" or "2026-01..2026-06"
+  ownerId: z.string().min(1).optional(),
+  lockedOnly: z
+    .string()
+    .optional()
+    .transform((v) => v === 'true'),
+  securityLevelMin: z
+    .string()
+    .optional()
+    .transform((v) => (v !== undefined && v !== '' ? parseInt(v, 10) : undefined))
+    .refine(
+      (v) => v === undefined || (Number.isInteger(v) && v >= 1 && v <= 5),
+      { message: 'securityLevelMin must be 1..5' },
+    ),
+  securityLevelMax: z
+    .string()
+    .optional()
+    .transform((v) => (v !== undefined && v !== '' ? parseInt(v, 10) : undefined))
+    .refine(
+      (v) => v === undefined || (Number.isInteger(v) && v >= 1 && v <= 5),
+      { message: 'securityLevelMax must be 1..5' },
+    ),
   includeTrash: z
     .string()
     .optional()
@@ -36,6 +60,8 @@ const querySchema = z.object({
     .string()
     .optional()
     .transform((v) => v === 'true'),
+  sortBy: z.enum(SORT_FIELDS).optional(),
+  sortDir: z.enum(SORT_DIRS).optional(),
   cursor: z.string().optional(),
   limit: z
     .string()
@@ -68,12 +94,16 @@ type ObjectSummary = {
   description: string | null;
   folderId: string;
   classId: string;
+  classCode: string;
+  className: string;
   securityLevel: number;
   state: ObjectState;
   ownerId: string;
+  ownerName: string;
   currentRevision: number;
   currentVersion: string;
   lockedById: string | null;
+  masterAttachmentId: string | null;
   createdAt: Date;
   updatedAt: Date;
 };
@@ -99,12 +129,26 @@ export async function GET(req: Request): Promise<NextResponse> {
 
   // Build the WHERE clause for non-search filters.
   const where: Prisma.ObjectEntityWhereInput = {};
-  if (q.folderId) where.folderId = q.folderId;
+  if (q.folderId) {
+    // Selecting a folder includes its descendants — without this, picking
+    // 본사(ROOT) returns 0 because seeded objects live under child folders.
+    const ids = await collectFolderSubtreeIds(q.folderId);
+    where.folderId = { in: ids };
+  }
   if (q.state) where.state = q.state;
   if (q.classCode) where.class = { code: q.classCode };
   if (!q.includeTrash) where.deletedAt = null;
   else where.state = ObjectState.DELETED;
   if (q.mineOnly) where.ownerId = user.id;
+  // mineOnly takes precedence; explicit ownerId filter only applies otherwise.
+  if (!q.mineOnly && q.ownerId) where.ownerId = q.ownerId;
+  if (q.lockedOnly) where.lockedById = { not: null };
+  if (q.securityLevelMin !== undefined || q.securityLevelMax !== undefined) {
+    where.securityLevel = {
+      ...(q.securityLevelMin !== undefined ? { gte: q.securityLevelMin } : {}),
+      ...(q.securityLevelMax !== undefined ? { lte: q.securityLevelMax } : {}),
+    };
+  }
 
   if (q.dateRange) {
     const range = parseDateRange(q.dateRange);
@@ -144,6 +188,28 @@ export async function GET(req: Request): Promise<NextResponse> {
   }
 
   const limit = q.limit;
+  const sortDir: 'asc' | 'desc' = q.sortDir ?? 'desc';
+  // Map UI-friendly sort keys to Prisma field names.
+  const sortField = ((): keyof Prisma.ObjectEntityOrderByWithRelationInput => {
+    switch (q.sortBy) {
+      case 'number':
+        return 'number';
+      case 'name':
+        return 'name';
+      case 'revision':
+        return 'currentRevision';
+      case 'state':
+        return 'state';
+      case 'registeredAt':
+      default:
+        return 'createdAt';
+    }
+  })();
+  const orderBy: Prisma.ObjectEntityOrderByWithRelationInput[] = [
+    { [sortField]: sortDir } as Prisma.ObjectEntityOrderByWithRelationInput,
+    { id: sortDir },
+  ];
+
   const rows = await prisma.objectEntity.findMany({
     where,
     cursor,
@@ -151,7 +217,7 @@ export async function GET(req: Request): Promise<NextResponse> {
     take: limit + 1, // fetch one extra to detect hasMore
     orderBy: q.q
       ? undefined // already ordered by similarity above; preserve that order client-side
-      : [{ createdAt: 'desc' }, { id: 'desc' }],
+      : orderBy,
     select: {
       id: true,
       number: true,
@@ -167,6 +233,25 @@ export async function GET(req: Request): Promise<NextResponse> {
       lockedById: true,
       createdAt: true,
       updatedAt: true,
+      class: { select: { code: true, name: true } },
+      owner: { select: { fullName: true } },
+      revisions: {
+        orderBy: { rev: 'desc' },
+        take: 1,
+        select: {
+          versions: {
+            orderBy: { ver: 'desc' },
+            take: 1,
+            select: {
+              attachments: {
+                where: { isMaster: true },
+                select: { id: true },
+                take: 1,
+              },
+            },
+          },
+        },
+      },
     },
   });
 
@@ -204,11 +289,31 @@ export async function GET(req: Request): Promise<NextResponse> {
   const page = hasMore ? ordered.slice(0, limit) : ordered;
   const nextCursor = hasMore && page.length > 0 ? page[page.length - 1]!.id : null;
 
-  // Normalize Decimal -> string for JSON safety.
-  const data: ObjectSummary[] = page.map((r) => ({
-    ...r,
-    currentVersion: r.currentVersion.toString(),
-  }));
+  // Normalize Decimal -> string + flatten nested includes for the client.
+  const data: ObjectSummary[] = page.map((r) => {
+    const masterAttId =
+      r.revisions[0]?.versions[0]?.attachments[0]?.id ?? null;
+    return {
+      id: r.id,
+      number: r.number,
+      name: r.name,
+      description: r.description,
+      folderId: r.folderId,
+      classId: r.classId,
+      classCode: r.class.code,
+      className: r.class.name,
+      securityLevel: r.securityLevel,
+      state: r.state,
+      ownerId: r.ownerId,
+      ownerName: r.owner.fullName,
+      currentRevision: r.currentRevision,
+      currentVersion: r.currentVersion.toString(),
+      lockedById: r.lockedById,
+      masterAttachmentId: masterAttId,
+      createdAt: r.createdAt,
+      updatedAt: r.updatedAt,
+    };
+  });
 
   return ok(data, { nextCursor, hasMore });
 }
@@ -397,6 +502,32 @@ function parseDateRange(s: string): { from: Date; to: Date } | null {
   const to = parseDate(s, true);
   if (!from || !to) return null;
   return { from, to };
+}
+
+/**
+ * Walk the Folder tree from `rootId` downward and return all reachable folder
+ * ids (including the root). Used so a folder click filters descendants too.
+ */
+async function collectFolderSubtreeIds(rootId: string): Promise<string[]> {
+  const all = await prisma.folder.findMany({
+    select: { id: true, parentId: true },
+  });
+  const childrenByParent = new Map<string, string[]>();
+  for (const f of all) {
+    if (!f.parentId) continue;
+    const arr = childrenByParent.get(f.parentId) ?? [];
+    arr.push(f.id);
+    childrenByParent.set(f.parentId, arr);
+  }
+  const out: string[] = [];
+  const stack = [rootId];
+  while (stack.length > 0) {
+    const id = stack.pop()!;
+    out.push(id);
+    const kids = childrenByParent.get(id);
+    if (kids) stack.push(...kids);
+  }
+  return out;
 }
 
 function parseDate(s: string, end = false): Date | null {
