@@ -24,6 +24,8 @@
 
 'use client';
 
+import * as THREE from 'three';
+
 import type { LayerInfo } from './types';
 
 // We avoid a top-level `import` of 'dxf-viewer' (it pulls in three.js eagerly).
@@ -114,7 +116,11 @@ export async function createDxfEngine(
 ): Promise<DxfEngine> {
   const Ctor = await loadDxfViewerCtor();
   const instance = new Ctor(container, {
-    clearColor: options.clearColor ?? 0xffffff,
+    // dxf-viewer expects clearColor to be a THREE.Color instance because it
+    // calls `.getHex()` on it during init. Passing a raw 0xffffff number
+    // crashes the DXF tab on mount. Wrap on entry; keep the public option
+    // type as `number` for callers.
+    clearColor: new THREE.Color(options.clearColor ?? 0xffffff),
     autoResize: options.autoResize ?? true,
     canvasAlpha: false,
     pointSize: 2,
