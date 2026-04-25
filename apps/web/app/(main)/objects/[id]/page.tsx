@@ -3,6 +3,8 @@
 import * as React from 'react';
 import Link from 'next/link';
 import { useParams, useRouter, useSearchParams } from 'next/navigation';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { toast } from 'sonner';
 import {
   ArrowLeft,
   ChevronRight,
@@ -17,6 +19,8 @@ import {
   FileText,
   CheckCircle2,
   Clock,
+  Lock,
+  Undo2,
 } from 'lucide-react';
 import { cn } from '@/lib/cn';
 import type { ObjectState } from '@/components/object-list/ObjectTable';
@@ -24,8 +28,14 @@ import { StatusBadge } from '@/components/StatusBadge';
 import { ApprovalLine } from '@/components/ApprovalLine';
 import { RevisionTree } from '@/components/RevisionTree';
 import { DrawingPlaceholder } from '@/components/DrawingPlaceholder';
+import { ConfirmDialog } from '@/components/ConfirmDialog';
+import { queryKeys } from '@/lib/queries';
+import { api, ApiError } from '@/lib/api-client';
 
 // MOCK detail — TODO: api.get(`/api/v1/objects/${id}`)
+// `lockedBy` is `{ id, name } | null` so the page can compare against the
+// signed-in user (BUG-05). Same shape the real GET /api/v1/objects/:id will
+// return when we replace the mock with a live query.
 const MOCK_OBJECT = {
   id: 'obj-1',
   number: 'CGL-MEC-2026-00012',
@@ -41,6 +51,7 @@ const MOCK_OBJECT = {
   modifiedAt: '2026-04-15',
   masterFile: 'CGL-MEC-2026-00012.dwg',
   masterAttachmentId: 'att-1',
+  lockedBy: null as { id: string; name: string } | null,
   attributes: [
     { label: '라인', value: 'CGL-2' },
     { label: '부위', value: '메인롤러' },
@@ -95,20 +106,45 @@ type TabKey = (typeof TABS)[number]['key'];
 
 const ACTION_VISIBILITY: Record<ObjectState, Record<string, boolean>> = {
   NEW: { open: true, checkout: true, checkin: false, revise: false, submit: false, cancel: false, delete: true, download: true },
-  CHECKED_OUT: { open: true, checkout: false, checkin: true, revise: false, submit: false, cancel: false, delete: false, download: true },
+  CHECKED_OUT: { open: true, checkout: false, checkin: true, revise: false, submit: false, cancel: true, delete: false, download: true },
   CHECKED_IN: { open: true, checkout: true, checkin: false, revise: false, submit: true, cancel: false, delete: true, download: true },
-  IN_APPROVAL: { open: true, checkout: false, checkin: false, revise: false, submit: false, cancel: true, delete: false, download: true },
-  APPROVED: { open: true, checkout: false, checkin: false, revise: true, submit: false, cancel: false, delete: true, download: true },
+  IN_APPROVAL: { open: true, checkout: false, checkin: false, revise: false, submit: false, cancel: false, delete: false, download: true },
+  APPROVED: { open: true, checkout: true, checkin: false, revise: false, submit: false, cancel: false, delete: true, download: true },
   DELETED: { open: true, checkout: false, checkin: false, revise: false, submit: false, cancel: false, delete: false, download: true },
+};
+
+// /api/v1/me payload — only the field we use for lock-ownership checks.
+interface MeResponse {
+  id: string;
+}
+
+// Object mutation actions wired in BUG-05. Approval submission is intentionally
+// left out and tracked for R3 (per the BUG-05 scope note).
+type ObjectAction = 'checkout' | 'checkin' | 'release';
+
+const ACTION_LABEL: Record<ObjectAction, string> = {
+  checkout: '체크아웃',
+  checkin: '체크인',
+  release: '개정 취소',
 };
 
 export default function ObjectDetailPage() {
   const router = useRouter();
   const params = useParams<{ id: string }>();
   const searchParams = useSearchParams();
+  const queryClient = useQueryClient();
 
   // TODO: const { data: obj } = useQuery(['object', params.id], () => api.get(`/api/v1/objects/${params.id}`));
   const obj = MOCK_OBJECT;
+
+  // Current user — used to gate CHECKED_OUT actions (only the locker can
+  // checkin / cancel-revision). SessionProvider isn't wired yet, so we read
+  // the session through the existing /api/v1/me endpoint.
+  const { data: me } = useQuery<MeResponse>({
+    queryKey: queryKeys.me(),
+    queryFn: () => api.get<MeResponse>('/api/v1/me'),
+    staleTime: 5 * 60 * 1000,
+  });
 
   const tabFromUrl = (searchParams?.get('tab') as TabKey | null) ?? 'info';
   const tab: TabKey = TABS.some((t) => t.key === tabFromUrl) ? tabFromUrl : 'info';
@@ -120,6 +156,50 @@ export default function ObjectDetailPage() {
   };
 
   const vis = ACTION_VISIBILITY[obj.state];
+
+  // BUG-05 — lock ownership determines whether CHECKED_OUT actions are
+  // available. When the object is locked by someone else, we show a lock
+  // banner instead of action buttons.
+  const isLocker =
+    obj.state === 'CHECKED_OUT' && !!obj.lockedBy && obj.lockedBy.id === me?.id;
+  const lockedByOther =
+    obj.state === 'CHECKED_OUT' && !!obj.lockedBy && obj.lockedBy.id !== me?.id;
+  const isInApproval = obj.state === 'IN_APPROVAL';
+
+  // Mutation factory: same invalidation set for every state transition we
+  // wire here. On success: refresh detail + grid; on error: surface the BE
+  // message via toast.
+  const useObjectMutation = (action: ObjectAction) =>
+    useMutation<unknown, ApiError, void>({
+      mutationFn: () => api.post(`/api/v1/objects/${params.id}/${action}`),
+      onSuccess: () => {
+        void queryClient.invalidateQueries({
+          queryKey: queryKeys.objects.detail(params.id),
+        });
+        void queryClient.invalidateQueries({ queryKey: queryKeys.objects.all() });
+        toast.success(`${ACTION_LABEL[action]} 완료`);
+      },
+      onError: (err) => {
+        toast.error(`${ACTION_LABEL[action]} 실패`, {
+          description: err.message,
+        });
+      },
+    });
+
+  const checkoutMutation = useObjectMutation('checkout');
+  const checkinMutation = useObjectMutation('checkin');
+  const releaseMutation = useObjectMutation('release');
+
+  const [confirmReleaseOpen, setConfirmReleaseOpen] = React.useState(false);
+
+  const pendingMutation =
+    checkoutMutation.isPending ||
+    checkinMutation.isPending ||
+    releaseMutation.isPending;
+
+  const showCheckout = vis.checkout && !lockedByOther && !isInApproval;
+  const showCheckin = vis.checkin && isLocker;
+  const showCancel = vis.cancel && isLocker;
 
   return (
     <div className="flex h-full min-w-0 flex-1 flex-col overflow-auto">
@@ -161,14 +241,69 @@ export default function ObjectDetailPage() {
             visible={vis.open}
           />
           <ActionButton icon={<GitBranch className="h-3.5 w-3.5" />} label="개정" visible={vis.revise} />
-          <ActionButton icon={<Edit3 className="h-3.5 w-3.5" />} label="체크아웃" visible={vis.checkout} />
-          <ActionButton icon={<CheckCircle2 className="h-3.5 w-3.5" />} label="체크인" visible={vis.checkin} />
+          <ActionButton
+            icon={<Edit3 className="h-3.5 w-3.5" />}
+            label={checkoutMutation.isPending ? '체크아웃 중…' : '체크아웃'}
+            visible={showCheckout}
+            disabled={pendingMutation}
+            onClick={() => checkoutMutation.mutate()}
+          />
+          <ActionButton
+            icon={<CheckCircle2 className="h-3.5 w-3.5" />}
+            label={checkinMutation.isPending ? '체크인 중…' : '체크인'}
+            visible={showCheckin}
+            disabled={pendingMutation}
+            onClick={() => checkinMutation.mutate()}
+          />
           <ActionButton icon={<Send className="h-3.5 w-3.5" />} label="결재상신" visible={vis.submit} />
-          <ActionButton icon={<Send className="h-3.5 w-3.5" />} label="결재취소" visible={vis.cancel} />
+          <ActionButton
+            icon={<Undo2 className="h-3.5 w-3.5" />}
+            label={releaseMutation.isPending ? '취소 중…' : '개정 취소'}
+            visible={showCancel}
+            disabled={pendingMutation}
+            onClick={() => setConfirmReleaseOpen(true)}
+          />
           <ActionButton icon={<Download className="h-3.5 w-3.5" />} label="다운로드" visible={vis.download} dropdown />
           <ActionButton icon={<Share2 className="h-3.5 w-3.5" />} label="공유" visible />
         </div>
+
+        {lockedByOther && obj.lockedBy ? (
+          <div
+            role="status"
+            className="mt-3 flex items-center gap-2 rounded-md border border-warning/30 bg-warning/10 px-3 py-2 text-xs text-fg"
+          >
+            <Lock className="h-3.5 w-3.5 text-warning" />
+            <span className="font-medium">{obj.lockedBy.name}</span>
+            <span className="text-fg-muted">
+              님이 체크아웃 중입니다. 체크인 또는 개정 취소는 잠금 소유자만 수행할 수 있습니다.
+            </span>
+          </div>
+        ) : null}
+
+        {isInApproval ? (
+          <div
+            role="status"
+            className="mt-3 flex items-center gap-2 rounded-md border border-info/30 bg-info/10 px-3 py-2 text-xs text-fg"
+          >
+            <Send className="h-3.5 w-3.5 text-info" />
+            <span className="text-fg-muted">결재 진행 중입니다. 결과 확정까지 액션이 제한됩니다.</span>
+          </div>
+        ) : null}
       </div>
+
+      <ConfirmDialog
+        open={confirmReleaseOpen}
+        onOpenChange={setConfirmReleaseOpen}
+        title="개정을 취소하시겠습니까?"
+        description="체크아웃이 해제되고 작업 중인 변경 내용이 사라질 수 있습니다."
+        confirmText="개정 취소"
+        variant="destructive"
+        disabled={releaseMutation.isPending}
+        onConfirm={async () => {
+          await releaseMutation.mutateAsync();
+          setConfirmReleaseOpen(false);
+        }}
+      />
 
       {/* Tabs */}
       <div className="sticky top-0 z-10 border-b border-border bg-bg px-6">
@@ -232,11 +367,23 @@ interface BtnProps {
   primary?: boolean;
   href?: string;
   dropdown?: boolean;
+  disabled?: boolean;
+  onClick?: () => void;
 }
-function ActionButton({ label, icon, visible = true, primary, href, dropdown }: BtnProps) {
+function ActionButton({
+  label,
+  icon,
+  visible = true,
+  primary,
+  href,
+  dropdown,
+  disabled,
+  onClick,
+}: BtnProps) {
   if (!visible) return null;
   const cls = cn(
     primary ? 'app-action-button-primary' : 'app-action-button',
+    disabled && 'pointer-events-none opacity-60',
   );
   const inner = (
     <>
@@ -247,13 +394,13 @@ function ActionButton({ label, icon, visible = true, primary, href, dropdown }: 
   );
   if (href) {
     return (
-      <Link href={href} className={cls}>
+      <Link href={href} className={cls} aria-disabled={disabled || undefined}>
         {inner}
       </Link>
     );
   }
   return (
-    <button type="button" className={cls}>
+    <button type="button" className={cls} disabled={disabled} onClick={onClick}>
       {inner}
     </button>
   );
