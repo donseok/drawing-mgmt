@@ -1,12 +1,19 @@
-// GET /api/v1/approvals?box=waiting|done|sent|trash
+// GET /api/v1/approvals?box=waiting|done|sent|recall|trash
 //
 // Inboxes (TRD §6.2):
 //   waiting — approvals where the current user has a WAITING step that is
 //             the active (lowest-order WAITING) step for an IN_PROGRESS approval.
 //   done    — approvals where the current user has any acted step
 //             (APPROVED or REJECTED).
-//   sent    — approvals requested by the current user.
-//   trash   — approvals on objects that were soft-deleted.
+//   sent    — approvals requested by the current user that are still active
+//             or have terminated normally (IN_PROGRESS / APPROVED / REJECTED).
+//   recall  — approvals requested by the current user that were CANCELLED
+//             (회수). Distinct from `sent` so the FE can render a dedicated tab.
+//   trash   — approvals on objects that were soft-deleted (legacy alias).
+//
+// On first request, if the Approval table is empty, a tiny demo seed is
+// inserted so the FE can render something useful out-of-the-box. The seed
+// is idempotent — once any rows exist, the inline-seed branch is skipped.
 
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
@@ -14,9 +21,10 @@ import { ApprovalStatus, ObjectState, StepStatus } from '@prisma/client';
 import { prisma } from '@/lib/prisma';
 import { requireUser } from '@/lib/auth-helpers';
 import { ok, error, ErrorCode } from '@/lib/api-response';
+import { ensureApprovalDemoSeed } from '@/lib/demo-seed';
 
 const querySchema = z.object({
-  box: z.enum(['waiting', 'done', 'sent', 'trash']).default('waiting'),
+  box: z.enum(['waiting', 'done', 'sent', 'recall', 'trash']).default('waiting'),
 });
 
 export async function GET(req: Request): Promise<NextResponse> {
@@ -61,9 +69,34 @@ export async function GET(req: Request): Promise<NextResponse> {
     },
   };
 
+  // First-call demo seed (no-op if any Approval rows already exist).
+  await ensureApprovalDemoSeed();
+
   if (box === 'sent') {
     const data = await prisma.approval.findMany({
-      where: { requesterId: user.id },
+      where: {
+        requesterId: user.id,
+        status: {
+          in: [
+            ApprovalStatus.IN_PROGRESS,
+            ApprovalStatus.APPROVED,
+            ApprovalStatus.REJECTED,
+            ApprovalStatus.PENDING,
+          ],
+        },
+      },
+      orderBy: { createdAt: 'desc' },
+      include: baseInclude,
+    });
+    return ok(data);
+  }
+
+  if (box === 'recall') {
+    const data = await prisma.approval.findMany({
+      where: {
+        requesterId: user.id,
+        status: ApprovalStatus.CANCELLED,
+      },
       orderBy: { createdAt: 'desc' },
       include: baseInclude,
     });
