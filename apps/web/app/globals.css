@@ -150,7 +150,9 @@
   }
 
   body {
-    background-color: hsl(var(--bg));
+    background:
+      linear-gradient(180deg, hsl(var(--bg-subtle)) 0%, hsl(var(--bg)) 46%),
+      hsl(var(--bg));
     color: hsl(var(--fg));
     font-family:
       "Pretendard Variable",
@@ -226,6 +228,72 @@
       transition-duration: 0ms !important;
       scroll-behavior: auto !important;
     }
+  }
+}
+
+@layer components {
+  .app-frame {
+    background:
+      linear-gradient(180deg, hsl(var(--bg-subtle)) 0%, hsl(var(--bg)) 42%),
+      hsl(var(--bg));
+  }
+
+  .app-panel {
+    @apply rounded-lg border border-border bg-bg;
+    box-shadow: 0 1px 2px hsl(0 0% 0% / 0.04);
+  }
+
+  .app-panel-muted {
+    @apply rounded-lg border border-border bg-bg-subtle;
+  }
+
+  .app-panel-header {
+    @apply flex min-h-10 items-center justify-between gap-3 border-b border-border px-4 py-2;
+  }
+
+  .app-toolbar {
+    @apply border-b border-border bg-bg/95 backdrop-blur;
+  }
+
+  .app-icon-button {
+    @apply inline-flex h-8 w-8 items-center justify-center rounded-md text-fg-muted transition-colors;
+    @apply hover:bg-bg-muted hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring;
+  }
+
+  .app-action-button {
+    @apply inline-flex h-8 items-center justify-center gap-1.5 rounded-md border border-border bg-bg px-3 text-sm font-medium text-fg transition-colors;
+    @apply hover:border-border-strong hover:bg-bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring;
+  }
+
+  .app-action-button-primary {
+    @apply inline-flex h-8 items-center justify-center gap-1.5 rounded-md bg-brand px-3 text-sm font-semibold text-brand-foreground transition-colors;
+    @apply hover:bg-brand-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring;
+  }
+
+  .app-kicker {
+    @apply text-[11px] font-semibold uppercase text-fg-subtle;
+    letter-spacing: 0;
+  }
+
+  .app-table {
+    @apply w-full border-collapse text-sm;
+  }
+
+  .app-table thead {
+    @apply sticky top-0 z-10 bg-bg-subtle;
+  }
+
+  .app-table th {
+    @apply h-9 px-3 text-left text-[11px] font-semibold uppercase text-fg-muted;
+    letter-spacing: 0;
+  }
+
+  .app-table td {
+    @apply px-3 py-2 align-middle;
+  }
+
+  .app-table tr {
+    @apply border-b border-border;
   }
 }
 

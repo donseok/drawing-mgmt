@@ -1,6 +1,6 @@
 'use client';
 
-import { type ReactNode } from 'react';
+import { type PointerEvent as ReactPointerEvent, type ReactNode, useCallback } from 'react';
 import { ChevronsLeft, ChevronsRight } from 'lucide-react';
 import { useUiStore } from '@/stores/uiStore';
 import { cn } from '@/lib/cn';
@@ -18,7 +18,32 @@ interface SubSidebarProps {
 export function SubSidebar({ title, children, toolbar, footer, className }: SubSidebarProps) {
   const open = useUiStore((s) => s.sidebarOpen);
   const width = useUiStore((s) => s.sidebarWidth);
+  const setWidth = useUiStore((s) => s.setSidebarWidth);
   const toggle = useUiStore((s) => s.toggleSidebar);
+
+  const startResize = useCallback(
+    (event: ReactPointerEvent<HTMLDivElement>) => {
+      event.preventDefault();
+      const startX = event.clientX;
+      const startWidth = width;
+
+      const onMove = (moveEvent: PointerEvent) => {
+        setWidth(startWidth + moveEvent.clientX - startX);
+      };
+      const onUp = () => {
+        window.removeEventListener('pointermove', onMove);
+        window.removeEventListener('pointerup', onUp);
+        document.body.style.cursor = '';
+        document.body.style.userSelect = '';
+      };
+
+      document.body.style.cursor = 'col-resize';
+      document.body.style.userSelect = 'none';
+      window.addEventListener('pointermove', onMove);
+      window.addEventListener('pointerup', onUp);
+    },
+    [setWidth, width],
+  );
 
   if (!open) {
     return (
@@ -44,13 +69,13 @@ export function SubSidebar({ title, children, toolbar, footer, className }: SubS
       aria-label={title ?? '보조 사이드바'}
       style={{ width }}
       className={cn(
-        'flex h-full shrink-0 flex-col border-r border-border bg-bg-subtle',
+        'relative flex h-full shrink-0 flex-col border-r border-border bg-bg-subtle',
         className,
       )}
     >
       {(title || toolbar) && (
         <div className="flex h-10 items-center gap-2 border-b border-border px-3">
-          {title && <h2 className="flex-1 truncate text-xs font-semibold uppercase tracking-wide text-fg-muted">{title}</h2>}
+          {title && <h2 className="app-kicker flex-1 truncate">{title}</h2>}
           {toolbar}
           <button
             type="button"
@@ -65,6 +90,16 @@ export function SubSidebar({ title, children, toolbar, footer, className }: SubS
       )}
       <div className="flex-1 overflow-auto px-2 py-2">{children}</div>
       {footer && <div className="border-t border-border px-3 py-2 text-xs">{footer}</div>}
+      <div
+        role="separator"
+        aria-orientation="vertical"
+        aria-label="사이드바 너비 조절"
+        title="사이드바 너비 조절"
+        onPointerDown={startResize}
+        className="absolute inset-y-0 -right-1 w-2 cursor-col-resize"
+      >
+        <span className="block h-full w-px translate-x-1 bg-transparent transition-colors hover:bg-brand/50" />
+      </div>
     </aside>
   );
 }

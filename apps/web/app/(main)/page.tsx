@@ -9,6 +9,7 @@ import {
   Plus,
   FileText,
   Folder,
+  Activity,
 } from 'lucide-react';
 import { cn } from '@/lib/cn';
 
@@ -88,16 +89,17 @@ export default async function WorkspaceHomePage() {
 
   return (
     <div className="flex-1 overflow-auto">
-      <div className="mx-auto w-full max-w-6xl px-6 py-6">
+      <div className="mx-auto w-full max-w-7xl px-8 py-6">
         {/* Greeting */}
-        <header className="mb-6 flex items-end justify-between">
-          <div>
-            <h1 className="text-2xl font-bold text-fg">안녕하세요, {name} 님</h1>
-            <p className="mt-1 text-sm text-fg-muted">오늘 {formatToday()}</p>
+        <header className="mb-6 flex items-start justify-between gap-4">
+          <div className="min-w-0">
+            <div className="app-kicker">Workspace</div>
+            <h1 className="mt-1 text-2xl font-semibold text-fg">안녕하세요, {name} 님</h1>
+            <p className="mt-1 text-sm text-fg-muted">오늘 {formatToday()} 기준 업무 현황입니다.</p>
           </div>
           <Link
             href="/search?action=new"
-            className="inline-flex h-9 items-center gap-1.5 rounded-md bg-brand px-3 text-sm font-medium text-brand-foreground hover:opacity-90"
+            className="app-action-button-primary h-9"
           >
             <Plus className="h-4 w-4" />
             신규 자료 등록
@@ -105,7 +107,7 @@ export default async function WorkspaceHomePage() {
         </header>
 
         {/* Stat cards */}
-        <section aria-label="요약" className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+        <section aria-label="요약" className="grid grid-cols-2 gap-3 xl:grid-cols-4">
           {STAT_CARDS.map((c) => {
             const Icon = c.icon;
             return (
@@ -113,18 +115,18 @@ export default async function WorkspaceHomePage() {
                 key={c.key}
                 href={c.href}
                 className={cn(
-                  'group flex flex-col gap-2 rounded-lg border border-border bg-bg p-4 transition-colors',
+                  'group flex h-24 items-center gap-3 rounded-lg border border-border bg-bg px-4 transition-colors',
                   'hover:border-border-strong hover:bg-bg-subtle',
                 )}
               >
-                <div className="flex items-center justify-between">
-                  <span className={cn('inline-flex h-8 w-8 items-center justify-center rounded-md bg-bg-muted', c.accent)}>
+                <span className={cn('inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-md border border-border bg-bg-subtle', c.accent)}>
                     <Icon className="h-4 w-4" />
                   </span>
-                  <ArrowRight className="h-4 w-4 text-fg-subtle transition-transform group-hover:translate-x-0.5" />
-                </div>
-                <span className="text-xs text-fg-muted">{c.title}</span>
-                <span className="text-2xl font-bold text-fg">{c.count}<span className="ml-1 text-xs font-normal text-fg-muted">건</span></span>
+                <span className="min-w-0 flex-1">
+                  <span className="block text-xs text-fg-muted">{c.title}</span>
+                  <span className="mt-1 block text-2xl font-semibold text-fg">{c.count}<span className="ml-1 text-xs font-normal text-fg-muted">건</span></span>
+                </span>
+                <ArrowRight className="h-4 w-4 text-fg-subtle transition-transform group-hover:translate-x-0.5" />
               </Link>
             );
           })}
@@ -133,10 +135,13 @@ export default async function WorkspaceHomePage() {
         {/* Favorites */}
         <section aria-label="즐겨찾기" className="mt-8">
           <div className="mb-2 flex items-end justify-between">
-            <h2 className="text-base font-semibold text-fg">즐겨찾기</h2>
+            <div>
+              <div className="app-kicker">Pinned</div>
+              <h2 className="mt-1 text-base font-semibold text-fg">즐겨찾기</h2>
+            </div>
             <button
               type="button"
-              className="inline-flex h-7 items-center gap-1 rounded text-xs text-fg-muted hover:text-fg"
+              className="app-action-button h-8 text-xs"
             >
               <Plus className="h-3.5 w-3.5" />
               추가
@@ -148,9 +153,9 @@ export default async function WorkspaceHomePage() {
               <li key={f.id}>
                 <Link
                   href={f.kind === 'object' ? `/objects/${f.id}` : `/search?folder=${f.id}`}
-                  className="flex h-32 flex-col rounded-lg border border-border bg-bg transition-colors hover:border-border-strong hover:bg-bg-subtle"
+                  className="flex h-32 flex-col overflow-hidden rounded-lg border border-border bg-bg transition-colors hover:border-border-strong hover:bg-bg-subtle"
                 >
-                  <div className="flex flex-1 items-center justify-center bg-bg-muted text-fg-subtle">
+                  <div className="flex flex-1 items-center justify-center bg-bg-subtle text-fg-subtle">
                     {f.kind === 'object' ? <FileText className="h-7 w-7" /> : <Folder className="h-7 w-7" />}
                   </div>
                   <div className="border-t border-border px-2 py-2">
@@ -175,13 +180,16 @@ export default async function WorkspaceHomePage() {
         {/* Recent activity + Notices */}
         <div className="mt-8 grid grid-cols-1 gap-6 lg:grid-cols-3">
           <section aria-label="최근 활동" className="lg:col-span-2">
-            <h2 className="mb-2 text-base font-semibold text-fg">최근 활동</h2>
-            <ul className="overflow-hidden rounded-lg border border-border bg-bg">
+            <div className="mb-2 flex items-center gap-2">
+              <Activity className="h-4 w-4 text-fg-subtle" />
+              <h2 className="text-base font-semibold text-fg">최근 활동</h2>
+            </div>
+            <ul className="app-panel overflow-hidden">
               {RECENT_ACTIVITY.map((a, i) => (
                 <li
                   key={i}
                   className={cn(
-                    'flex items-center gap-3 px-3 py-2 text-sm',
+                    'flex items-center gap-3 px-4 py-2.5 text-sm',
                     i !== RECENT_ACTIVITY.length - 1 && 'border-b border-border',
                   )}
                 >
@@ -205,9 +213,9 @@ export default async function WorkspaceHomePage() {
               {NOTICES.map((n) => (
                 <li
                   key={n.id}
-                  className="rounded-lg border border-amber-500/30 bg-amber-500/5 p-3 text-sm"
+                  className="rounded-lg border border-warning/30 bg-warning/10 p-3 text-sm"
                 >
-                  <span className="mr-1 inline-flex h-5 items-center rounded bg-amber-500/15 px-1.5 text-[11px] font-semibold text-amber-700 dark:text-amber-400">
+                  <span className="mr-1 inline-flex h-5 items-center rounded bg-warning/15 px-1.5 text-[11px] font-semibold text-warning">
                     {n.severity}
                   </span>
                   <span className="text-fg">{n.title}</span>

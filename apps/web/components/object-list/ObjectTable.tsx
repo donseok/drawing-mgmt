@@ -13,6 +13,7 @@ import {
 import { useRouter } from 'next/navigation';
 import { ChevronUp, ChevronDown, ChevronsUpDown, MoreVertical, Image as ImageIcon } from 'lucide-react';
 import { cn } from '@/lib/cn';
+import { StatusBadge } from '@/components/StatusBadge';
 
 export type ObjectState =
   | 'NEW'
@@ -38,24 +39,16 @@ export interface ObjectRow {
   masterAttachmentId?: string;
 }
 
-const STATUS_STYLES: Record<ObjectState, { dot: string; label: string }> = {
-  NEW: { dot: 'bg-status-new', label: 'NEW' },
-  CHECKED_OUT: { dot: 'bg-status-checkedOut', label: 'C/O' },
-  CHECKED_IN: { dot: 'bg-status-checkedIn', label: 'C/I' },
-  IN_APPROVAL: { dot: 'bg-status-inApproval', label: '결재중' },
-  APPROVED: { dot: 'bg-status-approved', label: 'APPR' },
-  DELETED: { dot: 'bg-status-deleted', label: '폐기' },
-};
-
 interface ObjectTableProps {
   data: ObjectRow[];
   selectedId?: string;
   onSelect?: (row: ObjectRow | null) => void;
+  onSelectedCountChange?: (count: number) => void;
   /** highlight matches in name/number; case-insensitive */
   searchTerm?: string;
 }
 
-export function ObjectTable({ data, selectedId, onSelect, searchTerm }: ObjectTableProps) {
+export function ObjectTable({ data, selectedId, onSelect, onSelectedCountChange, searchTerm }: ObjectTableProps) {
   const router = useRouter();
   const [sorting, setSorting] = React.useState<SortingState>([{ id: 'registeredAt', desc: true }]);
   const [rowSelection, setRowSelection] = React.useState<RowSelectionState>({});
@@ -70,7 +63,7 @@ export function ObjectTable({ data, selectedId, onSelect, searchTerm }: ObjectTa
             aria-label="전체 선택"
             checked={table.getIsAllRowsSelected()}
             onChange={table.getToggleAllRowsSelectedHandler()}
-            className="h-3.5 w-3.5 cursor-pointer rounded border-border"
+            className="h-3.5 w-3.5 cursor-pointer rounded border-border accent-brand"
           />
         ),
         cell: ({ row }) => (
@@ -80,7 +73,7 @@ export function ObjectTable({ data, selectedId, onSelect, searchTerm }: ObjectTa
             checked={row.getIsSelected()}
             onChange={row.getToggleSelectedHandler()}
             onClick={(e) => e.stopPropagation()}
-            className="h-3.5 w-3.5 cursor-pointer rounded border-border"
+            className="h-3.5 w-3.5 cursor-pointer rounded border-border accent-brand"
           />
         ),
         size: 32,
@@ -90,13 +83,13 @@ export function ObjectTable({ data, selectedId, onSelect, searchTerm }: ObjectTa
         id: 'thumbnail',
         header: '',
         cell: ({ row }) => (
-          <div className="flex h-9 w-9 items-center justify-center overflow-hidden rounded border border-border bg-bg-muted">
+          <div className="flex h-10 w-12 items-center justify-center overflow-hidden rounded-md border border-border bg-bg-subtle">
             {row.original.thumbnailUrl ? (
               // eslint-disable-next-line @next/next/no-img-element
               <img
                 src={row.original.thumbnailUrl}
                 alt=""
-                className="h-full w-full object-cover transition-transform group-hover:scale-150"
+                className="h-full w-full object-cover"
               />
             ) : (
               <ImageIcon className="h-4 w-4 text-fg-subtle" aria-hidden />
@@ -110,7 +103,7 @@ export function ObjectTable({ data, selectedId, onSelect, searchTerm }: ObjectTa
         accessorKey: 'number',
         header: '도면번호',
         cell: ({ row }) => (
-          <span className="font-mono text-[13px] text-fg">{highlight(row.original.number, searchTerm)}</span>
+          <span className="font-mono text-[13px] font-medium text-fg">{highlight(row.original.number, searchTerm)}</span>
         ),
         size: 200,
       },
@@ -118,14 +111,14 @@ export function ObjectTable({ data, selectedId, onSelect, searchTerm }: ObjectTa
         accessorKey: 'name',
         header: '자료명',
         cell: ({ row }) => (
-          <span className="truncate text-fg">{highlight(row.original.name, searchTerm)}</span>
+          <span className="block max-w-[360px] truncate font-medium text-fg">{highlight(row.original.name, searchTerm)}</span>
         ),
       },
       {
         accessorKey: 'classLabel',
         header: '자료유형',
         cell: ({ row }) => (
-          <span className="inline-flex h-5 items-center rounded border border-border bg-bg-muted px-1.5 text-[11px] text-fg-muted">
+          <span className="inline-flex h-6 items-center rounded-md border border-border bg-bg-subtle px-2 text-[12px] font-medium text-fg-muted">
             {row.original.classLabel}
           </span>
         ),
@@ -134,16 +127,8 @@ export function ObjectTable({ data, selectedId, onSelect, searchTerm }: ObjectTa
       {
         accessorKey: 'state',
         header: '상태',
-        cell: ({ row }) => {
-          const s = STATUS_STYLES[row.original.state];
-          return (
-            <span className="inline-flex items-center gap-1.5">
-              <span className={cn('h-2 w-2 rounded-full', s.dot)} aria-hidden />
-              <span className="text-[12px] text-fg-muted">{s.label}</span>
-            </span>
-          );
-        },
-        size: 80,
+        cell: ({ row }) => <StatusBadge status={row.original.state} size="sm" />,
+        size: 104,
       },
       {
         id: 'revVer',
@@ -184,7 +169,7 @@ export function ObjectTable({ data, selectedId, onSelect, searchTerm }: ObjectTa
             type="button"
             aria-label="행 메뉴"
             onClick={(e) => e.stopPropagation()}
-            className="inline-flex h-6 w-6 items-center justify-center rounded text-fg-muted hover:bg-bg-muted"
+            className="app-icon-button h-7 w-7"
           >
             <MoreVertical className="h-4 w-4" />
           </button>
@@ -207,10 +192,14 @@ export function ObjectTable({ data, selectedId, onSelect, searchTerm }: ObjectTa
     getSortedRowModel: getSortedRowModel(),
   });
 
+  React.useEffect(() => {
+    onSelectedCountChange?.(Object.values(rowSelection).filter(Boolean).length);
+  }, [onSelectedCountChange, rowSelection]);
+
   return (
-    <div className="overflow-auto">
-      <table className="w-full border-collapse text-sm">
-        <thead className="sticky top-0 z-10 bg-bg-subtle">
+    <div className="min-h-0 overflow-auto">
+      <table className="app-table">
+        <thead>
           {table.getHeaderGroups().map((hg) => (
             <tr key={hg.id} className="border-b border-border">
               {hg.headers.map((header) => {
@@ -220,7 +209,7 @@ export function ObjectTable({ data, selectedId, onSelect, searchTerm }: ObjectTa
                   <th
                     key={header.id}
                     style={{ width: header.getSize() ? header.getSize() : undefined }}
-                    className="h-9 select-none px-2 text-left text-[11px] font-semibold uppercase tracking-wide text-fg-muted"
+                    className="select-none"
                   >
                     {header.isPlaceholder ? null : canSort ? (
                       <button
@@ -249,9 +238,9 @@ export function ObjectTable({ data, selectedId, onSelect, searchTerm }: ObjectTa
         <tbody>
           {table.getRowModel().rows.length === 0 && (
             <tr>
-              <td colSpan={columns.length} className="px-3 py-12 text-center text-sm text-fg-muted">
-                결과가 없습니다.
-              </td>
+                  <td colSpan={columns.length} className="px-3 py-12 text-center text-sm text-fg-muted">
+                    결과가 없습니다.
+                  </td>
             </tr>
           )}
           {table.getRowModel().rows.map((row) => {
@@ -260,6 +249,7 @@ export function ObjectTable({ data, selectedId, onSelect, searchTerm }: ObjectTa
             return (
               <tr
                 key={row.id}
+                data-state={isSelected ? 'selected' : undefined}
                 onClick={() => onSelect?.(r)}
                 onDoubleClick={() => {
                   if (r.masterAttachmentId) router.push(`/viewer/${r.masterAttachmentId}`);
@@ -275,16 +265,13 @@ export function ObjectTable({ data, selectedId, onSelect, searchTerm }: ObjectTa
                 tabIndex={0}
                 aria-selected={isSelected}
                 className={cn(
-                  'group relative cursor-pointer border-b border-border transition-colors',
+                  'group cursor-pointer transition-colors',
                   'hover:bg-bg-subtle focus-visible:bg-bg-muted focus-visible:outline-none',
-                  isSelected && 'bg-brand/5',
+                  isSelected && 'bg-brand/5 shadow-[inset_3px_0_0_hsl(var(--brand))]',
                 )}
               >
-                {isSelected && (
-                  <td aria-hidden className="absolute left-0 top-0 h-full w-1 bg-brand-500" />
-                )}
                 {row.getVisibleCells().map((cell) => (
-                  <td key={cell.id} className="px-2 py-2 align-middle">
+                  <td key={cell.id}>
                     {flexRender(cell.column.columnDef.cell, cell.getContext())}
                   </td>
                 ))}

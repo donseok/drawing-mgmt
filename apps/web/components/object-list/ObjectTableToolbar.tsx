@@ -1,7 +1,9 @@
 'use client';
 
-import { Filter, ArrowDownNarrowWide, X, Trash2, Upload, Download, FolderInput, Copy, Send } from 'lucide-react';
+import Link from 'next/link';
+import { Filter, ArrowDownNarrowWide, Trash2, Download, FolderInput, Copy, Send, Search, Plus } from 'lucide-react';
 import { cn } from '@/lib/cn';
+import { FilterChip } from '@/components/FilterChip';
 
 interface ObjectTableToolbarProps {
   totalCount: number;
@@ -40,45 +42,37 @@ export function ObjectTableToolbar({
   onSubmitApproval,
 }: ObjectTableToolbarProps) {
   return (
-    <div className="border-b border-border bg-bg">
-      <div className="flex items-center gap-2 px-3 py-2">
+    <div className="app-toolbar">
+      <div className="flex min-h-12 flex-wrap items-center gap-2 px-4 py-2">
         <button
           type="button"
           className={cn(
-            'inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-bg px-2.5 text-sm text-fg',
-            'hover:bg-bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+            'app-action-button',
           )}
         >
           <Filter className="h-3.5 w-3.5" />
-          필터
+          필터 조건
         </button>
 
-        <input
-          type="text"
-          value={search}
-          onChange={(e) => onSearchChange(e.target.value)}
-          placeholder="결과 내 검색…"
-          className="h-8 w-64 rounded-md border border-border bg-bg-subtle px-2 text-sm placeholder:text-fg-subtle focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-        />
+        <div className="relative w-72">
+          <Search className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-fg-subtle" />
+          <input
+            type="text"
+            value={search}
+            onChange={(e) => onSearchChange(e.target.value)}
+            placeholder="결과 내 검색..."
+            className="h-8 w-full rounded-md border border-border bg-bg px-8 text-sm placeholder:text-fg-subtle focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          />
+        </div>
 
         {activeFilters.map((f) => (
-          <span
+          <FilterChip
             key={f.key}
-            className="inline-flex h-7 items-center gap-1 rounded-full border border-border bg-bg-subtle px-2 text-[12px] text-fg"
-          >
-            <span className="text-fg-muted">{f.label}:</span>
-            <span>{f.value}</span>
-            {onRemoveFilter && (
-              <button
-                type="button"
-                onClick={() => onRemoveFilter(f.key)}
-                aria-label={`${f.label} 필터 제거`}
-                className="ml-0.5 inline-flex h-4 w-4 items-center justify-center rounded-full text-fg-muted hover:bg-bg-muted"
-              >
-                <X className="h-3 w-3" />
-              </button>
-            )}
-          </span>
+            label={f.label}
+            value={f.value}
+            onRemove={onRemoveFilter ? () => onRemoveFilter(f.key) : undefined}
+            readOnly={!onRemoveFilter}
+          />
         ))}
 
         {activeFilters.length > 0 && onClearFilters && (
@@ -91,23 +85,27 @@ export function ObjectTableToolbar({
           </button>
         )}
 
-        <div className="ml-auto flex items-center gap-3 text-[12px] text-fg-muted">
+        <div className="ml-auto flex items-center gap-2 text-[12px] text-fg-muted">
           <span>
-            검색결과 <span className="font-semibold text-fg">{totalCount.toLocaleString()}</span>건
+            총 <span className="font-semibold text-fg">{totalCount.toLocaleString()}</span>건
           </span>
           <button
             type="button"
             onClick={onSortClick}
-            className="inline-flex h-7 items-center gap-1 rounded border border-border bg-bg px-1.5 text-fg hover:bg-bg-muted"
+            className="app-action-button h-8 px-2.5 text-xs"
           >
             <ArrowDownNarrowWide className="h-3.5 w-3.5" />
             정렬: {sortLabel}
           </button>
+          <Link href="/search?action=new" className="app-action-button-primary h-8">
+            <Plus className="h-3.5 w-3.5" />
+            신규 등록
+          </Link>
         </div>
       </div>
 
       {selectedCount > 0 && (
-        <div className="flex items-center gap-2 border-t border-border bg-brand/5 px-3 py-1.5 text-sm">
+        <div className="flex items-center gap-2 border-t border-border bg-brand/5 px-4 py-2 text-sm">
           <span className="font-medium text-fg">{selectedCount}건 선택됨</span>
           <span className="mx-2 text-border-strong">|</span>
           <ToolbarAction icon={<FolderInput className="h-3.5 w-3.5" />} label="이동" onClick={onMove} />
@@ -120,7 +118,6 @@ export function ObjectTableToolbar({
             onClick={onDelete}
             destructive
           />
-          <ToolbarAction icon={<Upload className="h-3.5 w-3.5" />} label="신규" />
         </div>
       )}
     </div>
@@ -144,7 +141,7 @@ function ToolbarAction({
       onClick={onClick}
       className={cn(
         'inline-flex h-7 items-center gap-1 rounded px-1.5 text-[12px] hover:bg-bg-muted',
-        destructive ? 'text-rose-600 hover:bg-rose-500/10' : 'text-fg',
+        destructive ? 'text-danger hover:bg-danger/10' : 'text-fg',
       )}
     >
       {icon}

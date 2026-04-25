@@ -100,7 +100,7 @@ export const TableHead = React.forwardRef<
   <th
     ref={ref}
     className={cn(
-      'h-9 px-2.5 text-left align-middle text-xs font-medium uppercase tracking-wide text-fg-muted',
+      'h-9 px-2.5 text-left align-middle text-xs font-medium uppercase text-fg-muted',
       '[&:has([role=checkbox])]:pr-0',
       className,
     )}

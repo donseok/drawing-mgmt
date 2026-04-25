@@ -35,7 +35,7 @@ export const PageHeader = React.forwardRef<HTMLDivElement, PageHeaderProps>(
       ) : null}
       <div className="flex items-start justify-between gap-4">
         <div className="flex-1 min-w-0">
-          <h1 className="text-2xl font-bold leading-tight tracking-tight text-fg">
+          <h1 className="text-2xl font-bold leading-tight text-fg">
             {title}
           </h1>
           {description ? (

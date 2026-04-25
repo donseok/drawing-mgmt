@@ -54,13 +54,13 @@ export function LoginForm({
     [errorCode],
   );
 
-  async function onSubmit(values: FormValues) {
+  async function submitCredentials(username: string, password: string) {
     setSubmitting(true);
     setErrorCode(null);
     try {
       const res = await signIn('credentials', {
-        username: values.username,
-        password: values.password,
+        username,
+        password,
         redirect: false,
       });
       if (!res) {
@@ -83,18 +83,27 @@ export function LoginForm({
     }
   }
 
+  async function onSubmit(values: FormValues) {
+    await submitCredentials(values.username, values.password);
+  }
+
+  // TODO(remove-before-prod): 정식 서비스 전 테스트 로그인 버튼 제거.
+  async function onTestAdminLogin() {
+    await submitCredentials('admin', 'admin123!');
+  }
+
   const locked = errorCode === 'account_locked' && remainingSec > 0;
 
   return (
     <form
       onSubmit={handleSubmit(onSubmit)}
-      className="space-y-4 rounded-lg border bg-white p-6 shadow-sm dark:bg-zinc-950"
+      className="app-panel space-y-4 p-6"
       noValidate
     >
       <div className="space-y-2">
         <label
           htmlFor="username"
-          className="text-sm font-medium text-zinc-700 dark:text-zinc-200"
+          className="text-sm font-medium text-fg"
         >
           아이디
         </label>
@@ -108,14 +117,14 @@ export function LoginForm({
           {...register('username')}
         />
         {errors.username ? (
-          <p className="text-xs text-red-600">{errors.username.message}</p>
+          <p className="text-xs text-danger">{errors.username.message}</p>
         ) : null}
       </div>
 
       <div className="space-y-2">
         <label
           htmlFor="password"
-          className="text-sm font-medium text-zinc-700 dark:text-zinc-200"
+          className="text-sm font-medium text-fg"
         >
           비밀번호
         </label>
@@ -128,14 +137,14 @@ export function LoginForm({
           {...register('password')}
         />
         {errors.password ? (
-          <p className="text-xs text-red-600">{errors.password.message}</p>
+          <p className="text-xs text-danger">{errors.password.message}</p>
         ) : null}
       </div>
 
       {errorMessage ? (
         <div
           role="alert"
-          className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700 dark:border-red-900 dark:bg-red-950 dark:text-red-300"
+          className="rounded-md border border-danger/25 bg-danger/10 px-3 py-2 text-sm text-danger"
         >
           {errorMessage}
           {locked ? (
@@ -149,6 +158,22 @@ export function LoginForm({
       <Button type="submit" className="w-full" disabled={locked || submitting}>
         {submitting ? '로그인 중…' : '로그인'}
       </Button>
+
+      {/* TODO(remove-before-prod): 정식 서비스 전 테스트 로그인 버튼 제거. */}
+      <div className="space-y-2 border-t border-border pt-4">
+        <Button
+          type="button"
+          variant="outline"
+          className="w-full border-dashed"
+          disabled={locked || submitting}
+          onClick={onTestAdminLogin}
+        >
+          테스트 관리자 로그인 (SUPER_ADMIN)
+        </Button>
+        <p className="text-center text-xs text-fg-muted">
+          개발/테스트용 계정입니다. 운영 배포 전 제거 예정입니다.
+        </p>
+      </div>
     </form>
   );
 }

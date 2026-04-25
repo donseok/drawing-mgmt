@@ -15,7 +15,7 @@ export default async function MainLayout({ children }: { children: React.ReactNo
   const { name, organizationId, role, email } = session.user;
 
   return (
-    <div className="flex h-screen w-full flex-col bg-bg">
+    <div className="app-frame flex h-screen w-full flex-col">
       <Header
         user={{
           name: name ?? session.user.username ?? '사용자',

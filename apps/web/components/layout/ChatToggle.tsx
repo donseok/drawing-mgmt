@@ -16,8 +16,8 @@ export function ChatToggle({ variant = 'fab', className }: { variant?: 'fab' | '
       <button
         type="button"
         onClick={toggle}
-        aria-label="챗봇 토글"
-        title="챗봇 (⌘.)"
+        aria-label="AI 도우미 토글"
+        title="AI 도우미 (Ctrl+.)"
         className={cn(
           'inline-flex h-8 w-8 items-center justify-center rounded-md text-fg-muted',
           'hover:bg-bg-muted hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
@@ -35,17 +35,17 @@ export function ChatToggle({ variant = 'fab', className }: { variant?: 'fab' | '
       <button
         type="button"
         onClick={toggle}
-        aria-label="챗봇 열기"
-        title="챗봇 (⌘.)"
+        aria-label="AI 도우미 열기"
+        title="AI 도우미 (Ctrl+.)"
         className={cn(
-          'fixed bottom-6 right-6 z-40 inline-flex h-16 w-16 items-center justify-center rounded-full',
-          'bg-brand text-brand-foreground shadow-lg',
-          'transition-transform hover:scale-105 active:scale-95',
+          'fixed bottom-5 right-5 z-40 inline-flex h-12 w-12 items-center justify-center rounded-md',
+          'border border-border bg-bg text-fg shadow-lg',
+          'transition-colors hover:bg-bg-muted',
           'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2',
           className,
         )}
       >
-        <MessageSquare className="h-6 w-6" />
+        <MessageSquare className="h-5 w-5" />
       </button>
 
       {chatOpen && <ChatPlaceholderPanel />}
@@ -58,15 +58,15 @@ function ChatPlaceholderPanel() {
   return (
     <div
       role="dialog"
-      aria-label="챗봇"
-      className="fixed bottom-24 right-6 z-40 flex h-[480px] w-[400px] flex-col rounded-lg border border-border bg-bg shadow-xl"
+      aria-label="AI 도우미"
+      className="fixed bottom-20 right-5 z-40 flex h-[480px] w-[min(400px,calc(100vw-40px))] flex-col rounded-lg border border-border bg-bg shadow-xl"
     >
       <div className="flex h-12 items-center justify-between border-b border-border px-4">
         <div className="flex items-center gap-2">
           <span className="inline-flex h-1.5 w-1.5 rounded-full bg-brand-500" aria-hidden />
-          <span className="text-sm font-semibold">챗봇</span>
-          <span className="rounded bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-semibold text-amber-600 dark:text-amber-400">
-            간이
+          <span className="text-sm font-semibold">AI 도우미</span>
+          <span className="rounded bg-warning/15 px-1.5 py-0.5 text-[10px] font-semibold text-warning">
+            안내
           </span>
         </div>
         <button
@@ -80,7 +80,7 @@ function ChatPlaceholderPanel() {
       </div>
       <div className="flex-1 overflow-auto p-4 text-sm text-fg-muted">
         {/* MOCK: real ChatWidget out of scope (Phase 1) */}
-        챗봇은 곧 연결됩니다. 도면 검색·결재함 조회 등을 자연어로 요청할 수 있게 될 예정입니다.
+        도면 검색, 결재함 조회, 매뉴얼 안내를 지원하는 도우미가 연결될 예정입니다.
       </div>
       <div className="border-t border-border p-3">
         <input

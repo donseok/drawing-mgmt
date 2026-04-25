@@ -107,7 +107,7 @@ export function UserMenu({ user }: UserMenuProps) {
                 // signOut callback — backend owns the actual auth route
                 void signOut({ callbackUrl: '/login' });
               }}
-              className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-rose-600 hover:bg-bg-muted"
+              className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-danger hover:bg-bg-muted"
             >
               <LogOut className="h-4 w-4" />
               <span>로그아웃</span>

@@ -2,7 +2,8 @@
 
 import * as React from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { ChevronRight } from 'lucide-react';
+import { ChevronRight, FolderOpen, Layers3, Plus } from 'lucide-react';
+import Link from 'next/link';
 import { SubSidebar } from '@/components/layout/SubSidebar';
 import { FolderTree } from '@/components/folder-tree/FolderTree';
 import type { FolderNode } from '@/components/folder-tree/types';
@@ -155,6 +156,7 @@ export default function SearchPage() {
   const [selectedFolder, setSelectedFolder] = React.useState<FolderNode | null>(null);
   const [selectedRow, setSelectedRow] = React.useState<ObjectRow | null>(null);
   const [search, setSearch] = React.useState('');
+  const [selectedCount, setSelectedCount] = React.useState(0);
   const detailPanelOpen = useUiStore((s) => s.detailPanelOpen);
   const setDetailPanelOpen = useUiStore((s) => s.setDetailPanelOpen);
 
@@ -191,24 +193,44 @@ export default function SearchPage() {
         />
       </SubSidebar>
 
-      <section className="flex min-w-0 flex-1 flex-col">
-        {/* breadcrumb */}
-        <div className="flex h-10 items-center gap-1 border-b border-border bg-bg px-4 text-xs text-fg-muted">
-          <span>폴더:</span>
-          {selectedFolder ? (
-            <span className="font-medium text-fg">
-              {selectedFolder.pathLabel ?? selectedFolder.name}
-            </span>
-          ) : (
-            <span>전체</span>
-          )}
-          <ChevronRight className="h-3 w-3" />
-          <span>검색결과</span>
+      <section className="flex min-w-0 flex-1 flex-col bg-bg">
+        <div className="border-b border-border bg-bg px-5 py-4">
+          <div className="flex items-start justify-between gap-4">
+            <div className="min-w-0">
+              <div className="app-kicker">Document Search</div>
+              <h1 className="mt-1 text-xl font-semibold text-fg">자료 검색</h1>
+              <p className="mt-1 text-sm text-fg-muted">
+                폴더, 도면번호, 상태를 기준으로 도면과 첨부 자료를 조회합니다.
+              </p>
+            </div>
+            <div className="hidden items-center gap-2 lg:flex">
+              <Metric icon={<FolderOpen className="h-4 w-4" />} label="현재 폴더" value={selectedFolder?.name ?? '전체'} />
+              <Metric icon={<Layers3 className="h-4 w-4" />} label="검색 결과" value={`${filtered.length.toLocaleString()}건`} />
+              <Link href="/search?action=new" className="app-action-button-primary h-9">
+                <Plus className="h-4 w-4" />
+                신규 등록
+              </Link>
+            </div>
+          </div>
+
+          <div className="mt-4 flex h-8 items-center gap-1 rounded-md border border-border bg-bg-subtle px-3 text-xs text-fg-muted">
+            <span>폴더</span>
+            <ChevronRight className="h-3 w-3" />
+            {selectedFolder ? (
+              <span className="font-medium text-fg">
+                {selectedFolder.pathLabel ?? selectedFolder.name}
+              </span>
+            ) : (
+              <span className="font-medium text-fg">전체</span>
+            )}
+            <ChevronRight className="h-3 w-3" />
+            <span>검색결과</span>
+          </div>
         </div>
 
         <ObjectTableToolbar
           totalCount={filtered.length}
-          selectedCount={0}
+          selectedCount={selectedCount}
           search={search}
           onSearchChange={setSearch}
           activeFilters={[
@@ -218,18 +240,19 @@ export default function SearchPage() {
           onClearFilters={() => setSearch('')}
         />
 
-        <div className="min-h-0 flex-1 bg-bg">
+        <div className="min-h-0 flex-1 overflow-hidden bg-bg">
           <ObjectTable
             data={filtered}
             selectedId={selectedRow?.id}
             onSelect={handleSelectRow}
+            onSelectedCountChange={setSelectedCount}
             searchTerm={search}
           />
           {filtered.length > 0 && (
             <div className="flex items-center justify-center border-t border-border bg-bg-subtle py-3">
               <button
                 type="button"
-                className="inline-flex h-8 items-center rounded-md border border-border bg-bg px-4 text-sm hover:bg-bg-muted"
+                className="app-action-button"
               >
                 더 보기
               </button>
@@ -241,6 +264,26 @@ export default function SearchPage() {
       {detailPanelOpen && (
         <ObjectPreviewPanel row={selectedRow} onClose={() => setDetailPanelOpen(false)} />
       )}
+    </div>
+  );
+}
+
+function Metric({
+  icon,
+  label,
+  value,
+}: {
+  icon: React.ReactNode;
+  label: string;
+  value: string;
+}) {
+  return (
+    <div className="flex h-9 min-w-28 items-center gap-2 rounded-md border border-border bg-bg-subtle px-3">
+      <span className="text-fg-subtle">{icon}</span>
+      <span className="min-w-0">
+        <span className="block text-[11px] leading-none text-fg-subtle">{label}</span>
+        <span className="block truncate text-xs font-semibold text-fg">{value}</span>
+      </span>
     </div>
   );
 }

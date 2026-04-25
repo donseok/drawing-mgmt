@@ -71,7 +71,7 @@ export default async function AdminPage() {
         <ul className="space-y-3 text-sm">
           {ADMIN_GROUPS.map((g) => (
             <li key={g.title}>
-              <div className="mb-1 px-2 text-[11px] font-semibold uppercase tracking-wide text-fg-subtle">
+              <div className="app-kicker mb-1 px-2">
                 {g.title}
               </div>
               <ul className="space-y-0.5">
@@ -79,7 +79,7 @@ export default async function AdminPage() {
                   <li key={it.href}>
                     <Link
                       href={it.href}
-                      className="flex h-7 items-center gap-2 rounded px-2 text-fg-muted hover:bg-bg-muted hover:text-fg"
+                      className="flex h-8 items-center gap-2 rounded-md px-2 text-fg-muted transition-colors hover:bg-bg-muted hover:text-fg"
                     >
                       <it.icon className="h-4 w-4" />
                       <span className="text-[13px]">{it.label}</span>
@@ -92,17 +92,18 @@ export default async function AdminPage() {
         </ul>
       </SubSidebar>
 
-      <section className="flex-1 overflow-auto p-6">
-        <header className="mb-6">
-          <h1 className="text-2xl font-bold text-fg">관리자</h1>
-          <p className="mt-1 text-sm text-fg-muted">시스템 설정·권한·감사 로그를 관리합니다.</p>
+      <section className="flex-1 overflow-auto bg-bg">
+        <header className="border-b border-border px-6 py-5">
+          <div className="app-kicker">Administration</div>
+          <h1 className="mt-1 text-2xl font-semibold text-fg">관리자</h1>
+          <p className="mt-1 text-sm text-fg-muted">조직, 권한, 자료 유형, 감사 로그를 한 곳에서 관리합니다.</p>
         </header>
 
-        <div className="space-y-8">
+        <div className="space-y-8 p-6">
           {ADMIN_GROUPS.map((g) => (
             <section key={g.title}>
               <h2 className="mb-3 text-base font-semibold text-fg">{g.title}</h2>
-              <ul className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+              <ul className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3">
                 {g.items.map((it) => {
                   const Icon = it.icon;
                   return (
@@ -110,11 +111,11 @@ export default async function AdminPage() {
                       <Link
                         href={it.href}
                         className={cn(
-                          'group flex items-start gap-3 rounded-lg border border-border bg-bg p-4 transition-colors',
+                          'group flex min-h-24 items-start gap-3 rounded-lg border border-border bg-bg p-4 transition-colors',
                           'hover:border-border-strong hover:bg-bg-subtle',
                         )}
                       >
-                        <span className="inline-flex h-9 w-9 items-center justify-center rounded-md bg-bg-muted text-fg-muted">
+                        <span className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-md border border-border bg-bg-subtle text-fg-muted">
                           <Icon className="h-4 w-4" />
                         </span>
                         <span className="flex-1">
@@ -132,7 +133,7 @@ export default async function AdminPage() {
 
           {/* TODO: deeper routes (/admin/users, /admin/folders, ...) live in their
               own page files. Backend & Designer will scaffold table/edit panels per DESIGN §6.8. */}
-          <p className="text-xs text-fg-subtle">
+          <p className="rounded-md border border-dashed border-border bg-bg-subtle px-3 py-2 text-xs text-fg-muted">
             각 메뉴를 클릭하면 상세 화면으로 이동합니다. (상세 화면은 후속 작업)
           </p>
         </div>

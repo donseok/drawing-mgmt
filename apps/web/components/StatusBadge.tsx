@@ -106,7 +106,7 @@ StatusBadge.displayName = 'StatusBadge';
 /* ─────────────────────────────────────────────────────────────────
  * ChatModeBadge — DESIGN §8.2, TRD §14.2.
  * - rag → "AI" (brand color)
- * - rule → "간이" (amber)
+ * - rule → "안내" (amber)
  * Includes Tooltip with full mode description.
  * ───────────────────────────────────────────────────────────────── */
 
@@ -126,9 +126,9 @@ const CHAT_MODE_DESCRIPTIONS: Record<ChatModeName, { label: string; description:
     description: 'AI 모드 — Claude + 매뉴얼 RAG로 자연어 응답을 생성합니다.',
   },
   rule: {
-    label: '간이',
+    label: '안내',
     description:
-      '간이 모드 — 외부 LLM 호출 없이 인텐트 매칭으로 동작합니다. 자연어 응답이 제한될 수 있습니다.',
+      '안내 모드 — 외부 LLM 호출 없이 인텐트 매칭으로 동작합니다. 자연어 응답이 제한될 수 있습니다.',
   },
 };
 

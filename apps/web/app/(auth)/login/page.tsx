@@ -20,8 +20,11 @@ export default async function LoginPage({ searchParams }: PageProps) {
   return (
     <div className="space-y-6">
       <header className="space-y-1 text-center">
-        <h1 className="text-2xl font-semibold tracking-tight">도면관리시스템</h1>
-        <p className="text-sm text-zinc-500 dark:text-zinc-400">
+        <div className="mx-auto mb-4 flex h-10 w-10 items-center justify-center rounded-md bg-fg text-sm font-bold text-bg">
+          DG
+        </div>
+        <h1 className="text-2xl font-semibold">도면관리시스템</h1>
+        <p className="text-sm text-fg-muted">
           계정으로 로그인하세요
         </p>
       </header>

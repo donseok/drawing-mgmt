@@ -123,7 +123,7 @@ export function CommandPalette() {
           </Command.Empty>
 
           {mode === 'drawings' && drawingMatches.length > 0 && (
-            <Command.Group heading="도면" className="px-1 py-1 text-xs uppercase tracking-wide text-fg-subtle">
+            <Command.Group heading="도면" className="px-1 py-1 text-xs uppercase text-fg-subtle">
               {drawingMatches.map((d) => (
                 <Command.Item
                   key={d.id}
@@ -141,7 +141,7 @@ export function CommandPalette() {
           )}
 
           {(mode === 'folders' || (mode === 'drawings' && folderMatches.length > 0)) && folderMatches.length > 0 && (
-            <Command.Group heading="폴더" className="px-1 py-1 text-xs uppercase tracking-wide text-fg-subtle">
+            <Command.Group heading="폴더" className="px-1 py-1 text-xs uppercase text-fg-subtle">
               {folderMatches.map((f) => (
                 <Command.Item
                   key={f.id}
@@ -163,7 +163,7 @@ export function CommandPalette() {
             </div>
           )}
 
-          <Command.Group heading="명령" className="px-1 py-1 text-xs uppercase tracking-wide text-fg-subtle">
+          <Command.Group heading="명령" className="px-1 py-1 text-xs uppercase text-fg-subtle">
             <PaletteCommand label="홈으로" icon={<Home className="h-4 w-4" />} onSelect={() => go('/')} />
             <PaletteCommand label="자료 검색" icon={<Search className="h-4 w-4" />} onSelect={() => go('/search')} />
             <PaletteCommand label="내 결재함" icon={<Inbox className="h-4 w-4" />} onSelect={() => go('/approval')} />

@@ -101,7 +101,7 @@ export function ShortcutsDialog() {
         <div className="grid max-h-[70vh] grid-cols-1 gap-6 overflow-auto p-5 sm:grid-cols-2">
           {GROUPS.map((g) => (
             <section key={g.title}>
-              <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-fg-muted">
+              <h3 className="app-kicker mb-2">
                 {g.title}
               </h3>
               <ul className="space-y-1.5 text-sm">

@@ -4,6 +4,7 @@ import * as React from 'react';
 import Link from 'next/link';
 import { Inbox, Send, Clock4, Paperclip } from 'lucide-react';
 import { SubSidebar } from '@/components/layout/SubSidebar';
+import { EmptyState } from '@/components/EmptyState';
 import { cn } from '@/lib/cn';
 
 type BoxKey = 'received' | 'sent' | 'expired';
@@ -55,11 +56,11 @@ export default function LobbyPage() {
                   type="button"
                   onClick={() => setBox(b.key)}
                   className={cn(
-                    'flex h-8 w-full items-center gap-2 rounded-md px-2 text-sm',
-                    active ? 'bg-brand/10 text-fg' : 'text-fg-muted hover:bg-bg-muted hover:text-fg',
+                    'flex h-8 w-full items-center gap-2 rounded-md px-2 text-sm transition-colors',
+                    active ? 'bg-bg text-fg shadow-sm ring-1 ring-border' : 'text-fg-muted hover:bg-bg-muted hover:text-fg',
                   )}
                 >
-                  <Icon className="h-4 w-4" />
+                  <Icon className={cn('h-4 w-4', active ? 'text-brand-500' : 'text-fg-subtle')} />
                   <span className="flex-1 text-left">{b.label}</span>
                   <span className="rounded bg-bg-muted px-1.5 py-0.5 text-[11px] font-semibold text-fg-muted">
                     {b.count}
@@ -71,25 +72,34 @@ export default function LobbyPage() {
         </ul>
       </SubSidebar>
 
-      <section className="flex min-w-0 flex-1 flex-col overflow-auto p-6">
-        <h1 className="mb-4 text-lg font-semibold text-fg">{BOXES.find((b) => b.key === box)?.label}</h1>
+      <section className="flex min-w-0 flex-1 flex-col bg-bg">
+        <div className="border-b border-border px-5 py-4">
+          <div className="app-kicker">Partner Lobby</div>
+          <h1 className="mt-1 text-lg font-semibold text-fg">{BOXES.find((b) => b.key === box)?.label}</h1>
+          <p className="mt-1 text-sm text-fg-muted">협력업체와 주고받은 도면 검토 패키지를 확인합니다.</p>
+        </div>
 
-        {rows.length === 0 ? (
-          <div className="mt-12 flex flex-col items-center gap-2 text-sm text-fg-muted">
-            <Inbox className="h-10 w-10 text-fg-subtle" />
-            <p>해당 로비함에 항목이 없습니다.</p>
-          </div>
-        ) : (
-          <ul className="grid grid-cols-1 gap-3 md:grid-cols-2">
+        <div className="min-h-0 flex-1 overflow-auto p-5">
+          {rows.length === 0 ? (
+            <EmptyState icon={Inbox} title="해당 로비함에 항목이 없습니다." className="min-h-80" />
+          ) : (
+          <ul className="grid grid-cols-1 gap-3 xl:grid-cols-2">
             {rows.map((l) => (
               <li
                 key={l.id}
-                className="rounded-lg border border-border bg-bg p-4 transition-colors hover:border-border-strong hover:bg-bg-subtle"
+                className="rounded-lg border border-border bg-bg transition-colors hover:border-border-strong hover:bg-bg-subtle"
               >
-                <Link href={`/lobby/${l.id}`} className="block">
-                  <h2 className="text-sm font-semibold text-fg">{l.title}</h2>
-                  <p className="mt-1 text-xs text-fg-muted">{l.company}</p>
-                  <div className="mt-3 flex flex-wrap items-center gap-3 text-xs text-fg-muted">
+                <Link href={`/lobby/${l.id}`} className="block p-4">
+                  <div className="flex items-start justify-between gap-3">
+                    <span className="min-w-0">
+                      <h2 className="truncate text-sm font-semibold text-fg">{l.title}</h2>
+                      <p className="mt-1 text-xs text-fg-muted">{l.company}</p>
+                    </span>
+                    <span className="shrink-0 rounded-full border border-border bg-bg-subtle px-2 py-0.5 text-[11px] font-medium text-fg">
+                      {l.status}
+                    </span>
+                  </div>
+                  <div className="mt-4 flex flex-wrap items-center gap-3 border-t border-border pt-3 text-xs text-fg-muted">
                     <span className="inline-flex items-center gap-1">
                       <Paperclip className="h-3.5 w-3.5" />
                       첨부 {l.attachmentCount}건
@@ -98,15 +108,13 @@ export default function LobbyPage() {
                       <Clock4 className="h-3.5 w-3.5" />
                       만료 {l.expiresAt} (D-{l.daysLeft})
                     </span>
-                    <span className="ml-auto rounded-full border border-border bg-bg-muted px-2 py-0.5 text-[11px] text-fg">
-                      {l.status}
-                    </span>
                   </div>
                 </Link>
               </li>
             ))}
           </ul>
-        )}
+          )}
+        </div>
       </section>
     </div>
   );

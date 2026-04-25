@@ -20,6 +20,9 @@ import {
 } from 'lucide-react';
 import { cn } from '@/lib/cn';
 import type { ObjectState } from '@/components/object-list/ObjectTable';
+import { StatusBadge } from '@/components/StatusBadge';
+import { ApprovalLine } from '@/components/ApprovalLine';
+import { RevisionTree } from '@/components/RevisionTree';
 
 // MOCK detail — TODO: api.get(`/api/v1/objects/${id}`)
 const MOCK_OBJECT = {
@@ -98,24 +101,6 @@ const ACTION_VISIBILITY: Record<ObjectState, Record<string, boolean>> = {
   DELETED: { open: true, checkout: false, checkin: false, revise: false, submit: false, cancel: false, delete: false, download: true },
 };
 
-const STATUS_DOT: Record<ObjectState, string> = {
-  NEW: 'bg-status-new',
-  CHECKED_OUT: 'bg-status-checkedOut',
-  CHECKED_IN: 'bg-status-checkedIn',
-  IN_APPROVAL: 'bg-status-inApproval',
-  APPROVED: 'bg-status-approved',
-  DELETED: 'bg-status-deleted',
-};
-
-const STATUS_LABEL: Record<ObjectState, string> = {
-  NEW: 'NEW',
-  CHECKED_OUT: 'CHECKED_OUT',
-  CHECKED_IN: 'CHECKED_IN',
-  IN_APPROVAL: 'IN_APPROVAL',
-  APPROVED: 'APPROVED',
-  DELETED: 'DELETED',
-};
-
 export default function ObjectDetailPage() {
   const router = useRouter();
   const params = useParams<{ id: string }>();
@@ -143,23 +128,16 @@ export default function ObjectDetailPage() {
           type="button"
           onClick={() => router.back()}
           aria-label="뒤로"
-          className="inline-flex h-7 w-7 items-center justify-center rounded text-fg-muted hover:bg-bg-muted hover:text-fg"
+          className="app-icon-button h-7 w-7"
         >
           <ArrowLeft className="h-4 w-4" />
         </button>
         <Breadcrumb path={obj.folderPath} number={obj.number} />
-        <span
-          className={cn(
-            'ml-1 inline-flex items-center gap-1 rounded-full border border-border px-2 py-0.5',
-          )}
-        >
-          <span className={cn('h-1.5 w-1.5 rounded-full', STATUS_DOT[obj.state])} aria-hidden />
-          <span className="font-medium text-fg">{STATUS_LABEL[obj.state]}</span>
-        </span>
+        <StatusBadge status={obj.state} size="sm" className="ml-1" />
         <button
           type="button"
           aria-label="더보기"
-          className="ml-auto inline-flex h-7 w-7 items-center justify-center rounded text-fg-muted hover:bg-bg-muted hover:text-fg"
+          className="app-icon-button ml-auto h-7 w-7"
         >
           <MoreHorizontal className="h-4 w-4" />
         </button>
@@ -167,7 +145,8 @@ export default function ObjectDetailPage() {
 
       {/* Title + actions */}
       <div className="border-b border-border bg-bg px-6 py-5">
-        <h1 className="text-xl font-bold text-fg">{obj.name}</h1>
+        <div className="app-kicker">Drawing Detail</div>
+        <h1 className="mt-1 text-xl font-semibold text-fg">{obj.name}</h1>
         <p className="mt-1 text-xs text-fg-muted">
           R{obj.revision} v{obj.version} · 등록 {obj.registrant} · {obj.registeredAt} · 보안 {obj.securityLevel}급
         </p>
@@ -256,11 +235,7 @@ interface BtnProps {
 function ActionButton({ label, icon, visible = true, primary, href, dropdown }: BtnProps) {
   if (!visible) return null;
   const cls = cn(
-    'inline-flex h-8 items-center gap-1.5 rounded-md px-2.5 text-sm transition-colors',
-    primary
-      ? 'bg-brand text-brand-foreground hover:opacity-90'
-      : 'border border-border bg-bg text-fg hover:bg-bg-muted',
-    'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+    primary ? 'app-action-button-primary' : 'app-action-button',
   );
   const inner = (
     <>
@@ -285,30 +260,32 @@ function ActionButton({ label, icon, visible = true, primary, href, dropdown }: 
 
 function InfoTab({ obj }: { obj: typeof MOCK_OBJECT }) {
   return (
-    <div className="grid grid-cols-1 gap-6 lg:grid-cols-[1fr_360px]">
+    <div className="grid grid-cols-1 gap-6 lg:grid-cols-[1fr_380px]">
       <div className="space-y-4">
         {/* Preview */}
-        <div className="overflow-hidden rounded-lg border border-border bg-bg">
-          <div className="flex h-10 items-center justify-between border-b border-border px-3 text-xs text-fg-muted">
-            <span className="font-semibold uppercase tracking-wide">미리보기</span>
+        <div className="app-panel overflow-hidden">
+          <div className="app-panel-header">
+            <span className="app-kicker">미리보기</span>
             <Link
               href={`/viewer/${obj.masterAttachmentId}`}
-              className="inline-flex h-7 items-center gap-1 rounded text-fg-muted hover:text-fg"
+              className="app-action-button h-7 px-2 text-xs"
             >
               <Maximize2 className="h-3.5 w-3.5" />
               전체화면
             </Link>
           </div>
-          <div className="flex h-[420px] items-center justify-center bg-bg-muted text-fg-subtle">
+          <div className="flex h-[420px] items-center justify-center bg-[linear-gradient(90deg,hsl(var(--border))_1px,transparent_1px),linear-gradient(0deg,hsl(var(--border))_1px,transparent_1px)] bg-[size:28px_28px] text-fg-subtle">
             {/* TODO: embed PDF.js / dxf-viewer thumbnail */}
-            <ImageIcon className="h-12 w-12" />
+            <div className="flex h-20 w-20 items-center justify-center rounded-lg border border-border bg-bg/90 shadow-sm">
+              <ImageIcon className="h-10 w-10" />
+            </div>
           </div>
         </div>
 
         {/* Attachments */}
-        <div className="overflow-hidden rounded-lg border border-border bg-bg">
-          <div className="flex h-10 items-center border-b border-border px-3 text-xs">
-            <span className="font-semibold uppercase tracking-wide text-fg-muted">
+        <div className="app-panel overflow-hidden">
+          <div className="app-panel-header">
+            <span className="app-kicker">
               첨부파일 ({obj.attachments.length})
             </span>
           </div>
@@ -317,7 +294,7 @@ function InfoTab({ obj }: { obj: typeof MOCK_OBJECT }) {
               <li
                 key={a.id}
                 className={cn(
-                  'flex items-center gap-3 px-3 py-2 text-sm',
+                  'flex items-center gap-3 px-4 py-2.5 text-sm',
                   i !== obj.attachments.length - 1 && 'border-b border-border',
                 )}
               >
@@ -333,7 +310,7 @@ function InfoTab({ obj }: { obj: typeof MOCK_OBJECT }) {
                 <button
                   type="button"
                   aria-label="다운로드"
-                  className="inline-flex h-6 w-6 items-center justify-center rounded text-fg-muted hover:bg-bg-muted hover:text-fg"
+                  className="app-icon-button h-7 w-7"
                 >
                   <Download className="h-3.5 w-3.5" />
                 </button>
@@ -345,12 +322,13 @@ function InfoTab({ obj }: { obj: typeof MOCK_OBJECT }) {
 
       {/* Properties */}
       <aside className="space-y-4">
-        <div className="overflow-hidden rounded-lg border border-border bg-bg">
-          <div className="flex h-10 items-center border-b border-border px-3 text-xs font-semibold uppercase tracking-wide text-fg-muted">
-            속성
+        <div className="app-panel overflow-hidden">
+          <div className="app-panel-header">
+            <span className="app-kicker">속성</span>
           </div>
-          <dl className="grid grid-cols-[100px_1fr] gap-y-2 px-3 py-3 text-[12px]">
+          <dl className="grid grid-cols-[100px_1fr] gap-y-2 px-4 py-4 text-[12px]">
             <DT>도면번호</DT><DD mono>{obj.number}</DD>
+            <DT>상태</DT><DD><StatusBadge status={obj.state} size="sm" /></DD>
             <DT>자료유형</DT><DD>{obj.classLabel}</DD>
             <DT>폴더</DT><DD>{obj.folderPath}</DD>
             <DT>보안등급</DT><DD>{obj.securityLevel}급</DD>
@@ -359,8 +337,8 @@ function InfoTab({ obj }: { obj: typeof MOCK_OBJECT }) {
             <DT>등록일</DT><DD mono>{obj.registeredAt}</DD>
             <DT>수정일</DT><DD mono>{obj.modifiedAt}</DD>
           </dl>
-          <div className="border-t border-border px-3 py-3">
-            <div className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-fg-muted">
+          <div className="border-t border-border px-4 py-4">
+            <div className="app-kicker mb-2">
               자료유형 속성
             </div>
             <dl className="grid grid-cols-[100px_1fr] gap-y-2 text-[12px]">
@@ -379,68 +357,46 @@ function InfoTab({ obj }: { obj: typeof MOCK_OBJECT }) {
 }
 
 function HistoryTab({ obj }: { obj: typeof MOCK_OBJECT }) {
-  // TODO: Designer is providing a `RevisionTree` component — replace this inline tree with it.
   return (
-    <div className="space-y-3">
-      {obj.history.map((rev) => (
-        <div key={rev.revision} className="rounded-lg border border-border bg-bg p-4">
-          <div className="flex items-center gap-3 text-sm">
-            <span className="font-mono font-bold text-fg">{rev.revision}</span>
-            <span className="font-mono text-xs text-fg-muted">{rev.registeredAt}</span>
-            <span className="text-xs text-fg-muted">{rev.registrant}</span>
-          </div>
-          {rev.versions.length > 0 && (
-            <ul className="mt-2 space-y-1.5 border-l border-border pl-4">
-              {rev.versions.map((v) => (
-                <li
-                  key={v.version}
-                  className="flex items-center gap-3 text-sm text-fg-muted"
-                >
-                  <span className="font-mono">{v.version}</span>
-                  <span>{v.label}</span>
-                  {v.current && (
-                    <span className="rounded bg-brand/10 px-1.5 py-0.5 text-[11px] font-semibold text-brand-500">
-                      현재
-                    </span>
-                  )}
-                  <button
-                    type="button"
-                    className="ml-auto rounded border border-border px-1.5 py-0.5 text-[11px] hover:bg-bg-muted"
-                  >
-                    열기
-                  </button>
-                  <button
-                    type="button"
-                    className="rounded border border-border px-1.5 py-0.5 text-[11px] hover:bg-bg-muted"
-                  >
-                    되돌리기
-                  </button>
-                </li>
-              ))}
-            </ul>
-          )}
-        </div>
-      ))}
-    </div>
+    <RevisionTree
+      revisions={obj.history.map((rev) => ({
+        rev: rev.revision,
+        createdAt: rev.registeredAt,
+        createdBy: rev.registrant,
+        versions: rev.versions.map((version) => ({
+          version: version.version,
+          state: version.label,
+          current: version.current,
+          createdAt: rev.registeredAt,
+          createdBy: rev.registrant,
+        })),
+      }))}
+      versionActions={() => (
+        <>
+          <button type="button" className="app-action-button h-7 px-2 text-xs">
+            열기
+          </button>
+          <button type="button" className="app-action-button h-7 px-2 text-xs">
+            되돌리기
+          </button>
+        </>
+      )}
+    />
   );
 }
 
 function ApprovalTab({ obj }: { obj: typeof MOCK_OBJECT }) {
-  // TODO: Designer is providing an `ApprovalLine` component — swap once available.
   return (
-    <div className="rounded-lg border border-border bg-bg p-4">
+    <div className="app-panel p-4">
       <h3 className="mb-3 text-sm font-semibold text-fg">현재 결재선</h3>
-      <ol className="space-y-2">
-        {obj.approval.current.map((step) => (
-          <li key={step.step} className="flex items-center gap-3 text-sm">
-            <span className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-emerald-500/15 text-emerald-600">
-              <CheckCircle2 className="h-4 w-4" />
-            </span>
-            <span className="font-medium text-fg">{step.step}단계 — {step.name}</span>
-            <span className="ml-auto font-mono text-xs text-fg-muted">{step.at}</span>
-          </li>
-        ))}
-      </ol>
+      <ApprovalLine
+        steps={obj.approval.current.map((step) => ({
+          order: step.step,
+          approver: step.name,
+          status: step.status as 'APPROVED',
+          actedAt: step.at,
+        }))}
+      />
     </div>
   );
 }
@@ -452,7 +408,7 @@ function LinksTab({ obj }: { obj: typeof MOCK_OBJECT }) {
         <h3 className="mb-2 text-sm font-semibold text-fg">이 자료가 연결한 문서</h3>
         <ul className="space-y-1.5">
           {obj.links.filter((l) => l.direction === 'out').map((l) => (
-            <li key={l.id} className="rounded-md border border-border bg-bg px-3 py-2 text-sm">
+            <li key={l.id} className="rounded-md border border-border bg-bg px-3 py-2 text-sm transition-colors hover:bg-bg-subtle">
               <Link href={`/objects/${l.id}`} className="font-mono text-xs text-fg hover:underline">
                 {l.number}
               </Link>
@@ -465,7 +421,7 @@ function LinksTab({ obj }: { obj: typeof MOCK_OBJECT }) {
         <h3 className="mb-2 text-sm font-semibold text-fg">이 자료를 연결한 문서</h3>
         <ul className="space-y-1.5">
           {obj.links.filter((l) => l.direction === 'in').map((l) => (
-            <li key={l.id} className="rounded-md border border-border bg-bg px-3 py-2 text-sm">
+            <li key={l.id} className="rounded-md border border-border bg-bg px-3 py-2 text-sm transition-colors hover:bg-bg-subtle">
               <Link href={`/objects/${l.id}`} className="font-mono text-xs text-fg hover:underline">
                 {l.number}
               </Link>

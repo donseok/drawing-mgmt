@@ -46,7 +46,7 @@ export const CommandDialog = ({ children, label, className, ...props }: CommandD
         className={cn(
           '[&_[cmdk-group-heading]]:px-2 [&_[cmdk-group-heading]]:py-1.5',
           '[&_[cmdk-group-heading]]:text-xs [&_[cmdk-group-heading]]:font-medium',
-          '[&_[cmdk-group-heading]]:uppercase [&_[cmdk-group-heading]]:tracking-wide',
+          '[&_[cmdk-group-heading]]:uppercase',
           '[&_[cmdk-group-heading]]:text-fg-subtle',
           '[&_[cmdk-group]]:px-1.5 [&_[cmdk-group]]:py-1',
           '[&_[cmdk-input-wrapper]_svg]:h-4 [&_[cmdk-input-wrapper]_svg]:w-4',
@@ -154,7 +154,7 @@ export const CommandShortcut = ({
 }: React.HTMLAttributes<HTMLSpanElement>) => (
   <span
     className={cn(
-      'ml-auto text-xs tracking-widest text-fg-subtle font-mono-num',
+      'ml-auto text-xs text-fg-subtle font-mono-num',
       className,
     )}
     {...props}

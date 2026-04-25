@@ -10,6 +10,7 @@ import {
   Star,
   Settings2,
   HelpCircle,
+  Upload,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { cn } from '@/lib/cn';
@@ -31,6 +32,9 @@ const ITEMS: NavItem[] = [
   { href: '/lobby', icon: Inbox, label: '로비함', matchPrefix: '/lobby' },
   { href: '/workspace', icon: Star, label: '내 작업공간', matchPrefix: '/workspace' },
   { href: '/admin', icon: Settings2, label: '관리자', matchPrefix: '/admin', adminOnly: true },
+  // TODO(remove-before-prod): dev-only DWG drop page; remove with the rest of
+  // the test scaffolding once the real registration flow lands.
+  { href: '/dev/upload', icon: Upload, label: '도면 업로드 (개발용)', matchPrefix: '/dev/upload' },
 ];
 
 export interface NavRailProps {
@@ -52,9 +56,9 @@ export function NavRail({ role }: NavRailProps) {
   return (
     <nav
       aria-label="주 네비게이션"
-      className="flex h-full w-14 shrink-0 flex-col items-center border-r border-border bg-bg py-2"
+      className="flex h-full w-14 shrink-0 flex-col items-center border-r border-border bg-bg-subtle py-2"
     >
-      <ul className="flex flex-1 flex-col items-center gap-1">
+      <ul className="flex flex-1 flex-col items-center gap-1.5">
         {visible.map((item) => (
           <li key={item.href}>
             <NavLink item={item} active={isActive(item)} />
@@ -69,8 +73,7 @@ export function NavRail({ role }: NavRailProps) {
           aria-label="도움말 (단축키)"
           title="단축키 도움말 (?)"
           className={cn(
-            'relative inline-flex h-10 w-10 items-center justify-center rounded-md text-fg-muted',
-            'hover:bg-bg-muted hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+            'app-icon-button h-10 w-10',
           )}
         >
           <HelpCircle className="h-5 w-5" />
@@ -91,13 +94,13 @@ function NavLink({ item, active }: { item: NavItem; active: boolean }) {
       className={cn(
         'group relative flex h-10 w-10 items-center justify-center rounded-md text-fg-muted transition-colors',
         'hover:bg-bg-muted hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
-        active && 'bg-brand/10 text-brand-500 hover:bg-brand/15',
+        active && 'bg-bg text-brand-500 shadow-sm ring-1 ring-border hover:bg-bg',
       )}
     >
       {active && (
         <span
           aria-hidden
-          className="absolute left-0 top-1/2 h-6 w-1 -translate-y-1/2 rounded-r bg-brand-500"
+          className="absolute -left-2 top-1/2 h-6 w-1 -translate-y-1/2 rounded-r bg-brand-500"
         />
       )}
       <Icon className="h-5 w-5" />

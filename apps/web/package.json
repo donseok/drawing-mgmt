@@ -12,7 +12,8 @@
     "db:migrate": "prisma migrate dev",
     "db:push": "prisma db push",
     "db:seed": "tsx prisma/seed.ts",
-    "db:studio": "prisma studio"
+    "db:studio": "prisma studio",
+    "ingest": "tsx scripts/ingest-dwg.ts"
   },
   "dependencies": {
     "@drawing-mgmt/shared": "workspace:*",
