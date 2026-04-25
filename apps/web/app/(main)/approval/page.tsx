@@ -20,6 +20,14 @@ import {
 import { SubSidebar } from '@/components/layout/SubSidebar';
 import { ApprovalLine, type ApprovalStep } from '@/components/ApprovalLine';
 import { EmptyState } from '@/components/EmptyState';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
 import { cn } from '@/lib/cn';
 
 type BoxKey = 'waiting' | 'done' | 'sent' | 'recall';
@@ -166,6 +174,7 @@ export default function ApprovalPage() {
   const searchParams = useSearchParams();
   const box = (searchParams?.get('box') as BoxKey | null) ?? 'waiting';
   const [selectedId, setSelectedId] = React.useState<string | null>(null);
+  const [newApprovalOpen, setNewApprovalOpen] = React.useState(false);
 
   const setBox = (next: BoxKey) => {
     const sp = new URLSearchParams(searchParams?.toString());
@@ -184,6 +193,7 @@ export default function ApprovalPage() {
         footer={
           <button
             type="button"
+            onClick={() => setNewApprovalOpen(true)}
             className="app-action-button w-full"
           >
             <Plus className="h-4 w-4" />
@@ -441,6 +451,60 @@ export default function ApprovalPage() {
           </div>
         </aside>
       )}
+
+      {/* New approval dialog (BUG-017). Inline fallback until Designer-2's
+          `<NewApprovalDialog />` lands at `@/components/approval/NewApprovalDialog`. */}
+      <Dialog open={newApprovalOpen} onOpenChange={setNewApprovalOpen}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>새 결재 상신</DialogTitle>
+            <DialogDescription>
+              결재할 자료와 결재선을 선택해 상신합니다. 정식 폼은 곧 제공됩니다.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3 text-sm">
+            <label className="block">
+              <span className="app-kicker mb-1 block">대상 자료번호</span>
+              <input
+                type="text"
+                placeholder="예: CGL-MEC-2026-00012"
+                className="h-9 w-full rounded-md border border-border bg-bg px-2 font-mono text-[13px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              />
+            </label>
+            <label className="block">
+              <span className="app-kicker mb-1 block">결재선</span>
+              <select className="h-9 w-full rounded-md border border-border bg-bg px-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+                <option>표준 3단계 (검토→승인→통보)</option>
+                <option>긴급 2단계 (승인→통보)</option>
+              </select>
+            </label>
+            <label className="block">
+              <span className="app-kicker mb-1 block">코멘트</span>
+              <textarea
+                rows={3}
+                placeholder="상신 사유나 변경 요지를 입력하세요…"
+                className="w-full rounded-md border border-border bg-bg p-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              />
+            </label>
+          </div>
+          <DialogFooter>
+            <button
+              type="button"
+              onClick={() => setNewApprovalOpen(false)}
+              className="app-action-button h-9"
+            >
+              취소
+            </button>
+            <button
+              type="button"
+              onClick={() => setNewApprovalOpen(false)}
+              className="app-action-button-primary h-9"
+            >
+              상신
+            </button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
