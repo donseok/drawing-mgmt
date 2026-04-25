@@ -45,6 +45,21 @@ API 계약에서 정의된 DTO 타입은 `packages/shared/src/types/...` 또는 
 
 `['{resource}', { ...filters }]` 형태. 무효화/낙관적 업데이트가 동작하도록. 동일 리소스를 여러 페이지에서 쓰면 훅을 `apps/web/hooks/` 또는 `apps/web/lib/queries/`로 추출해 재사용.
 
+**TanStack Query v5 컨벤션 (R3c 학습):**
+- `keepPreviousData: true` 옵션은 v5에서 deprecated. `placeholderData: keepPreviousData` (함수 import: `import { keepPreviousData } from '@tanstack/react-query'`) 사용.
+- 이전 코드와 컨벤션 충돌 시 신규 코드는 v5 패턴 우선.
+
+### 4-1. Mutation 패턴 가이드 (R3a/R3b/R3c 학습)
+
+| 시나리오 | 권장 패턴 | 사례 |
+|---|---|---|
+| 단일 객체에 대한 여러 action을 같은 invalidation set으로 wire (그리드/리스트 컨텍스트) | `useMutation<R, E, DiscriminatedVars>` — vars를 discriminated union으로 받아 mutationFn에서 분기. 같은 onSuccess/onError/onSettled 재사용. | `search/page.tsx` `rowMutation` (R3b) |
+| 단건 페이지에서 여러 action을 각각 호출 + 로딩 상태 분리 | 액션별 별도 `useMutation` 인스턴스 (또는 factory `useObjectMutation(action)`로 균일 생성). | `objects/[id]/page.tsx` `useObjectMutation` (R2/R3a) |
+| Optimistic update 필요 | onMutate에서 `cancelQueries` + `getQueryData` snapshot + `setQueryData` patch → ctx 반환. onError에서 ctx로 롤백. onSettled에서 `invalidateQueries`. | `search/page.tsx` 그리드 (R3c) |
+| 본인 판별 (auth) | `useQuery(queryKeys.me(), () => api.get('/api/v1/me'))`. 모든 컴포넌트가 동일 키로 cache 공유. SessionProvider는 아직 미설정. | R2 이후 모든 컨텍스트 |
+
+**Bulk action (R3c 학습):** `Promise.allSettled(ids.map(id => mutation.mutateAsync(...)))`. 부분 실패 surface는 throw 후 toolbar의 toast/dialog가 처리. 다운로드는 80~100ms stagger로 hidden `<a download>` 클릭 (브라우저 다중 다운로드 가드 회피).
+
 ### 5. 폼 검증은 BE와 같은 zod schema
 
 `packages/shared`에 둔 schema를 RHF의 `zodResolver`로 그대로 사용. 서버 측 응답 에러(필드별)도 RHF의 `setError`로 매핑.

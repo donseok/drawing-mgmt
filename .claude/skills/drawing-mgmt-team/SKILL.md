@@ -82,6 +82,7 @@ API 계약과 디자인 스펙이 확정되면 세 에이전트를 동시 호출
 ### Phase 3 호출 전 PM 체크리스트
 
 1. **main HEAD 기록** — 호출 직전 `git rev-parse main`으로 SHA를 메모. Phase 4에서 worktree base가 이 SHA인지 검증한다.
+1-1. **Prisma 부트스트랩 메모** — backend agent를 호출할 때 prompt에 "worktree에서 첫 typecheck 전 `pnpm -F web exec prisma generate`를 한 번 실행" 명시. `node_modules/.prisma/client`가 worktree마다 따로 만들어져야 typecheck가 통과. 누락 시 50+ phantom Prisma 타입 에러로 가득 찬 typecheck 결과 → agent가 헛수고. (R3c 학습)
 2. **각 prompt에 다음 6개 블록을 반드시 포함:**
    1. 기능 카드 요약
    2. **워크트리 동기화 지침** (아래 "Worktree 동기화 가드" 섹션을 그대로 복붙)
