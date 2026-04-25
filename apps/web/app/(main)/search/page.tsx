@@ -4,15 +4,21 @@ import * as React from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { ChevronRight, FolderOpen, Layers3, Plus, CheckCircle2, Lock, Send, MapPin } from 'lucide-react';
 import Link from 'next/link';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { SubSidebar } from '@/components/layout/SubSidebar';
 import { FolderTree } from '@/components/folder-tree/FolderTree';
 import type { FolderNode } from '@/components/folder-tree/types';
 import { ObjectTable, type ObjectRow, type ObjectState } from '@/components/object-list/ObjectTable';
-import { ObjectTableToolbar } from '@/components/object-list/ObjectTableToolbar';
+import {
+  ObjectTableToolbar,
+  type FilterFormValue,
+} from '@/components/object-list/ObjectTableToolbar';
 import { ObjectPreviewPanel } from '@/components/object-list/ObjectPreviewPanel';
 import { useUiStore } from '@/stores/uiStore';
 import { queryKeys } from '@/lib/queries';
 import { api } from '@/lib/api-client';
+import type { SortValue } from '@/components/object-list/SortMenu';
+import { NewObjectDialog } from '@/components/object-list/NewObjectDialog';
 
 // ── Server response shapes (mirror /api/v1/{folders,objects}) ─────────────
 interface ServerFolderNode {
@@ -106,6 +112,8 @@ interface SearchData {
 async function fetchSearchData(params: {
   folderId?: string;
   q?: string;
+  sort?: SortValue;
+  filters?: FilterFormValue;
 }): Promise<SearchData> {
   const [serverFolders, serverObjects] = await Promise.all([
     api.get<ServerFolderNode[]>('/api/v1/folders'),
@@ -113,6 +121,14 @@ async function fetchSearchData(params: {
       query: {
         folderId: params.folderId,
         q: params.q,
+        sortBy: params.sort?.field,
+        sortDir: params.sort?.dir,
+        classCode: params.filters?.classCode,
+        state: params.filters?.state,
+        dateRange:
+          params.filters?.registeredFrom && params.filters?.registeredTo
+            ? `${params.filters.registeredFrom}..${params.filters.registeredTo}`
+            : undefined,
         limit: 100,
       },
     }),
@@ -123,20 +139,99 @@ async function fetchSearchData(params: {
   };
 }
 
+const DEFAULT_SORT: SortValue = { field: 'registeredAt', dir: 'desc' };
+
+const CLASS_LABELS: Record<string, string> = {
+  MEC: '기계',
+  ELE: '전기',
+  INS: '계장',
+  PRC: '공정',
+};
+
+const STATE_LABELS: Record<string, string> = {
+  NEW: '신규',
+  CHECKED_OUT: '체크아웃',
+  CHECKED_IN: '체크인',
+  IN_APPROVAL: '결재중',
+  APPROVED: '승인완료',
+};
+
+// Memoized SubSidebar — sort/filter state churn used to bubble up and
+// re-render the folder tree (BUG-010 "사이드바 텍스트 일시 소실").
+const MemoSubSidebar = React.memo(function MemoSubSidebar({
+  folders,
+  selectedId,
+  onSelect,
+  systemViews,
+}: {
+  folders: FolderNode[];
+  selectedId?: string;
+  onSelect: (node: FolderNode) => void;
+  systemViews: { key: string; label: string; count: number; icon: React.ComponentType<{ className?: string }> }[];
+}) {
+  return (
+    <SubSidebar title="폴더 트리">
+      <div className="mb-3 space-y-1 border-b border-border pb-3">
+        <div className="px-1 pb-1 text-[11px] font-semibold uppercase text-fg-subtle">Saved Views</div>
+        {systemViews.map((view) => {
+          const Icon = view.icon;
+          return (
+            <button
+              key={view.key}
+              type="button"
+              className="flex h-8 w-full items-center gap-2 rounded-md px-2 text-sm text-fg-muted transition-colors hover:bg-bg-muted hover:text-fg"
+            >
+              <Icon className="h-4 w-4 text-fg-subtle" />
+              <span className="flex-1 text-left">{view.label}</span>
+              <span className="rounded bg-bg-muted px-1.5 py-0.5 text-[11px] font-semibold text-fg-muted">
+                {view.count}
+              </span>
+            </button>
+          );
+        })}
+      </div>
+      <FolderTree
+        nodes={folders}
+        selectedId={selectedId}
+        onSelect={onSelect}
+        defaultExpanded={folders.map((f) => f.id)}
+      />
+    </SubSidebar>
+  );
+});
+
 export default function SearchPage() {
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  const action = searchParams?.get('action') ?? null;
+
   const [selectedFolder, setSelectedFolder] = React.useState<FolderNode | null>(null);
   const [selectedRow, setSelectedRow] = React.useState<ObjectRow | null>(null);
   const [search, setSearch] = React.useState('');
   const [selectedCount, setSelectedCount] = React.useState(0);
+  const [sort, setSort] = React.useState<SortValue>(DEFAULT_SORT);
+  const [filters, setFilters] = React.useState<FilterFormValue>({});
   const detailPanelOpen = useUiStore((s) => s.detailPanelOpen);
   const setDetailPanelOpen = useUiStore((s) => s.setDetailPanelOpen);
 
   const { data } = useQuery({
-    queryKey: queryKeys.objects.list({ folder: selectedFolder?.id, q: search }),
+    queryKey: queryKeys.objects.list({
+      folder: selectedFolder?.id,
+      q: search,
+      sortField: sort.field,
+      sortDir: sort.dir,
+      classCode: filters.classCode,
+      state: filters.state,
+      registeredFrom: filters.registeredFrom,
+      registeredTo: filters.registeredTo,
+      registrant: filters.registrant,
+    }),
     queryFn: () =>
       fetchSearchData({
         folderId: selectedFolder?.id,
         q: search.trim() || undefined,
+        sort,
+        filters,
       }),
   });
 
@@ -150,47 +245,85 @@ export default function SearchPage() {
   ];
 
   const filtered = React.useMemo(() => {
-    if (!search.trim()) return allObjects;
-    const q = search.toLowerCase();
-    return allObjects.filter(
-      (o) => o.number.toLowerCase().includes(q) || o.name.toLowerCase().includes(q),
-    );
-  }, [allObjects, search]);
+    let rows = allObjects;
+    if (filters.classCode) rows = rows.filter((o) => o.classCode === filters.classCode);
+    if (filters.state) rows = rows.filter((o) => o.state === filters.state);
+    if (filters.registeredFrom) rows = rows.filter((o) => o.registeredAt >= filters.registeredFrom!);
+    if (filters.registeredTo) rows = rows.filter((o) => o.registeredAt <= filters.registeredTo!);
+    if (filters.registrant) {
+      const r = filters.registrant.toLowerCase();
+      rows = rows.filter((o) => o.registrant.toLowerCase().includes(r));
+    }
+    if (search.trim()) {
+      const q = search.toLowerCase();
+      rows = rows.filter(
+        (o) => o.number.toLowerCase().includes(q) || o.name.toLowerCase().includes(q),
+      );
+    }
+    // client-side sort (mirrors what the API will do server-side)
+    const sorted = [...rows].sort((a, b) => {
+      const av = a[sort.field as keyof ObjectRow] as string | number;
+      const bv = b[sort.field as keyof ObjectRow] as string | number;
+      if (av === bv) return 0;
+      const cmp = av > bv ? 1 : -1;
+      return sort.dir === 'asc' ? cmp : -cmp;
+    });
+    return sorted;
+  }, [allObjects, search, filters, sort]);
+
+  const activeFilterChips = React.useMemo(() => {
+    const chips: { key: string; label: string; value: string }[] = [];
+    if (filters.classCode) {
+      chips.push({
+        key: 'class',
+        label: '자료유형',
+        value: CLASS_LABELS[filters.classCode] ?? filters.classCode,
+      });
+    }
+    if (filters.state) {
+      chips.push({
+        key: 'state',
+        label: '상태',
+        value: STATE_LABELS[filters.state] ?? filters.state,
+      });
+    }
+    if (filters.registeredFrom || filters.registeredTo) {
+      chips.push({
+        key: 'date',
+        label: '등록일',
+        value: `${filters.registeredFrom ?? ''} ~ ${filters.registeredTo ?? ''}`.trim(),
+      });
+    }
+    if (filters.registrant) {
+      chips.push({ key: 'registrant', label: '등록자', value: filters.registrant });
+    }
+    return chips;
+  }, [filters]);
 
   const handleSelectRow = (row: ObjectRow | null) => {
     setSelectedRow(row);
     if (row) setDetailPanelOpen(true);
   };
 
+  const handleSelectFolder = React.useCallback((node: FolderNode) => {
+    setSelectedFolder(node);
+  }, []);
+
+  const closeNewDialog = React.useCallback(() => {
+    const sp = new URLSearchParams(searchParams?.toString() ?? '');
+    sp.delete('action');
+    const qs = sp.toString();
+    router.replace(qs ? `/search?${qs}` : '/search');
+  }, [router, searchParams]);
+
   return (
     <div className="flex h-full min-h-0 flex-1">
-      <SubSidebar title="폴더 트리">
-        <div className="mb-3 space-y-1 border-b border-border pb-3">
-          <div className="px-1 pb-1 text-[11px] font-semibold uppercase text-fg-subtle">Saved Views</div>
-          {systemViews.map((view) => {
-            const Icon = view.icon;
-            return (
-              <button
-                key={view.key}
-                type="button"
-                className="flex h-8 w-full items-center gap-2 rounded-md px-2 text-sm text-fg-muted transition-colors hover:bg-bg-muted hover:text-fg"
-              >
-                <Icon className="h-4 w-4 text-fg-subtle" />
-                <span className="flex-1 text-left">{view.label}</span>
-                <span className="rounded bg-bg-muted px-1.5 py-0.5 text-[11px] font-semibold text-fg-muted">
-                  {view.count}
-                </span>
-              </button>
-            );
-          })}
-        </div>
-        <FolderTree
-          nodes={folders}
-          selectedId={selectedFolder?.id}
-          onSelect={(node) => setSelectedFolder(node)}
-          defaultExpanded={folders.map((f) => f.id)}
-        />
-      </SubSidebar>
+      <MemoSubSidebar
+        folders={folders}
+        selectedId={selectedFolder?.id}
+        onSelect={handleSelectFolder}
+        systemViews={systemViews}
+      />
 
       <section className="flex min-w-0 flex-1 flex-col bg-bg">
         <div className="border-b border-border bg-bg/90 px-5 py-3 backdrop-blur">
@@ -229,39 +362,65 @@ export default function SearchPage() {
           selectedCount={selectedCount}
           search={search}
           onSearchChange={setSearch}
-          activeFilters={[
-            { key: 'class', label: '분야', value: '전체' },
-            { key: 'state', label: '상태', value: '전체' },
-            { key: 'latest', label: '최신본', value: '예' },
-            { key: 'field', label: '현장배포', value: '포함' },
-          ]}
-          onClearFilters={() => setSearch('')}
+          activeFilters={activeFilterChips}
+          onRemoveFilter={(key) => {
+            setFilters((f) => {
+              const next = { ...f };
+              if (key === 'class') delete next.classCode;
+              else if (key === 'state') delete next.state;
+              else if (key === 'date') {
+                delete next.registeredFrom;
+                delete next.registeredTo;
+              } else if (key === 'registrant') delete next.registrant;
+              return next;
+            });
+          }}
+          onClearFilters={() => {
+            setSearch('');
+            setFilters({});
+          }}
+          sort={sort}
+          onSortChange={setSort}
+          filterValue={filters}
+          onFilterChange={setFilters}
         />
 
-        <div className="min-h-0 flex-1 overflow-hidden bg-bg">
-          <ObjectTable
-            data={filtered}
-            selectedId={selectedRow?.id}
-            onSelect={handleSelectRow}
-            onSelectedCountChange={setSelectedCount}
-            searchTerm={search}
-          />
-          {filtered.length > 0 && (
-            <div className="flex items-center justify-center border-t border-border bg-bg-subtle py-3">
-              <button
-                type="button"
-                className="app-action-button"
-              >
-                더 보기
-              </button>
-            </div>
-          )}
+        {/* BUG-011: parent must allow content to grow + scroll. The inner
+            wrapper handles vertical scroll; ObjectTable itself stays static. */}
+        <div className="flex min-h-0 flex-1 flex-col bg-bg">
+          <div className="min-h-0 flex-1 overflow-auto">
+            <ObjectTable
+              data={filtered}
+              selectedId={selectedRow?.id}
+              onSelect={handleSelectRow}
+              onSelectedCountChange={setSelectedCount}
+              searchTerm={search}
+            />
+            {filtered.length > 0 && (
+              <div className="flex items-center justify-center border-t border-border bg-bg-subtle py-3">
+                <button
+                  type="button"
+                  className="app-action-button"
+                >
+                  더 보기
+                </button>
+              </div>
+            )}
+          </div>
         </div>
       </section>
 
       {detailPanelOpen && (
         <ObjectPreviewPanel row={selectedRow} onClose={() => setDetailPanelOpen(false)} />
       )}
+
+      <NewObjectDialog
+        open={action === 'new'}
+        onOpenChange={(open) => {
+          if (!open) closeNewDialog();
+        }}
+        folderId={selectedFolder?.id}
+      />
     </div>
   );
 }
@@ -285,3 +444,4 @@ function Metric({
     </div>
   );
 }
+

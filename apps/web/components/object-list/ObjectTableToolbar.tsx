@@ -1,5 +1,6 @@
 'use client';
 
+import * as React from 'react';
 import Link from 'next/link';
 import {
   Filter,
@@ -14,9 +15,24 @@ import {
   Layers3,
   GitCompare,
   Archive,
+  X,
 } from 'lucide-react';
 import { cn } from '@/lib/cn';
 import { FilterChip } from '@/components/FilterChip';
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from '@/components/ui/popover';
+import { SortMenu, sortLabel, type SortValue } from './SortMenu';
+
+export interface FilterFormValue {
+  classCode?: string;
+  state?: string;
+  registeredFrom?: string;
+  registeredTo?: string;
+  registrant?: string;
+}
 
 interface ObjectTableToolbarProps {
   totalCount: number;
@@ -27,9 +43,12 @@ interface ObjectTableToolbarProps {
   /** active filter chips */
   activeFilters?: { key: string; label: string; value: string }[];
   onRemoveFilter?: (key: string) => void;
-  /** sort label like "등록일 ↓" */
-  sortLabel?: string;
-  onSortClick?: () => void;
+  /** sort state + handler (BUG-010) */
+  sort?: SortValue;
+  onSortChange?: (next: SortValue) => void;
+  /** filter form state + handler (BUG-006) */
+  filterValue?: FilterFormValue;
+  onFilterChange?: (next: FilterFormValue) => void;
   /** selection actions handlers (placeholders) */
   onMove?: () => void;
   onCopy?: () => void;
@@ -37,6 +56,25 @@ interface ObjectTableToolbarProps {
   onDelete?: () => void;
   onSubmitApproval?: () => void;
 }
+
+const DEFAULT_SORT: SortValue = { field: 'registeredAt', dir: 'desc' };
+
+const CLASS_OPTIONS = [
+  { value: '', label: '전체' },
+  { value: 'MEC', label: '기계' },
+  { value: 'ELE', label: '전기' },
+  { value: 'INS', label: '계장' },
+  { value: 'PRC', label: '공정' },
+];
+
+const STATE_OPTIONS = [
+  { value: '', label: '전체' },
+  { value: 'NEW', label: '신규' },
+  { value: 'CHECKED_OUT', label: '체크아웃' },
+  { value: 'CHECKED_IN', label: '체크인' },
+  { value: 'IN_APPROVAL', label: '결재중' },
+  { value: 'APPROVED', label: '승인완료' },
+];
 
 export function ObjectTableToolbar({
   totalCount,
@@ -46,14 +84,35 @@ export function ObjectTableToolbar({
   onClearFilters,
   activeFilters = [],
   onRemoveFilter,
-  sortLabel = '등록일 ↓',
-  onSortClick,
+  sort = DEFAULT_SORT,
+  onSortChange,
+  filterValue,
+  onFilterChange,
   onMove,
   onCopy,
   onDownload,
   onDelete,
   onSubmitApproval,
 }: ObjectTableToolbarProps) {
+  const [filterOpen, setFilterOpen] = React.useState(false);
+  const [draft, setDraft] = React.useState<FilterFormValue>(filterValue ?? {});
+
+  // Sync draft -> external when popover opens.
+  React.useEffect(() => {
+    if (filterOpen) setDraft(filterValue ?? {});
+  }, [filterOpen, filterValue]);
+
+  const apply = () => {
+    onFilterChange?.(draft);
+    setFilterOpen(false);
+  };
+
+  const reset = () => {
+    const empty: FilterFormValue = {};
+    setDraft(empty);
+    onFilterChange?.(empty);
+  };
+
   return (
     <div className="app-toolbar">
       <div className="flex min-h-12 flex-wrap items-center gap-2 px-4 py-2">
@@ -84,15 +143,121 @@ export function ObjectTableToolbar({
           />
         </div>
 
-        <button
-          type="button"
-          className={cn(
-            'app-action-button',
-          )}
-        >
-          <Filter className="h-3.5 w-3.5" />
-          속성 필터
-        </button>
+        <Popover open={filterOpen} onOpenChange={setFilterOpen}>
+          <PopoverTrigger asChild>
+            <button
+              type="button"
+              aria-label="필터 조건"
+              className={cn(
+                'app-action-button',
+                filterOpen && 'border-border-strong bg-bg-muted',
+              )}
+            >
+              <Filter className="h-3.5 w-3.5" />
+              필터 조건
+            </button>
+          </PopoverTrigger>
+          <PopoverContent
+            align="start"
+            sideOffset={6}
+            className="w-80 space-y-3 p-3"
+          >
+            <div className="flex items-center justify-between">
+              <h3 className="text-sm font-semibold text-fg">필터 조건</h3>
+              <button
+                type="button"
+                aria-label="닫기"
+                onClick={() => setFilterOpen(false)}
+                className="app-icon-button h-6 w-6"
+              >
+                <X className="h-3.5 w-3.5" />
+              </button>
+            </div>
+
+            <FilterField label="자료유형">
+              <select
+                value={draft.classCode ?? ''}
+                onChange={(e) =>
+                  setDraft((d) => ({ ...d, classCode: e.target.value || undefined }))
+                }
+                className="h-8 w-full rounded-md border border-border bg-bg px-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                {CLASS_OPTIONS.map((o) => (
+                  <option key={o.value} value={o.value}>
+                    {o.label}
+                  </option>
+                ))}
+              </select>
+            </FilterField>
+
+            <FilterField label="상태">
+              <select
+                value={draft.state ?? ''}
+                onChange={(e) =>
+                  setDraft((d) => ({ ...d, state: e.target.value || undefined }))
+                }
+                className="h-8 w-full rounded-md border border-border bg-bg px-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                {STATE_OPTIONS.map((o) => (
+                  <option key={o.value} value={o.value}>
+                    {o.label}
+                  </option>
+                ))}
+              </select>
+            </FilterField>
+
+            <FilterField label="등록일">
+              <div className="flex items-center gap-1.5">
+                <input
+                  type="date"
+                  value={draft.registeredFrom ?? ''}
+                  onChange={(e) =>
+                    setDraft((d) => ({ ...d, registeredFrom: e.target.value || undefined }))
+                  }
+                  className="h-8 w-full flex-1 rounded-md border border-border bg-bg px-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                />
+                <span className="text-fg-subtle">~</span>
+                <input
+                  type="date"
+                  value={draft.registeredTo ?? ''}
+                  onChange={(e) =>
+                    setDraft((d) => ({ ...d, registeredTo: e.target.value || undefined }))
+                  }
+                  className="h-8 w-full flex-1 rounded-md border border-border bg-bg px-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                />
+              </div>
+            </FilterField>
+
+            <FilterField label="등록자">
+              <input
+                type="text"
+                value={draft.registrant ?? ''}
+                onChange={(e) =>
+                  setDraft((d) => ({ ...d, registrant: e.target.value || undefined }))
+                }
+                placeholder="이름 입력"
+                className="h-8 w-full rounded-md border border-border bg-bg px-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              />
+            </FilterField>
+
+            <div className="flex items-center justify-end gap-2 border-t border-border pt-3">
+              <button
+                type="button"
+                onClick={reset}
+                className="app-action-button h-8 px-3 text-xs"
+              >
+                초기화
+              </button>
+              <button
+                type="button"
+                onClick={apply}
+                className="app-action-button-primary h-8 px-3 text-xs"
+              >
+                적용
+              </button>
+            </div>
+          </PopoverContent>
+        </Popover>
 
         {activeFilters.map((f) => (
           <FilterChip
@@ -118,14 +283,13 @@ export function ObjectTableToolbar({
           <span>
             총 <span className="font-semibold text-fg">{totalCount.toLocaleString()}</span>건
           </span>
-          <button
-            type="button"
-            onClick={onSortClick}
-            className="app-action-button h-8 px-2.5 text-xs"
-          >
-            <ArrowDownNarrowWide className="h-3.5 w-3.5" />
-            정렬: {sortLabel}
-          </button>
+          {onSortChange ? (
+            <SortMenu value={sort} onChange={onSortChange} />
+          ) : (
+            <span className="inline-flex h-8 items-center gap-1 rounded-md border border-border bg-bg-subtle px-2.5 text-xs text-fg-muted">
+              정렬: {sortLabel(sort)}
+            </span>
+          )}
           <Link href="/search?action=new" className="app-action-button-primary h-8">
             <Plus className="h-3.5 w-3.5" />
             신규 등록
@@ -152,6 +316,23 @@ export function ObjectTableToolbar({
         </div>
       )}
     </div>
+  );
+}
+
+function FilterField({
+  label,
+  children,
+}: {
+  label: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <label className="block">
+      <span className="mb-1 block text-[11px] font-medium uppercase text-fg-subtle">
+        {label}
+      </span>
+      {children}
+    </label>
   );
 }
 
