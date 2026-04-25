@@ -24,6 +24,7 @@ import {
   NewObjectDialog,
   type NewObjectFormValues,
 } from '@/components/object-list/NewObjectDialog';
+import { NewApprovalDialog } from '@/components/approval/NewApprovalDialog';
 
 // ── Server response shapes (mirror /api/v1/{folders,objects}) ─────────────
 interface ServerFolderNode {
@@ -97,10 +98,42 @@ function adaptObject(o: ServerObjectSummary): ObjectRow {
     markupCount: (o.currentRevision + o.classCode.length) % 5,
     transmittedAt,
     lockedBy: o.lockedById ? '체크아웃' : null,
+    lockedById: o.lockedById,
     controlState,
     latest: true,
   };
 }
+
+// /api/v1/me payload — only the field we use for lock-ownership checks.
+interface MeResponse {
+  id: string;
+}
+
+// Object mutation actions wired in R3b SIDE-C. Mirrors the per-row
+// dropdown items in <RowMenu>. `release` is approval submission and
+// requires a body (NewApprovalDialog payload); the other transitions
+// take an empty body.
+type GridMutationAction =
+  | 'checkout'
+  | 'checkin'
+  | 'cancelCheckout'
+  | 'release'
+  | 'delete';
+
+const ACTION_PATH: Record<Exclude<GridMutationAction, 'delete'>, string> = {
+  checkout: 'checkout',
+  checkin: 'checkin',
+  cancelCheckout: 'cancel-checkout',
+  release: 'release',
+};
+
+const ACTION_LABEL: Record<GridMutationAction, string> = {
+  checkout: '체크아웃',
+  checkin: '체크인',
+  cancelCheckout: '개정 취소',
+  release: '결재 상신',
+  delete: '삭제',
+};
 
 interface SearchData {
   folders: FolderNode[];
@@ -242,6 +275,13 @@ export default function SearchPage() {
         sort,
         filters,
       }),
+  });
+
+  // Signed-in user — used by RowMenu to gate self-only CHECKED_OUT actions.
+  const { data: me } = useQuery<MeResponse>({
+    queryKey: queryKeys.me(),
+    queryFn: () => api.get<MeResponse>('/api/v1/me'),
+    staleTime: 5 * 60 * 1000,
   });
 
   const folders = data?.folders ?? [];
@@ -390,6 +430,117 @@ export default function SearchPage() {
     [createObjectMutation],
   );
 
+  // ── Grid row mutations (api_contract.md SIDE-C) ─────────────────────────
+  // One factory drives the four state-transition mutations. All share the
+  // same invalidation footprint: refresh the grid list + the affected
+  // detail (so the SIDE-B object page reflects the new state when the user
+  // navigates back). `release` carries a body; the rest are empty POSTs.
+  // Delete is a separate mutation because the verb / no-body shape differs
+  // and the table guards it behind a ConfirmDialog already.
+  type RowMutationVars =
+    | { action: 'checkout' | 'checkin' | 'cancelCheckout'; objectId: string }
+    | {
+        action: 'release';
+        objectId: string;
+        body: { title: string; approvers: { userId: string; order: number }[] };
+      };
+
+  const rowMutation = useMutation<unknown, ApiError, RowMutationVars>({
+    mutationFn: (vars) => {
+      const path = `/api/v1/objects/${vars.objectId}/${ACTION_PATH[vars.action]}`;
+      if (vars.action === 'release') return api.post(path, vars.body);
+      return api.post(path);
+    },
+    onSuccess: (_data, vars) => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.objects.all() });
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.objects.detail(vars.objectId),
+      });
+      toast.success(`${ACTION_LABEL[vars.action]} 완료`);
+    },
+    onError: (err, vars) => {
+      toast.error(`${ACTION_LABEL[vars.action]} 실패`, {
+        description: err.message,
+      });
+    },
+  });
+
+  const deleteMutation = useMutation<unknown, ApiError, { objectId: string; number: string }>({
+    mutationFn: ({ objectId }) => api.delete(`/api/v1/objects/${objectId}`),
+    onSuccess: (_data, vars) => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.objects.all() });
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.objects.detail(vars.objectId),
+      });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.folders.tree() });
+      // ObjectTable surfaces its own success toast on confirm-resolve; we
+      // don't double-toast here.
+    },
+    onError: (err) => {
+      // Error toast is handled by ObjectTable.handleConfirmDelete via the
+      // throw below — keep this as the last-resort surface so it's never
+      // swallowed silently.
+      toast.error('삭제 실패', { description: err.message });
+    },
+  });
+
+  const handleCheckoutRow = React.useCallback(
+    (row: ObjectRow) => {
+      rowMutation.mutate({ action: 'checkout', objectId: row.id });
+    },
+    [rowMutation],
+  );
+  const handleCheckinRow = React.useCallback(
+    (row: ObjectRow) => {
+      rowMutation.mutate({ action: 'checkin', objectId: row.id });
+    },
+    [rowMutation],
+  );
+  const handleCancelCheckoutRow = React.useCallback(
+    (row: ObjectRow) => {
+      // The detail page guards cancel-checkout with a ConfirmDialog; the
+      // grid row currently relies on the dropdown's destructive-style
+      // entry — we still confirm via window.confirm to avoid a silent
+      // loss of work on misclick. Replacing this with a proper dialog is
+      // tracked for R3c.
+      const ok = window.confirm(`${row.number} — 개정을 취소하시겠습니까?`);
+      if (!ok) return;
+      rowMutation.mutate({ action: 'cancelCheckout', objectId: row.id });
+    },
+    [rowMutation],
+  );
+
+  // 결재 상신 — opens NewApprovalDialog. The dialog collects the title and
+  // approver line, then resolves into the rowMutation `release` call.
+  const [releaseTarget, setReleaseTarget] = React.useState<ObjectRow | null>(null);
+  const handleReleaseRow = React.useCallback((row: ObjectRow) => {
+    setReleaseTarget(row);
+  }, []);
+  const handleReleaseSubmit = React.useCallback(
+    async (payload: {
+      title: string;
+      approvers: { userId: string; order: number }[];
+    }) => {
+      if (!releaseTarget) return;
+      await rowMutation.mutateAsync({
+        action: 'release',
+        objectId: releaseTarget.id,
+        body: payload,
+      });
+      setReleaseTarget(null);
+    },
+    [rowMutation, releaseTarget],
+  );
+
+  const handleDeleteRow = React.useCallback(
+    async (row: ObjectRow) => {
+      // Throw on error so ObjectTable.handleConfirmDelete shows its own
+      // failure toast and keeps the dialog open if the BE rejects.
+      await deleteMutation.mutateAsync({ objectId: row.id, number: row.number });
+    },
+    [deleteMutation],
+  );
+
   return (
     <div className="flex h-full min-h-0 min-w-0 flex-1 overflow-hidden">
       <MemoSubSidebar
@@ -469,6 +620,12 @@ export default function SearchPage() {
               onSelect={handleSelectRow}
               onSelectedCountChange={setSelectedCount}
               searchTerm={search}
+              meId={me?.id}
+              onCheckoutRow={handleCheckoutRow}
+              onCheckinRow={handleCheckinRow}
+              onCancelCheckoutRow={handleCancelCheckoutRow}
+              onReleaseRow={handleReleaseRow}
+              onDeleteRow={handleDeleteRow}
             />
             {filtered.length > 0 && (
               <div className="flex items-center justify-center border-t border-border bg-bg-subtle py-3">
@@ -495,6 +652,17 @@ export default function SearchPage() {
         }}
         folderId={selectedFolder?.id}
         onSubmit={handleCreateObject}
+      />
+
+      <NewApprovalDialog
+        open={releaseTarget !== null}
+        onOpenChange={(open) => {
+          if (!open) setReleaseTarget(null);
+        }}
+        objectId={releaseTarget?.id}
+        objectNumber={releaseTarget?.number}
+        objectName={releaseTarget?.name}
+        onSubmit={handleReleaseSubmit}
       />
     </div>
   );
