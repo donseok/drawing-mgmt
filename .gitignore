@@ -45,3 +45,8 @@ fixtures/dwg/*.dwg
 fixtures/pdf/*.pdf
 fixtures/dxf/*.dxf
 !fixtures/.gitkeep
+
+# Harness workspace (intermediate artifacts: api_contract, design_spec, etc.)
+_workspace/
+_workspace_prev_*/
+.claude/worktrees/
