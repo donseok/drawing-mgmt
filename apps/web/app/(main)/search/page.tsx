@@ -364,10 +364,7 @@ export default function SearchPage() {
         ...(values.number ? { number: values.number } : {}),
         ...(values.description ? { description: values.description } : {}),
       };
-      return api.post<ServerObjectSummary>(
-        '/api/v1/objects',
-        payload as unknown as Record<string, unknown>,
-      );
+      return api.post<ServerObjectSummary>('/api/v1/objects', payload);
     },
     onSuccess: (data) => {
       // Per api_contract.md (BUG-04): invalidate list/folder/workspace keys.
