@@ -31,7 +31,7 @@ import {
  *   - {NEW, CHECKED_IN, APPROVED} → checkout enabled
  *   - CHECKED_IN → release (결재상신) enabled
  *   - IN_APPROVAL → all mutation actions disabled
- *   - delete: state ≠ IN_APPROVAL (admin gating lands in R3c)
+ *   - delete: state ≠ IN_APPROVAL AND (admin OR owner) — R3c-3 #4
  */
 export interface RowMenuRow {
   id: string;
@@ -46,11 +46,27 @@ export interface RowMenuRow {
     | 'DELETED';
   /** User ID currently holding the lock, or null when unlocked. */
   lockedById?: string | null;
+  /** Owner user id — needed by the admin-gated delete rule (R3c-3 #4). */
+  ownerId?: string | null;
+}
+
+/** Subset of /api/v1/me response the menu needs for permission gating. */
+export interface RowMenuMe {
+  id: string;
+  /** Role enum from prisma — only ADMIN/SUPER_ADMIN unlock cross-owner delete. */
+  role?: 'SUPER_ADMIN' | 'ADMIN' | 'USER' | 'PARTNER';
 }
 
 interface RowMenuProps {
   row: RowMenuRow;
-  /** Signed-in user id (from `useQuery(queryKeys.me())`). Pass undefined while loading. */
+  /**
+   * Signed-in user (from `useQuery(queryKeys.me())`). Pass undefined while
+   * loading — gates fall back to permissive (e.g. delete enabled) so the menu
+   * doesn't flicker disabled→enabled on hydrate. Once loaded the role check
+   * is enforced.
+   */
+  me?: RowMenuMe;
+  /** @deprecated Pass `me` instead. Kept for callers still wiring just the id. */
   meId?: string;
   // Stub callbacks (still wired through `handle()` for now).
   onDownload?: (row: RowMenuRow) => void;
@@ -74,6 +90,7 @@ interface RowMenuProps {
  */
 export function RowMenu({
   row,
+  me,
   meId,
   onDownload,
   onCopy,
@@ -84,6 +101,8 @@ export function RowMenu({
   onRelease,
   onDelete,
 }: RowMenuProps) {
+  // `me` is the new shape; `meId` keeps backward compat with R3b call sites.
+  const effectiveMeId = me?.id ?? meId;
   const handle = (
     label: string,
     cb: ((row: RowMenuRow) => void) | undefined,
@@ -103,9 +122,9 @@ export function RowMenu({
 
   // ── State-machine derived availability ────────────────────────────────
   const isLockedBySelf =
-    row.state === 'CHECKED_OUT' && !!row.lockedById && row.lockedById === meId;
+    row.state === 'CHECKED_OUT' && !!row.lockedById && row.lockedById === effectiveMeId;
   const isLockedByOther =
-    row.state === 'CHECKED_OUT' && !!row.lockedById && row.lockedById !== meId;
+    row.state === 'CHECKED_OUT' && !!row.lockedById && row.lockedById !== effectiveMeId;
   const isInApproval = row.state === 'IN_APPROVAL';
 
   // checkout: NEW / CHECKED_IN / APPROVED only.
@@ -121,8 +140,19 @@ export function RowMenu({
   const canCancelCheckout = isLockedBySelf && !!onCancelCheckout;
   // release (결재상신): CHECKED_IN only.
   const canRelease = row.state === 'CHECKED_IN' && !!onRelease;
-  // delete: anything not in approval (admin guard lands in R3c).
-  const canDelete = !isInApproval && !!onDelete;
+  // delete: not in approval AND (admin OR owner). When `me` hasn't loaded
+  // yet OR when ownerId is missing, fall back permissively so we don't show
+  // a disabled state during hydration. When `me.role` is absent (BE schema
+  // older than R3c-1 delivered) the role check is skipped — owner-only
+  // semantics still apply when ownerId is known.
+  const isAdmin = me?.role === 'ADMIN' || me?.role === 'SUPER_ADMIN';
+  const isOwner =
+    !!row.ownerId && !!effectiveMeId && row.ownerId === effectiveMeId;
+  // Permission unknown until we have either an ownerId or a role; before
+  // that, don't second-guess the BE — let it 403 if needed.
+  const permissionUnknown = !me || (!row.ownerId && me.role === undefined);
+  const canDelete =
+    !isInApproval && !!onDelete && (permissionUnknown || isAdmin || isOwner);
 
   return (
     <DropdownMenu>
