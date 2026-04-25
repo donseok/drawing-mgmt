@@ -17,6 +17,7 @@ import {
   FileText,
   AlertTriangle,
 } from 'lucide-react';
+import { DrawingPlaceholder } from '@/components/DrawingPlaceholder';
 import { SubSidebar } from '@/components/layout/SubSidebar';
 import { ApprovalLine, type ApprovalStep } from '@/components/ApprovalLine';
 import { EmptyState } from '@/components/EmptyState';
@@ -378,11 +379,11 @@ export default function ApprovalPage() {
                   {selected.revision}
                 </span>
               </div>
-              <div className="flex aspect-[4/3] items-center justify-center bg-[linear-gradient(90deg,hsl(var(--viewer-grid))_1px,transparent_1px),linear-gradient(0deg,hsl(var(--viewer-grid))_1px,transparent_1px)] bg-[size:22px_22px]">
-                <div className="flex h-16 w-16 items-center justify-center rounded-lg border border-border bg-bg/90 text-fg-subtle shadow-sm">
-                  <FileText className="h-8 w-8" />
-                </div>
-              </div>
+              <DrawingPlaceholder
+                gridSize={22}
+                icon={FileText}
+                className="aspect-[4/3] h-auto"
+              />
               <div className="grid grid-cols-3 divide-x divide-border border-t border-border text-[12px]">
                 <div className="p-2">
                   <div className="text-fg-muted">단계</div>

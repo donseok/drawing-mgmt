@@ -23,6 +23,7 @@ import type { ObjectState } from '@/components/object-list/ObjectTable';
 import { StatusBadge } from '@/components/StatusBadge';
 import { ApprovalLine } from '@/components/ApprovalLine';
 import { RevisionTree } from '@/components/RevisionTree';
+import { DrawingPlaceholder } from '@/components/DrawingPlaceholder';
 
 // MOCK detail — TODO: api.get(`/api/v1/objects/${id}`)
 const MOCK_OBJECT = {
@@ -274,12 +275,13 @@ function InfoTab({ obj }: { obj: typeof MOCK_OBJECT }) {
               전체화면
             </Link>
           </div>
-          <div className="flex h-[420px] items-center justify-center bg-[linear-gradient(90deg,hsl(var(--border))_1px,transparent_1px),linear-gradient(0deg,hsl(var(--border))_1px,transparent_1px)] bg-[size:28px_28px] text-fg-subtle">
-            {/* TODO: embed PDF.js / dxf-viewer thumbnail */}
-            <div className="flex h-20 w-20 items-center justify-center rounded-lg border border-border bg-bg/90 shadow-sm">
-              <ImageIcon className="h-10 w-10" />
-            </div>
-          </div>
+          {/* TODO: embed PDF.js / dxf-viewer thumbnail */}
+          <DrawingPlaceholder
+            gridSize={28}
+            tone="border"
+            cardClassName="h-20 w-20"
+            className="h-[420px]"
+          />
         </div>
 
         {/* Attachments */}

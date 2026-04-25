@@ -24,6 +24,7 @@ import {
 import { cn } from '@/lib/cn';
 import { StatusBadge } from '@/components/StatusBadge';
 import { RowMenu } from '@/components/object-list/RowMenu';
+import { CONTROL_STATE, type ControlState } from '@/lib/control-state';
 
 export type ObjectState =
   | 'NEW'
@@ -51,7 +52,7 @@ export interface ObjectRow {
   markupCount?: number;
   transmittedAt?: string;
   lockedBy?: string | null;
-  controlState?: '작업중' | '검토중' | '승인본' | '현장배포본';
+  controlState?: ControlState;
   latest?: boolean;
 }
 
@@ -160,14 +161,14 @@ export function ObjectTable({ data, selectedId, onSelect, onSelectedCountChange,
             <span
               className={cn(
                 'inline-flex h-6 items-center rounded-md border px-2 text-[12px] font-medium',
-                row.original.controlState === '현장배포본'
+                row.original.controlState === CONTROL_STATE.FIELD
                   ? 'border-success/25 bg-success/10 text-success'
-                  : row.original.controlState === '검토중'
+                  : row.original.controlState === CONTROL_STATE.REVIEW
                     ? 'border-warning/25 bg-warning/10 text-warning'
                     : 'border-border bg-bg-subtle text-fg-muted',
               )}
             >
-              {row.original.controlState ?? '작업중'}
+              {row.original.controlState ?? CONTROL_STATE.WORKING}
             </span>
             {row.original.latest ? (
               <span className="text-[11px] font-medium text-brand">최신본</span>

@@ -17,6 +17,7 @@ import { ObjectPreviewPanel } from '@/components/object-list/ObjectPreviewPanel'
 import { useUiStore } from '@/stores/uiStore';
 import { queryKeys } from '@/lib/queries';
 import { api } from '@/lib/api-client';
+import { CONTROL_STATE, deriveControlState } from '@/lib/control-state';
 import type { SortValue } from '@/components/object-list/SortMenu';
 import { NewObjectDialog } from '@/components/object-list/NewObjectDialog';
 
@@ -67,14 +68,7 @@ function adaptFolder(node: ServerFolderNode): FolderNode {
 
 function adaptObject(o: ServerObjectSummary): ObjectRow {
   const initial = o.ownerName?.[0] ?? '?';
-  const controlState =
-    o.state === 'APPROVED'
-      ? '현장배포본'
-      : o.state === 'IN_APPROVAL'
-        ? '검토중'
-        : o.state === 'CHECKED_OUT'
-          ? '작업중'
-          : '승인본';
+  const controlState = deriveControlState(o.state);
   const created = new Date(o.createdAt);
   const transmittedAt = Number.isNaN(created.getTime())
     ? undefined
@@ -237,12 +231,26 @@ export default function SearchPage() {
 
   const folders = data?.folders ?? [];
   const allObjects = data?.objects ?? [];
-  const systemViews = [
-    { key: 'checkedout', label: '내 체크아웃', count: allObjects.filter((o) => o.state === 'CHECKED_OUT').length, icon: Lock },
-    { key: 'review', label: '승인 대기', count: allObjects.filter((o) => o.state === 'IN_APPROVAL').length, icon: CheckCircle2 },
-    { key: 'field', label: '현장배포본', count: allObjects.filter((o) => o.controlState === '현장배포본').length, icon: Send },
-    { key: 'issues', label: '미해결 이슈', count: allObjects.reduce((sum, o) => sum + (o.issueCount ?? 0), 0), icon: MapPin },
-  ];
+  // Memoized so MemoSubSidebar's React.memo isn't defeated by a new array
+  // reference on every keystroke. Single pass instead of 4 filters/reduce.
+  const systemViews = React.useMemo(() => {
+    let checkedout = 0;
+    let review = 0;
+    let field = 0;
+    let issues = 0;
+    for (const o of allObjects) {
+      if (o.state === 'CHECKED_OUT') checkedout++;
+      if (o.state === 'IN_APPROVAL') review++;
+      if (o.controlState === CONTROL_STATE.FIELD) field++;
+      issues += o.issueCount ?? 0;
+    }
+    return [
+      { key: 'checkedout', label: '내 체크아웃', count: checkedout, icon: Lock },
+      { key: 'review', label: '승인 대기', count: review, icon: CheckCircle2 },
+      { key: 'field', label: '현장배포본', count: field, icon: Send },
+      { key: 'issues', label: '미해결 이슈', count: issues, icon: MapPin },
+    ];
+  }, [allObjects]);
 
   const filtered = React.useMemo(() => {
     let rows = allObjects;
@@ -300,14 +308,21 @@ export default function SearchPage() {
     return chips;
   }, [filters]);
 
-  const handleSelectRow = (row: ObjectRow | null) => {
-    setSelectedRow(row);
-    if (row) setDetailPanelOpen(true);
-  };
+  const handleSelectRow = React.useCallback(
+    (row: ObjectRow | null) => {
+      setSelectedRow(row);
+      if (row) setDetailPanelOpen(true);
+    },
+    [setDetailPanelOpen],
+  );
 
   const handleSelectFolder = React.useCallback((node: FolderNode) => {
     setSelectedFolder(node);
   }, []);
+
+  const handleClosePreview = React.useCallback(() => {
+    setDetailPanelOpen(false);
+  }, [setDetailPanelOpen]);
 
   const closeNewDialog = React.useCallback(() => {
     const sp = new URLSearchParams(searchParams?.toString() ?? '');
@@ -317,7 +332,7 @@ export default function SearchPage() {
   }, [router, searchParams]);
 
   return (
-    <div className="flex h-full min-h-0 flex-1">
+    <div className="flex h-full min-h-0 min-w-0 flex-1 overflow-hidden">
       <MemoSubSidebar
         folders={folders}
         selectedId={selectedFolder?.id}
@@ -325,7 +340,7 @@ export default function SearchPage() {
         systemViews={systemViews}
       />
 
-      <section className="flex min-w-0 flex-1 flex-col bg-bg">
+      <section className="flex min-w-0 flex-1 flex-col overflow-hidden bg-bg">
         <div className="border-b border-border bg-bg/90 px-5 py-3 backdrop-blur">
           <div className="flex items-center justify-between gap-4">
             <div className="min-w-0">
@@ -385,10 +400,10 @@ export default function SearchPage() {
           onFilterChange={setFilters}
         />
 
-        {/* BUG-011: parent must allow content to grow + scroll. The inner
-            wrapper handles vertical scroll; ObjectTable itself stays static. */}
-        <div className="flex min-h-0 flex-1 flex-col bg-bg">
-          <div className="min-h-0 flex-1 overflow-auto">
+        {/* min-w-0 lets the section flex shrink so the preview keeps its
+            slot; overflow-auto scrolls the wide table inside. */}
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col bg-bg">
+          <div className="min-h-0 min-w-0 flex-1 overflow-auto">
             <ObjectTable
               data={filtered}
               selectedId={selectedRow?.id}
@@ -411,7 +426,7 @@ export default function SearchPage() {
       </section>
 
       {detailPanelOpen && (
-        <ObjectPreviewPanel row={selectedRow} onClose={() => setDetailPanelOpen(false)} />
+        <ObjectPreviewPanel row={selectedRow} onClose={handleClosePreview} />
       )}
 
       <NewObjectDialog
