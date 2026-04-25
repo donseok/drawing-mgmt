@@ -11,9 +11,10 @@ import {
   type RowSelectionState,
 } from '@tanstack/react-table';
 import { useRouter } from 'next/navigation';
-import { ChevronUp, ChevronDown, ChevronsUpDown, MoreVertical, Image as ImageIcon } from 'lucide-react';
+import { ChevronUp, ChevronDown, ChevronsUpDown, Image as ImageIcon } from 'lucide-react';
 import { cn } from '@/lib/cn';
 import { StatusBadge } from '@/components/StatusBadge';
+import { RowMenu } from '@/components/object-list/RowMenu';
 
 export type ObjectState =
   | 'NEW'
@@ -164,15 +165,14 @@ export function ObjectTable({ data, selectedId, onSelect, onSelectedCountChange,
       {
         id: 'actions',
         header: '',
-        cell: () => (
-          <button
-            type="button"
-            aria-label="행 메뉴"
-            onClick={(e) => e.stopPropagation()}
-            className="app-icon-button h-7 w-7"
-          >
-            <MoreVertical className="h-4 w-4" />
-          </button>
+        cell: ({ row }) => (
+          <RowMenu
+            row={{
+              id: row.original.id,
+              number: row.original.number,
+              name: row.original.name,
+            }}
+          />
         ),
         size: 32,
         enableSorting: false,

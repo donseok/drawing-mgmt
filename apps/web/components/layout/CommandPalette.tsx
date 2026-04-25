@@ -48,11 +48,15 @@ export function CommandPalette() {
   const [query, setQuery] = React.useState('');
 
   // ⌘K / Ctrl+K listener — also wired in useKeyboardShortcuts but keeping here for resilience.
+  // ESC also closes (Command's internal handling can be flaky when query is empty).
   React.useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
         e.preventDefault();
         setOpen(!open);
+      } else if (e.key === 'Escape' && open) {
+        e.preventDefault();
+        setOpen(false);
       }
     };
     window.addEventListener('keydown', onKey);
@@ -78,6 +82,9 @@ export function CommandPalette() {
     (f) => !trimmed || f.code.toLowerCase().includes(trimmed) || f.name.toLowerCase().includes(trimmed),
   );
 
+  const commandFilter = (label: string) =>
+    !trimmed || label.toLowerCase().includes(trimmed);
+
   const go = React.useCallback(
     (path: string) => {
       setOpen(false);
@@ -100,6 +107,10 @@ export function CommandPalette() {
     >
       <Command
         loop
+        // We do our own filtering (mode-aware on >, #, @ prefixes) — disable
+        // cmdk's default scorer so the input value drives the displayed list
+        // exactly. Fixes BUG-005 (typing wasn't reflected in results).
+        shouldFilter={false}
         className={cn(
           'w-full max-w-xl overflow-hidden rounded-lg border border-border bg-bg shadow-2xl',
         )}
@@ -107,6 +118,7 @@ export function CommandPalette() {
         <div className="flex items-center gap-2 border-b border-border px-3">
           <Search className="h-4 w-4 text-fg-muted" aria-hidden />
           <Command.Input
+            autoFocus
             value={query}
             onValueChange={setQuery}
             placeholder="도면번호·키워드…  (>명령  #폴더  @사용자)"
@@ -163,21 +175,41 @@ export function CommandPalette() {
             </div>
           )}
 
-          <Command.Group heading="명령" className="px-1 py-1 text-xs uppercase text-fg-subtle">
-            <PaletteCommand label="홈으로" icon={<Home className="h-4 w-4" />} onSelect={() => go('/')} />
-            <PaletteCommand label="자료 검색" icon={<Search className="h-4 w-4" />} onSelect={() => go('/search')} />
-            <PaletteCommand label="내 결재함" icon={<Inbox className="h-4 w-4" />} onSelect={() => go('/approval')} />
-            <PaletteCommand label="로비함" icon={<Inbox className="h-4 w-4" />} onSelect={() => go('/lobby')} />
-            <PaletteCommand label="신규 자료 등록" icon={<Plus className="h-4 w-4" />} onSelect={() => go('/search?action=new')} />
-            <PaletteCommand label="관리자" icon={<ShieldCheck className="h-4 w-4" />} onSelect={() => go('/admin')} />
-            <PaletteCommand
-              label={theme === 'dark' ? '라이트 모드 전환' : '다크 모드 전환'}
-              icon={theme === 'dark' ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
-              onSelect={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
-            />
-            <PaletteCommand label="사이드바 토글 (⌘B)" icon={<Settings className="h-4 w-4" />} onSelect={toggleSidebar} />
-            <PaletteCommand label="챗봇 토글 (⌘.)" icon={<HelpCircle className="h-4 w-4" />} onSelect={toggleChat} />
-          </Command.Group>
+          {(() => {
+            const allCommands: { label: string; icon: React.ReactNode; onSelect: () => void }[] = [
+              { label: '홈으로', icon: <Home className="h-4 w-4" />, onSelect: () => go('/') },
+              { label: '자료 검색', icon: <Search className="h-4 w-4" />, onSelect: () => go('/search') },
+              { label: '내 결재함', icon: <Inbox className="h-4 w-4" />, onSelect: () => go('/approval') },
+              { label: '로비함', icon: <Inbox className="h-4 w-4" />, onSelect: () => go('/lobby') },
+              { label: '신규 자료 등록', icon: <Plus className="h-4 w-4" />, onSelect: () => go('/search?action=new') },
+              { label: '관리자', icon: <ShieldCheck className="h-4 w-4" />, onSelect: () => go('/admin') },
+              {
+                label: theme === 'dark' ? '라이트 모드 전환' : '다크 모드 전환',
+                icon: theme === 'dark' ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />,
+                onSelect: () => setTheme(theme === 'dark' ? 'light' : 'dark'),
+              },
+              { label: '사이드바 토글 (⌘B)', icon: <Settings className="h-4 w-4" />, onSelect: toggleSidebar },
+              { label: '챗봇 토글 (⌘.)', icon: <HelpCircle className="h-4 w-4" />, onSelect: toggleChat },
+            ];
+            const visible = allCommands.filter((c) => commandFilter(c.label));
+            // Hide command group entirely when user is in drawings/folders mode
+            // and is actively typing (avoids the menu becoming a long static list).
+            const showGroup =
+              mode === 'commands' || !trimmed || visible.length > 0;
+            if (!showGroup || visible.length === 0) return null;
+            return (
+              <Command.Group heading="명령" className="px-1 py-1 text-xs uppercase text-fg-subtle">
+                {visible.map((c) => (
+                  <PaletteCommand
+                    key={c.label}
+                    label={c.label}
+                    icon={c.icon}
+                    onSelect={c.onSelect}
+                  />
+                ))}
+              </Command.Group>
+            );
+          })()}
         </Command.List>
 
         <div className="flex items-center justify-between border-t border-border px-3 py-2 text-[11px] text-fg-subtle">
