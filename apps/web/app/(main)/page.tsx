@@ -28,7 +28,7 @@ const STAT_CARDS = [
     key: 'checkedout',
     title: '체크아웃 중',
     count: 2,
-    href: '/search?owner=me&state=CHECKED_OUT',
+    href: '/workspace?tab=checkedout',
     icon: Lock,
     accent: 'text-amber-500',
   },
@@ -36,7 +36,7 @@ const STAT_CARDS = [
     key: 'recent',
     title: '최근 본 자료',
     count: 12,
-    href: '/workspace?view=recent',
+    href: '/workspace?tab=recent',
     icon: Clock,
     accent: 'text-sky-500',
   },
@@ -44,7 +44,7 @@ const STAT_CARDS = [
     key: 'notice',
     title: '활성 공지',
     count: 1,
-    href: '#notices',
+    href: '/admin/notices',
     icon: Megaphone,
     accent: 'text-emerald-500',
   },
@@ -139,13 +139,13 @@ export default async function WorkspaceHomePage() {
               <div className="app-kicker">Pinned</div>
               <h2 className="mt-1 text-base font-semibold text-fg">즐겨찾기</h2>
             </div>
-            <button
-              type="button"
+            <Link
+              href="/workspace?tab=favorites"
               className="app-action-button h-8 text-xs"
             >
-              <Plus className="h-3.5 w-3.5" />
-              추가
-            </button>
+              <ArrowRight className="h-3.5 w-3.5" />
+              전체 보기
+            </Link>
           </div>
 
           <ul className="grid grid-cols-2 gap-2 sm:grid-cols-3 md:grid-cols-5">
