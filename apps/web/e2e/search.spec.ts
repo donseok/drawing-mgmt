@@ -13,10 +13,9 @@ test.describe('Search page', () => {
     // Folder sidebar should be present (SubSidebar with title "폴더 트리")
     await expect(page.getByText('폴더 트리')).toBeVisible();
 
-    // The object table or its toolbar should render.
-    // ObjectTableToolbar contains a search input — verify it exists.
+    // ObjectTableToolbar contains a search input with known placeholder
     await expect(
-      page.getByPlaceholder(/검색|도면번호|이름/).or(page.locator('input[type="search"], input[type="text"]').first()),
+      page.getByPlaceholder('도면번호, 자료명, PDF 내용 검색...'),
     ).toBeVisible();
   });
 
@@ -26,22 +25,17 @@ test.describe('Search page', () => {
     // Wait for the page to be ready
     await expect(page.getByRole('heading', { name: '자료 검색' })).toBeVisible();
 
-    // Find the search/filter input in the toolbar.
-    // ObjectTableToolbar has a search field that drives the `search` state.
-    const searchInput = page.getByPlaceholder(/검색|도면번호|이름/).or(
-      page.locator('[data-testid="search-input"]'),
-    );
+    // Find the search input by its exact placeholder
+    const searchInput = page.getByPlaceholder('도면번호, 자료명, PDF 내용 검색...');
+    await expect(searchInput).toBeVisible();
 
-    // If a search input exists, type a query and verify the UI responds
-    if (await searchInput.isVisible()) {
-      await searchInput.fill('CGL');
+    // Type a query and verify the UI responds
+    await searchInput.fill('CGL');
 
-      // After typing, wait a moment for the filter to apply.
-      // The search results count text ("N건") should be present in the toolbar.
-      await expect(page.getByText(/건/)).toBeVisible();
-    }
+    // After typing, the toolbar should show result count ("N건")
+    await expect(page.getByText(/\d+건/)).toBeVisible({ timeout: 10000 });
 
-    // Verify that the Saved Views section exists in the sidebar
+    // Saved Views section is always rendered in the sidebar
     await expect(page.getByText('Saved Views')).toBeVisible();
   });
 });
