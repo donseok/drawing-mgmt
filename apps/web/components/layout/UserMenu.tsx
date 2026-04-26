@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useRef, useEffect } from 'react';
+import Link from 'next/link';
 import { ChevronDown, LogOut, HelpCircle, User as UserIcon, Settings } from 'lucide-react';
 import { signOut } from 'next-auth/react';
 import { cn } from '@/lib/cn';
@@ -80,11 +81,17 @@ export function UserMenu({ user }: UserMenuProps) {
           </div>
 
           <ul className="py-1 text-sm">
-            <MenuItem icon={<UserIcon className="h-4 w-4" />} label="프로필" onSelect={() => setOpen(false)} />
-            <MenuItem
+            <MenuLink
+              icon={<UserIcon className="h-4 w-4" />}
+              label="프로필"
+              href="/settings"
+              onNavigate={() => setOpen(false)}
+            />
+            <MenuLink
               icon={<Settings className="h-4 w-4" />}
-              label="설정"
-              onSelect={() => setOpen(false)}
+              label="환경설정"
+              href="/settings"
+              onNavigate={() => setOpen(false)}
             />
             <MenuItem
               icon={<HelpCircle className="h-4 w-4" />}
@@ -139,6 +146,32 @@ function MenuItem({
         <span className="text-fg-muted">{icon}</span>
         <span>{label}</span>
       </button>
+    </li>
+  );
+}
+
+function MenuLink({
+  icon,
+  label,
+  href,
+  onNavigate,
+}: {
+  icon: React.ReactNode;
+  label: string;
+  href: string;
+  onNavigate?: () => void;
+}) {
+  return (
+    <li>
+      <Link
+        href={href}
+        role="menuitem"
+        onClick={onNavigate}
+        className="flex w-full items-center gap-2 px-3 py-2 text-left text-fg hover:bg-bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+      >
+        <span className="text-fg-muted">{icon}</span>
+        <span>{label}</span>
+      </Link>
     </li>
   );
 }
