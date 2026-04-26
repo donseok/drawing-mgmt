@@ -44,6 +44,12 @@ import { ViewerError } from './ViewerError';
 import { MiniMap } from './MiniMap';
 import { PdfViewer, type PdfViewerHandle } from './PdfViewer';
 import { DxfViewer, type DxfViewerHandle } from './DxfViewer';
+// R5 (F4-08) Phase 1 — in-house DXF viewer. Opt-in via either:
+//   - URL: /viewer/<id>?engine=own
+//   - Env: NEXT_PUBLIC_USE_OWN_DXF_VIEWER=1 (default once stable)
+// The DxfViewerHandle / DxfEngine surfaces are mirrored so the toolbar +
+// measurement overlay are engine-agnostic.
+import { DwgViewer } from '@/components/DwgViewer';
 import { MeasurementOverlay } from './MeasurementOverlay';
 import { TextSearchPanel } from './TextSearchPanel';
 import { PrintLayout, triggerPrint } from './PrintLayout';
@@ -67,6 +73,8 @@ interface ResolvedSource {
 
 function ViewerShellInner({ attachmentId }: ViewerShellProps) {
   const router = useRouter();
+  // R5 opt-in. URL flag wins so QA can flip per-tab without a server restart.
+  const useOwnDxfEngine = useOwnDxfEngineFlag();
   const [meta, setMeta] = useState<AttachmentMeta | null>(null);
   const [source, setSource] = useState<ResolvedSource>({ pdf: null, dxf: null });
   const [error, setError] = useState<{ message: string; detail?: string } | null>(
@@ -267,12 +275,21 @@ function ViewerShellInner({ attachmentId }: ViewerShellProps) {
                 />
               ) : null}
               {mode === 'dxf' && source.dxf ? (
-                <DxfViewer
-                  ref={dxfRef}
-                  source={source.dxf}
-                  onError={(m, d) => setError({ message: m, detail: d })}
-                  onReady={setDxfEngine}
-                />
+                useOwnDxfEngine ? (
+                  <DwgViewer
+                    ref={dxfRef}
+                    source={source.dxf}
+                    onError={(m, d) => setError({ message: m, detail: d })}
+                    onReady={setDxfEngine}
+                  />
+                ) : (
+                  <DxfViewer
+                    ref={dxfRef}
+                    source={source.dxf}
+                    onError={(m, d) => setError({ message: m, detail: d })}
+                    onReady={setDxfEngine}
+                  />
+                )
               ) : null}
             </>
           ) : (
@@ -441,4 +458,26 @@ function makeDxfProjection(engine: DxfEngine | null): Projection {
       };
     },
   };
+}
+
+// R5 (F4-08) opt-in switch. Either flag flips the DXF tab to the in-house
+// engine; the URL flag wins so QA can A/B per-tab without restarting Next.
+//
+//   /viewer/<id>?engine=own         — force in-house
+//   /viewer/<id>?engine=dxf-viewer  — force legacy
+//   NEXT_PUBLIC_USE_OWN_DXF_VIEWER=0 — opt out to legacy (default = in-house)
+//
+// R24: env-unset behavior flipped to in-house. Phase 1~4 (LINE/CIRCLE/ARC/
+// LWPOLYLINE/TEXT/MTEXT/INSERT/HATCH solid/DIMENSION + Web Worker) cover the
+// vast majority of CGL drawings; HATCH patterns + line weights are the only
+// known regressions vs. dxf-viewer and they degrade gracefully.
+function useOwnDxfEngineFlag(): boolean {
+  const envValue = process.env.NEXT_PUBLIC_USE_OWN_DXF_VIEWER;
+  const envSaysOwn = envValue !== '0' && envValue !== 'false';
+  if (typeof window === 'undefined') return envSaysOwn;
+  const sp = new URLSearchParams(window.location.search);
+  const param = sp.get('engine');
+  if (param === 'own' || param === 'dwg') return true;
+  if (param === 'dxf-viewer' || param === 'legacy') return false;
+  return envSaysOwn;
 }

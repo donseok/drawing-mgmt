@@ -20,6 +20,7 @@ import { z } from 'zod';
 import { prisma } from '@/lib/prisma';
 import { requireUser } from '@/lib/auth-helpers';
 import { ok, error, ErrorCode } from '@/lib/api-response';
+import { activityLabel } from '@/lib/activity-labels';
 
 const querySchema = z.object({
   limit: z
@@ -28,28 +29,9 @@ const querySchema = z.object({
     .transform((v) => (v ? Math.min(100, Math.max(1, parseInt(v, 10) || 30)) : 30)),
 });
 
-const ACTION_TITLES: Record<string, string> = {
-  LOGIN: '로그인',
-  LOGIN_FAIL: '로그인 실패',
-  OBJECT_CREATE: '자료 등록',
-  OBJECT_UPDATE: '자료 수정',
-  OBJECT_DELETE: '자료 삭제',
-  OBJECT_CHECKOUT: '체크아웃',
-  OBJECT_CHECKIN: '체크인',
-  OBJECT_RELEASE: '잠금 해제',
-  APPROVE: '결재 승인',
-  REJECT: '결재 반려',
-  APPROVAL_DEFER: '결재 미루기',
-  APPROVAL_RECALL: '결재 회수',
-};
-
-function titleFor(action: string): string {
-  return ACTION_TITLES[action] ?? action;
-}
-
 function bodyFor(action: string, objectId: string | null): string {
   if (objectId) return `대상 자료 #${objectId.slice(-6)}`;
-  return titleFor(action);
+  return activityLabel(action);
 }
 
 export async function GET(req: Request): Promise<NextResponse> {
@@ -85,7 +67,7 @@ export async function GET(req: Request): Promise<NextResponse> {
   const data = logs.map((l) => ({
     id: l.id,
     type: l.action,
-    title: titleFor(l.action),
+    title: activityLabel(l.action),
     body: bodyFor(l.action, l.objectId),
     ts: l.createdAt,
     read: false as const,

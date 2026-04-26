@@ -134,13 +134,13 @@ export async function POST(
       data: {
         revisionId: revision.id,
         title: dto.title,
-        status: ApprovalStatus.IN_PROGRESS,
+        status: ApprovalStatus.PENDING,
         requesterId: user.id,
         steps: {
           create: sorted.map((a) => ({
             approverId: a.userId,
             order: a.order,
-            status: StepStatus.WAITING,
+            status: StepStatus.PENDING,
           })),
         },
       },

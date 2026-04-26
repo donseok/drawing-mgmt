@@ -15,7 +15,7 @@
 // Owned by BE (R3c-1).
 
 import { NextResponse } from 'next/server';
-import { ApprovalStatus, StepStatus } from '@prisma/client';
+import { ApprovalStatus } from '@prisma/client';
 import { prisma } from '@/lib/prisma';
 import { requireUser } from '@/lib/auth-helpers';
 import {
@@ -25,40 +25,10 @@ import {
 } from '@/lib/permissions';
 import { ok, error, ErrorCode } from '@/lib/api-response';
 
-// Map Prisma StepStatus → contract step status. WAITING is the schema's
-// pending-state name, but the contract surfaces it to the FE as 'PENDING'
-// for symmetry with the approval-level status.
-function stepStatusToContract(s: StepStatus): 'PENDING' | 'APPROVED' | 'REJECTED' {
-  switch (s) {
-    case 'APPROVED':
-      return 'APPROVED';
-    case 'REJECTED':
-      return 'REJECTED';
-    case 'WAITING':
-    default:
-      return 'PENDING';
-  }
-}
-
-// The schema has IN_PROGRESS too (mid-approval), but the contract only lists
-// PENDING/APPROVED/REJECTED/CANCELLED. IN_PROGRESS is conceptually still pending
-// from the FE's perspective so we collapse it to 'PENDING'.
-function approvalStatusToContract(
-  s: ApprovalStatus,
-): 'PENDING' | 'APPROVED' | 'REJECTED' | 'CANCELLED' {
-  switch (s) {
-    case 'APPROVED':
-      return 'APPROVED';
-    case 'REJECTED':
-      return 'REJECTED';
-    case 'CANCELLED':
-      return 'CANCELLED';
-    case 'PENDING':
-    case 'IN_PROGRESS':
-    default:
-      return 'PENDING';
-  }
-}
+// R4a (F4-01/F4-02) — schema is now 1:1 with the contract:
+//   ApprovalStatus: PENDING | APPROVED | REJECTED | CANCELLED
+//   StepStatus:     PENDING | APPROVED | REJECTED
+// No collapse / rename required; we just pass the enum value through.
 
 export async function GET(
   _req: Request,
@@ -113,23 +83,22 @@ export async function GET(
   const shape = (a: (typeof approvals)[number]) => ({
     id: a.id,
     title: a.title,
-    status: approvalStatusToContract(a.status),
+    status: a.status,
     revision: a.revision.rev,
     requestedBy: a.requester,
     requestedAt: a.createdAt,
     steps: a.steps.map((s) => ({
       order: s.order,
       approver: s.approver,
-      status: stepStatusToContract(s.status),
+      status: s.status,
       actedAt: s.actedAt,
       comment: s.comment,
     })),
   });
 
-  // The "current" approval is the newest one still in flight. We treat both
-  // PENDING and IN_PROGRESS as in-flight (collapsed to 'PENDING' in the shape).
+  // The "current" approval is the newest one still in flight (PENDING).
   const inFlightIdx = approvals.findIndex(
-    (a) => a.status === ApprovalStatus.PENDING || a.status === ApprovalStatus.IN_PROGRESS,
+    (a) => a.status === ApprovalStatus.PENDING,
   );
   const current = inFlightIdx === -1 ? null : shape(approvals[inFlightIdx]!);
   const history = approvals

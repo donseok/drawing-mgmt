@@ -3,7 +3,7 @@
 // The current active approver rejects the approval. Per TRD §5.3, the
 // underlying object transitions IN_APPROVAL → CHECKED_IN so the requester
 // can revise and re-submit. The Approval is marked REJECTED and any
-// remaining WAITING steps are left as-is (audit-friendly).
+// remaining PENDING steps are left as-is (audit-friendly).
 
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
@@ -49,11 +49,11 @@ export async function POST(
     },
   });
   if (!approval) return error(ErrorCode.E_NOT_FOUND);
-  if (approval.status !== ApprovalStatus.IN_PROGRESS) {
+  if (approval.status !== ApprovalStatus.PENDING) {
     return error(ErrorCode.E_STATE_CONFLICT, '진행 중인 결재가 아닙니다.');
   }
 
-  const activeStep = approval.steps.find((s) => s.status === StepStatus.WAITING);
+  const activeStep = approval.steps.find((s) => s.status === StepStatus.PENDING);
   if (!activeStep) {
     return error(ErrorCode.E_STATE_CONFLICT, '대기 중인 결재 단계가 없습니다.');
   }

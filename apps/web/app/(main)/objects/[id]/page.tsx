@@ -4,6 +4,7 @@ import * as React from 'react';
 import Link from 'next/link';
 import { useParams, useRouter, useSearchParams } from 'next/navigation';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useSession } from 'next-auth/react';
 import { toast } from 'sonner';
 import {
   ArrowLeft,
@@ -20,7 +21,9 @@ import {
   CheckCircle2,
   Clock,
   Lock,
+  Star,
   Undo2,
+  UploadCloud,
 } from 'lucide-react';
 import { cn } from '@/lib/cn';
 import type { ObjectState } from '@/components/object-list/ObjectTable';
@@ -29,6 +32,8 @@ import { ApprovalLine } from '@/components/ApprovalLine';
 import { RevisionTree } from '@/components/RevisionTree';
 import { DrawingPlaceholder } from '@/components/DrawingPlaceholder';
 import { ConfirmDialog } from '@/components/ConfirmDialog';
+import { AttachmentUploadDialog } from '@/components/object-list/AttachmentUploadDialog';
+import { EditObjectDialog } from '@/components/object-list/EditObjectDialog';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -38,6 +43,7 @@ import {
 } from '@/components/ui/dropdown-menu';
 import { queryKeys } from '@/lib/queries';
 import { api, ApiError } from '@/lib/api-client';
+import { activityLabel } from '@/lib/activity-labels';
 
 // ─────────────────────────────────────────────────────────────────────────
 // Detail DTO — shape returned by GET /api/v1/objects/:id (route.ts
@@ -125,6 +131,7 @@ interface ObjectVM {
   id: string;
   number: string;
   name: string;
+  description: string | null;
   state: ObjectState;
   revision: number;
   version: string;
@@ -264,6 +271,7 @@ function adaptObjectDetail(dto: ObjectDetailDTO): ObjectVM {
     id: dto.id,
     number: dto.number,
     name: dto.name,
+    description: dto.description,
     state: dto.state,
     revision: dto.currentRevision,
     version: dto.currentVersion,
@@ -313,28 +321,8 @@ function adaptObjectDetail(dto: ObjectDetailDTO): ObjectVM {
 // R3c — adapters for the two lazy tab queries.
 // ─────────────────────────────────────────────────────────────────────────
 
-// Activity action → 한국어 표시 라벨. Keys are the BE's ActivityLog.action
-// strings (snake-uppercase). Anything not listed falls back to the raw
-// action token, surfaced verbatim so newly added BE actions don't crash
-// the tab — they just look ugly until the table is updated.
-const ACTIVITY_LABELS: Record<string, string> = {
-  OBJECT_CHECKOUT: '체크아웃',
-  OBJECT_CHECKIN: '체크인',
-  OBJECT_CANCEL_CHECKOUT: '체크아웃 취소',
-  OBJECT_RELEASE: '결재상신',
-  OBJECT_APPROVE: '승인',
-  OBJECT_REJECT: '반려',
-  OBJECT_CANCEL: '결재 취소',
-  OBJECT_UPDATE: '수정',
-  OBJECT_CREATE: '생성',
-  OBJECT_DELETE: '삭제',
-  OBJECT_REVISE: '개정',
-  OBJECT_LINK: '연결',
-  OBJECT_UNLINK: '연결 해제',
-  OBJECT_MOVE: '이동',
-  OBJECT_ATTACH: '첨부 추가',
-  OBJECT_DETACH: '첨부 제거',
-};
+// Activity action → 한국어 표시 라벨은 `lib/activity-labels.ts`로 통합됨
+// (F4-05). FE 활동 탭과 BE 알림 라우트가 같은 매핑을 공유한다.
 
 function formatActivityTime(iso: string): string {
   // YYYY-MM-DD HH:MM — readable inline timestamp for the activity rail.
@@ -350,23 +338,18 @@ function adaptActivity(dto: ActivityResponseDTO): ActivityItemVM[] {
   return dto.items.map((it) => ({
     id: it.id,
     time: formatActivityTime(it.at),
-    action: ACTIVITY_LABELS[it.action] ?? it.action,
+    action: activityLabel(it.action),
     actionRaw: it.action,
     user: it.actor.fullName ?? it.actor.username,
     ip: it.ip ?? '—',
   }));
 }
 
-// Map BE step status → ApprovalLine's wider status enum. The BE only emits
-// PENDING/APPROVED/REJECTED today; we synthesize IN_PROGRESS for the first
-// pending step of the *current* approval so the UI shows a "진행 중" marker.
-function mapApprovalEntry(entry: ApprovalEntryDTO, isCurrent: boolean): ApprovalEntryVM {
-  // First PENDING step of the current entry becomes IN_PROGRESS so users
-  // see where the approval is sitting. History entries skip this — they are
-  // already finalized.
-  const firstPendingIdx = isCurrent
-    ? entry.steps.findIndex((s) => s.status === 'PENDING')
-    : -1;
+// R4a (F4-01/F4-02) — schema is now 1:1 with the contract; no IN_PROGRESS
+// synthesis needed. The "진행 중" visual marker is derived purely from step
+// state inside <ApprovalLine> (any APPROVED step + a later PENDING step).
+function mapApprovalEntry(entry: ApprovalEntryDTO): ApprovalEntryVM {
+  const firstPendingIdx = entry.steps.findIndex((s) => s.status === 'PENDING');
   return {
     id: entry.id,
     title: entry.title,
@@ -377,8 +360,11 @@ function mapApprovalEntry(entry: ApprovalEntryDTO, isCurrent: boolean): Approval
     steps: entry.steps.map((s, i) => ({
       step: s.order,
       name: s.approver.fullName ?? s.approver.username,
+      // First PENDING step of an in-flight (PENDING) approval becomes
+      // IN_PROGRESS so the UI highlights "진행 중" inline. History entries
+      // (APPROVED/REJECTED/CANCELLED) skip this — they're already done.
       status:
-        i === firstPendingIdx
+        entry.status === 'PENDING' && i === firstPendingIdx
           ? 'IN_PROGRESS'
           : (s.status as ApprovalStepVM['status']),
       at: s.actedAt ? formatActivityTime(s.actedAt) : '',
@@ -389,8 +375,8 @@ function mapApprovalEntry(entry: ApprovalEntryDTO, isCurrent: boolean): Approval
 
 function adaptApproval(dto: ApprovalResponseDTO): ApprovalVM {
   return {
-    current: dto.current ? mapApprovalEntry(dto.current, true) : null,
-    history: dto.history.map((e) => mapApprovalEntry(e, false)),
+    current: dto.current ? mapApprovalEntry(dto.current) : null,
+    history: dto.history.map((e) => mapApprovalEntry(e)),
   };
 }
 
@@ -412,10 +398,9 @@ const ACTION_VISIBILITY: Record<ObjectState, Record<string, boolean>> = {
   DELETED: { open: true, checkout: false, checkin: false, revise: false, submit: false, cancel: false, delete: false, download: true },
 };
 
-// /api/v1/me payload — only the field we use for lock-ownership checks.
-interface MeResponse {
-  id: string;
-}
+// R6 — `me` is now derived from `useSession()`. The /api/v1/me endpoint stays
+// available for fields not on the JWT (e.g. signatureFile) but the lock-owner
+// gate only needs the id which the session already carries.
 
 // Object mutation actions wired in BUG-05 + R3 SIDE-A.
 // `release` is approval submission (CHECKED_IN → IN_APPROVAL) — wired to
@@ -479,13 +464,14 @@ export default function ObjectDetailPage() {
   }, [fetchErr]);
 
   // Current user — used to gate CHECKED_OUT actions (only the locker can
-  // checkin / cancel-revision). SessionProvider isn't wired yet, so we read
-  // the session through the existing /api/v1/me endpoint.
-  const { data: me } = useQuery<MeResponse>({
-    queryKey: queryKeys.me(),
-    queryFn: () => api.get<MeResponse>('/api/v1/me'),
-    staleTime: 5 * 60 * 1000,
-  });
+  // checkin / cancel-revision). R6: server-hydrated SessionProvider gives us
+  // the session synchronously on first render, so isLocker resolves immediately
+  // instead of flickering "no actions available" while /api/v1/me round-trips.
+  const { data: session } = useSession();
+  const me = React.useMemo(
+    () => (session?.user ? { id: session.user.id } : undefined),
+    [session?.user],
+  );
 
   const tabFromUrl = (searchParams?.get('tab') as TabKey | null) ?? 'info';
   const tab: TabKey = TABS.some((t) => t.key === tabFromUrl) ? tabFromUrl : 'info';
@@ -598,6 +584,49 @@ export default function ObjectDetailPage() {
   const cancelCheckoutMutation = useObjectMutation('cancelCheckout');
 
   const [confirmCancelOpen, setConfirmCancelOpen] = React.useState(false);
+  // R23 — edit dialog state. Wired to the action-bar 수정 button (BUG-06).
+  const [editOpen, setEditOpen] = React.useState(false);
+
+  // R7 — pin state for the current object. We piggy-back on the global pins
+  // list (already cached when the home tile or sidebar fetched it) so the
+  // star reflects the current value without a dedicated request.
+  type PinObjectItem = {
+    kind: 'object';
+    pinId: string;
+    sortOrder: number;
+    object: { id: string; number: string; name: string; state: string };
+  };
+  const objectPinsQuery = useQuery<{ items: PinObjectItem[] }, ApiError>({
+    queryKey: queryKeys.pins.list('object'),
+    queryFn: () =>
+      api.get<{ items: PinObjectItem[] }>('/api/v1/me/pins', {
+        query: { type: 'object' },
+      }),
+    staleTime: 60_000,
+  });
+  const currentPin = objectPinsQuery.data?.items.find(
+    (p) => p.object.id === params.id,
+  );
+  const togglePinMutation = useMutation<unknown, ApiError, void>({
+    mutationFn: () => {
+      if (currentPin) {
+        return api.delete(`/api/v1/me/pins/${currentPin.pinId}`);
+      }
+      return api.post('/api/v1/me/pins', {
+        type: 'object',
+        targetId: params.id,
+      });
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.pins.all() });
+      toast.success(currentPin ? '즐겨찾기에서 제외했습니다.' : '즐겨찾기에 추가했습니다.');
+    },
+    onError: (err) => {
+      toast.error(currentPin ? '핀 해제 실패' : '핀 고정 실패', {
+        description: err.message,
+      });
+    },
+  });
 
   // Loading / error gates land AFTER all hooks. The fetch error code drives
   // 404 vs generic-error UI; the data-shaped path runs on success.
@@ -660,7 +689,24 @@ export default function ObjectDetailPage() {
           {/* Items are placeholders — wiring the trigger is the BUG-09 fix
               (menu must open). Real handlers land in later rounds. */}
           <DropdownMenuContent align="end" sideOffset={4} className="min-w-[10rem]">
-            <DropdownMenuItem onSelect={() => toast('다운로드 (준비 중)')}>
+            <DropdownMenuItem
+              onSelect={(e) => {
+                if (!obj.masterAttachmentId) {
+                  e.preventDefault();
+                  toast('다운로드할 마스터 파일이 없습니다.');
+                  return;
+                }
+                // Use a real anchor click so the browser handles the
+                // download — onSelect runs *before* the menu unmounts so
+                // calling .click() inline is safe.
+                const a = document.createElement('a');
+                a.href = `/api/v1/attachments/${obj.masterAttachmentId}/file?download=1`;
+                a.download = `${obj.number}`;
+                document.body.appendChild(a);
+                a.click();
+                a.remove();
+              }}
+            >
               <Download className="text-fg-muted" />
               다운로드
             </DropdownMenuItem>
@@ -697,6 +743,13 @@ export default function ObjectDetailPage() {
           <ActionButton icon={<GitBranch className="h-3.5 w-3.5" />} label="개정" visible={vis.revise} />
           <ActionButton
             icon={<Edit3 className="h-3.5 w-3.5" />}
+            label="수정"
+            visible={isLocker}
+            disabled={pendingMutation}
+            onClick={() => setEditOpen(true)}
+          />
+          <ActionButton
+            icon={<Edit3 className="h-3.5 w-3.5" />}
             label={checkoutMutation.isPending ? '체크아웃 중…' : '체크아웃'}
             visible={showCheckout}
             disabled={pendingMutation}
@@ -717,8 +770,37 @@ export default function ObjectDetailPage() {
             disabled={pendingMutation}
             onClick={() => setConfirmCancelOpen(true)}
           />
-          <ActionButton icon={<Download className="h-3.5 w-3.5" />} label="다운로드" visible={vis.download} dropdown />
+          <ActionButton
+            icon={<Download className="h-3.5 w-3.5" />}
+            label="다운로드"
+            visible={vis.download}
+            disabled={!obj.masterAttachmentId}
+            onClick={() => {
+              if (!obj.masterAttachmentId) return;
+              const a = document.createElement('a');
+              a.href = `/api/v1/attachments/${obj.masterAttachmentId}/file?download=1`;
+              a.download = obj.number;
+              document.body.appendChild(a);
+              a.click();
+              a.remove();
+            }}
+          />
           <ActionButton icon={<Share2 className="h-3.5 w-3.5" />} label="공유" visible />
+          {/* R7 — 즐겨찾기 토글. 이미 핀된 자료라면 채워진 별로 표시. */}
+          <ActionButton
+            icon={
+              <Star
+                className={cn(
+                  'h-3.5 w-3.5',
+                  currentPin && 'fill-current text-amber-500',
+                )}
+              />
+            }
+            label={currentPin ? '핀 해제' : '핀 고정'}
+            visible
+            disabled={togglePinMutation.isPending}
+            onClick={() => togglePinMutation.mutate()}
+          />
         </div>
 
         {lockedByOther && obj.lockedBy ? (
@@ -756,6 +838,20 @@ export default function ObjectDetailPage() {
         onConfirm={async () => {
           await cancelCheckoutMutation.mutateAsync();
           setConfirmCancelOpen(false);
+        }}
+      />
+
+      {/* R23 — name/description/securityLevel edit. Mounted alongside the
+          page so the dialog can stay open across re-renders triggered by
+          the post-save invalidation. */}
+      <EditObjectDialog
+        open={editOpen}
+        onOpenChange={setEditOpen}
+        objectId={obj.id}
+        initial={{
+          name: obj.name,
+          description: obj.description,
+          securityLevel: obj.securityLevel,
         }}
       />
 
@@ -873,6 +969,52 @@ function ActionButton({
 }
 
 function InfoTab({ obj }: { obj: ObjectVM }) {
+  // R21 — local upload-dialog state. The button is gated on the same state
+  // machine the BE enforces (NEW / CHECKED_IN / CHECKED_OUT-by-self) so the
+  // user doesn't see an enabled button that always errors.
+  const [uploadOpen, setUploadOpen] = React.useState(false);
+  const [pendingDelete, setPendingDelete] = React.useState<{
+    id: string;
+    name: string;
+  } | null>(null);
+  const canAddAttachment =
+    obj.state === 'NEW' || obj.state === 'CHECKED_IN' || obj.state === 'CHECKED_OUT';
+  const canMutateAttachment = canAddAttachment;
+  const queryClient = useQueryClient();
+
+  // R22 — attachment master toggle + delete. Same edit gate as upload.
+  const setMasterMutation = useMutation<unknown, ApiError, string>({
+    mutationFn: (attachmentId) =>
+      api.patch(`/api/v1/attachments/${attachmentId}`, { isMaster: true }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.objects.detail(obj.id),
+      });
+      toast.success('마스터로 지정했습니다.');
+    },
+    onError: (err) => {
+      toast.error('마스터 변경 실패', { description: err.message });
+    },
+  });
+
+  const deleteAttachmentMutation = useMutation<unknown, ApiError, string>({
+    mutationFn: (attachmentId) =>
+      api.delete(`/api/v1/attachments/${attachmentId}`),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.objects.detail(obj.id),
+      });
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.objects.activity(obj.id),
+      });
+      toast.success('첨부를 삭제했습니다.');
+      setPendingDelete(null);
+    },
+    onError: (err) => {
+      toast.error('첨부 삭제 실패', { description: err.message });
+    },
+  });
+
   return (
     <div className="grid grid-cols-1 gap-6 lg:grid-cols-[1fr_380px]">
       <div className="space-y-4">
@@ -903,6 +1045,16 @@ function InfoTab({ obj }: { obj: ObjectVM }) {
             <span className="app-kicker">
               첨부파일 ({obj.attachments.length})
             </span>
+            {canAddAttachment ? (
+              <button
+                type="button"
+                onClick={() => setUploadOpen(true)}
+                className="app-action-button h-7 px-2 text-xs"
+              >
+                <UploadCloud className="h-3.5 w-3.5" />
+                첨부 추가
+              </button>
+            ) : null}
           </div>
           <ul>
             {obj.attachments.map((a, i) => {
@@ -938,18 +1090,80 @@ function InfoTab({ obj }: { obj: ObjectVM }) {
                     <span className={nameClass}>{a.name}</span>
                   )}
                   <span className="ml-auto font-mono text-xs text-fg-muted">{a.size}</span>
-                  <button
-                    type="button"
+                  <a
+                    href={`/api/v1/attachments/${a.id}/file?download=1`}
+                    download={a.name}
                     aria-label="다운로드"
-                    className="app-icon-button h-7 w-7"
+                    className="app-icon-button inline-flex h-7 w-7 items-center justify-center rounded text-fg-muted hover:bg-bg-muted hover:text-fg"
                   >
                     <Download className="h-3.5 w-3.5" />
-                  </button>
+                  </a>
+                  {canMutateAttachment ? (
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
+                        <button
+                          type="button"
+                          aria-label="첨부 메뉴"
+                          className="app-icon-button inline-flex h-7 w-7 items-center justify-center rounded text-fg-muted hover:bg-bg-muted hover:text-fg"
+                        >
+                          <MoreHorizontal className="h-3.5 w-3.5" />
+                        </button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent
+                        align="end"
+                        sideOffset={4}
+                        className="min-w-[10rem]"
+                      >
+                        <DropdownMenuItem
+                          disabled={a.master || setMasterMutation.isPending}
+                          onSelect={() => setMasterMutation.mutate(a.id)}
+                        >
+                          마스터로 지정
+                        </DropdownMenuItem>
+                        <DropdownMenuSeparator />
+                        <DropdownMenuItem
+                          disabled={deleteAttachmentMutation.isPending}
+                          onSelect={(e) => {
+                            e.preventDefault();
+                            setPendingDelete({ id: a.id, name: a.name });
+                          }}
+                        >
+                          삭제
+                        </DropdownMenuItem>
+                      </DropdownMenuContent>
+                    </DropdownMenu>
+                  ) : null}
                 </li>
               );
             })}
           </ul>
         </div>
+
+        {canAddAttachment ? (
+          <AttachmentUploadDialog
+            open={uploadOpen}
+            onOpenChange={setUploadOpen}
+            objectId={obj.id}
+            isFirstAttachment={obj.attachments.length === 0}
+          />
+        ) : null}
+
+        <ConfirmDialog
+          open={pendingDelete !== null}
+          onOpenChange={(o) => {
+            if (!o) setPendingDelete(null);
+          }}
+          title={`'${pendingDelete?.name ?? ''}' 첨부를 삭제하시겠습니까?`}
+          description="삭제된 파일은 되돌릴 수 없습니다. 마스터 첨부는 다른 첨부를 마스터로 지정한 뒤에만 삭제할 수 있습니다."
+          confirmText="삭제"
+          variant="destructive"
+          disabled={deleteAttachmentMutation.isPending}
+          onConfirm={async () => {
+            if (pendingDelete) {
+              await deleteAttachmentMutation.mutateAsync(pendingDelete.id);
+            }
+          }}
+        />
       </div>
 
       {/* Properties */}

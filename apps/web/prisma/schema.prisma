@@ -32,6 +32,11 @@ model User {
   lastLoginAt      DateTime?
   createdAt        DateTime       @default(now())
   updatedAt        DateTime       @updatedAt
+  // F4-04 — soft-delete column. Active users have NULL; populated when the
+  // user is hard-retired by an admin. `employmentType=RETIRED` is preserved
+  // for HR/role analytics, but `deletedAt IS NOT NULL` is the canonical
+  // signal that the account is gone (auth + picker queries filter on this).
+  deletedAt        DateTime?
 
   organization Organization?  @relation(fields: [organizationId], references: [id])
   groups       UserGroup[]
@@ -41,9 +46,14 @@ model User {
   approvalSteps      ApprovalStep[]
   activityLogs       ActivityLog[]
   chatSessions       ChatSession[]
+  // R7 — workspace personalization. Pins are per-user shortcuts that drive
+  // the home "핀 고정" panel and the search sidebar's 즐겨찾기 section.
+  folderPins         UserFolderPin[]
+  objectPins         UserObjectPin[]
 
   @@index([organizationId])
   @@index([role])
+  @@index([deletedAt])
 }
 
 model Organization {
@@ -97,6 +107,9 @@ model Folder {
   defaultClass ObjectClass?      @relation(fields: [defaultClassId], references: [id])
   permissions FolderPermission[]
   objects     ObjectEntity[]
+  // R7 — see UserFolderPin. Cascade so a folder delete also wipes user pins
+  // pointing at it (avoids dangling references in personalization queries).
+  pins        UserFolderPin[]
 
   @@index([parentId])
   @@index([folderCode])
@@ -152,6 +165,7 @@ model ObjectEntity {
   links      LinkedObject[]          @relation("LinkSource")
   linkedFrom LinkedObject[]          @relation("LinkTarget")
   activities ActivityLog[]
+  pins       UserObjectPin[]
 
   @@index([folderId, state])
   @@index([number])
@@ -212,6 +226,40 @@ model LinkedObject {
   target ObjectEntity @relation("LinkTarget", fields: [targetId], references: [id], onDelete: Cascade)
 
   @@unique([sourceId, targetId])
+}
+
+// ─────────────────────────────────────────────────────────────
+// USER PINS (워크스페이스 개인화) — R7
+// ─────────────────────────────────────────────────────────────
+// Per-user folder/object shortcuts. Order is preserved client-side via
+// `sortOrder` so the user's drag-reorder stays after refresh.
+
+model UserFolderPin {
+  id        String   @id @default(cuid())
+  userId    String
+  folderId  String
+  sortOrder Int      @default(0)
+  createdAt DateTime @default(now())
+
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  folder Folder @relation(fields: [folderId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, folderId])
+  @@index([userId, sortOrder])
+}
+
+model UserObjectPin {
+  id        String   @id @default(cuid())
+  userId    String
+  objectId  String
+  sortOrder Int      @default(0)
+  createdAt DateTime @default(now())
+
+  user   User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  object ObjectEntity @relation(fields: [objectId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, objectId])
+  @@index([userId, sortOrder])
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -317,7 +365,7 @@ model ApprovalStep {
   approvalId    String
   approverId    String
   order         Int
-  status        StepStatus @default(WAITING)
+  status        StepStatus @default(PENDING)
   comment       String?
   signatureFile String?
   actedAt       DateTime?
@@ -344,6 +392,9 @@ model Lobby {
 
   attachments LobbyAttachment[]
   targets     LobbyTargetCompany[]
+  // R19 — recipient reviews. Each reply transitions the lobby to IN_REVIEW
+  // (when posted by a target) and is surfaced to the requester.
+  replies     LobbyReply[]
 }
 
 model LobbyAttachment {
@@ -366,6 +417,22 @@ model LobbyTargetCompany {
   lobby Lobby @relation(fields: [lobbyId], references: [id], onDelete: Cascade)
 
   @@unique([lobbyId, companyId])
+}
+
+// R19 — replies surface inside the lobby detail page so the requester can see
+// recipient feedback. Decision flag separates plain comments from explicit
+// approve/reject (used by the lobby status badge in the inbox).
+model LobbyReply {
+  id        String   @id @default(cuid())
+  lobbyId   String
+  userId    String
+  comment   String
+  decision  LobbyReplyDecision @default(COMMENT)
+  createdAt DateTime @default(now())
+
+  lobby Lobby @relation(fields: [lobbyId], references: [id], onDelete: Cascade)
+
+  @@index([lobbyId, createdAt])
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -518,16 +585,19 @@ enum ObjectState {
   DELETED
 }
 
+// F4-01 — `IN_PROGRESS` removed. PENDING covers both "waiting on the first
+// approver" and "mid-approval"; the FE derives "in-progress" purely from
+// step state (any APPROVED step + at least one PENDING step).
 enum ApprovalStatus {
   PENDING
-  IN_PROGRESS
   APPROVED
   REJECTED
   CANCELLED
 }
 
+// F4-02 — `WAITING` renamed to PENDING for symmetry with ApprovalStatus.
 enum StepStatus {
-  WAITING
+  PENDING
   APPROVED
   REJECTED
 }
@@ -559,6 +629,13 @@ enum LobbyStatus {
   IN_APPROVAL
   COMPLETED
   EXPIRED
+}
+
+enum LobbyReplyDecision {
+  COMMENT
+  APPROVE
+  REJECT
+  REVISE_REQUESTED
 }
 
 enum ConversionStatus {

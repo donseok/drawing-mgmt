@@ -61,6 +61,8 @@ interface ObjectTableToolbarProps {
    */
   onDelete?: () => void | Promise<void>;
   onSubmitApproval?: () => void;
+  /** R18 — open the transmittal dialog with the current selection. */
+  onTransmittal?: () => void;
 }
 
 const DEFAULT_SORT: SortValue = { field: 'registeredAt', dir: 'desc' };
@@ -99,6 +101,7 @@ export function ObjectTableToolbar({
   onDownload,
   onDelete,
   onSubmitApproval,
+  onTransmittal,
 }: ObjectTableToolbarProps) {
   const [filterOpen, setFilterOpen] = React.useState(false);
   const [draft, setDraft] = React.useState<FilterFormValue>(filterValue ?? {});
@@ -107,9 +110,14 @@ export function ObjectTableToolbar({
   const handleConfirmDelete = async () => {
     try {
       await onDelete?.();
-      toast.success(`${selectedCount}건을 삭제했습니다.`);
+      // Caller (e.g. search/page.tsx handleBulkDelete) is responsible for the
+      // success toast. F4-03 surfaces a per-row breakdown for partial failures
+      // so we deliberately skip the generic "{N}건을 삭제했습니다." here to
+      // avoid double-toasting.
       setConfirmDeleteOpen(false);
     } catch (err) {
+      // Caller may throw on full failure; show a generic error and keep the
+      // dialog open so the user can retry without re-selecting rows.
       toast.error('삭제에 실패했습니다.', {
         description: err instanceof Error ? err.message : undefined,
       });
@@ -138,6 +146,7 @@ export function ObjectTableToolbar({
         <div className="inline-flex h-8 rounded-md border border-border bg-bg-subtle p-0.5">
           <button
             type="button"
+            aria-pressed="true"
             className="inline-flex items-center gap-1 rounded bg-bg px-2 text-[12px] font-semibold text-fg shadow-sm ring-1 ring-border"
           >
             <Layers3 className="h-3.5 w-3.5 text-brand" />
@@ -145,6 +154,12 @@ export function ObjectTableToolbar({
           </button>
           <button
             type="button"
+            aria-pressed="false"
+            onClick={() =>
+              toast('시트 세트 보기 준비 중', {
+                description: '도면 시트 세트 보기는 다음 라운드에서 제공됩니다.',
+              })
+            }
             className="inline-flex items-center gap-1 rounded px-2 text-[12px] font-medium text-fg-muted hover:bg-bg-muted hover:text-fg"
           >
             시트 세트
@@ -317,15 +332,17 @@ export function ObjectTableToolbar({
       </div>
 
       {selectedCount > 0 && (
-        <div className="flex items-center gap-2 border-t border-border bg-brand/5 px-4 py-2 text-sm">
-          <span className="font-medium text-fg">{selectedCount}건 선택됨</span>
-          <span className="mx-2 text-border-strong">|</span>
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-1 border-t border-border bg-brand/5 px-4 py-2 text-sm">
+          <span className="whitespace-nowrap font-medium text-fg">
+            {selectedCount}건 선택됨
+          </span>
+          <span className="mx-2 text-border-strong" aria-hidden>|</span>
           <ToolbarAction icon={<FolderInput className="h-3.5 w-3.5" />} label="이동" onClick={onMove} />
           <ToolbarAction icon={<Copy className="h-3.5 w-3.5" />} label="복사" onClick={onCopy} />
           <ToolbarAction icon={<GitCompare className="h-3.5 w-3.5" />} label="리비전 비교" />
           <ToolbarAction icon={<Download className="h-3.5 w-3.5" />} label="다운로드" onClick={onDownload} />
           <ToolbarAction icon={<Send className="h-3.5 w-3.5" />} label="결재상신" onClick={onSubmitApproval} />
-          <ToolbarAction icon={<Archive className="h-3.5 w-3.5" />} label="트랜스미털" />
+          <ToolbarAction icon={<Archive className="h-3.5 w-3.5" />} label="트랜스미털" onClick={onTransmittal} />
           <ToolbarAction
             icon={<Trash2 className="h-3.5 w-3.5" />}
             label="삭제"
@@ -381,7 +398,7 @@ function ToolbarAction({
       type="button"
       onClick={onClick}
       className={cn(
-        'inline-flex h-7 items-center gap-1 rounded px-1.5 text-[12px] hover:bg-bg-muted',
+        'inline-flex h-7 items-center gap-1 whitespace-nowrap rounded px-1.5 text-[12px] hover:bg-bg-muted',
         destructive ? 'text-danger hover:bg-danger/10' : 'text-fg',
       )}
     >

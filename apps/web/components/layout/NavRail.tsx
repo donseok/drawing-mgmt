@@ -11,6 +11,7 @@ import {
   Settings2,
   HelpCircle,
   Upload,
+  FolderTree as FolderTreeIcon,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { cn } from '@/lib/cn';
@@ -51,6 +52,10 @@ export interface NavRailProps {
 export function NavRail({ role }: NavRailProps) {
   const pathname = usePathname() ?? '/';
   const setShortcutsHelpOpen = useUiStore((s) => s.setShortcutsHelpOpen);
+  // R8 — folder sidebar toggle. Lives next to the help button so the user
+  // discovers it quickly even when collapsed-by-default.
+  const folderSidebarOpen = useUiStore((s) => s.globalFolderSidebarOpen);
+  const toggleFolderSidebar = useUiStore((s) => s.toggleGlobalFolderSidebar);
 
   const isActive = (item: NavItem) => {
     if (item.href === '/') return pathname === '/';
@@ -77,6 +82,19 @@ export function NavRail({ role }: NavRailProps) {
       </ul>
 
       <div className="mt-auto flex flex-col items-center gap-1 pb-1">
+        <button
+          type="button"
+          onClick={toggleFolderSidebar}
+          aria-label={folderSidebarOpen ? '폴더 사이드바 접기' : '폴더 사이드바 열기'}
+          aria-pressed={folderSidebarOpen}
+          title="폴더 사이드바"
+          className={cn(
+            'app-icon-button h-10 w-10',
+            folderSidebarOpen && 'bg-brand/10 text-brand',
+          )}
+        >
+          <FolderTreeIcon className="h-5 w-5" />
+        </button>
         <button
           type="button"
           onClick={() => setShortcutsHelpOpen(true)}

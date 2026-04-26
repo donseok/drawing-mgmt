@@ -3,7 +3,8 @@ import { redirect } from 'next/navigation';
 import { ArrowRight } from 'lucide-react';
 import { auth } from '@/auth';
 import { cn } from '@/lib/cn';
-import { AdminSidebar, ADMIN_GROUPS } from './AdminSidebar';
+import { AdminSidebar } from './AdminSidebar';
+import { ADMIN_GROUPS } from './admin-groups';
 
 export default async function AdminPage() {
   const session = await auth();

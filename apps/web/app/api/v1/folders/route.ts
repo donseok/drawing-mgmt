@@ -1,6 +1,8 @@
-// GET /api/v1/folders — full folder tree, filtered by VIEW_FOLDER permission.
+// /api/v1/folders
+//   GET   — full folder tree, filtered by VIEW_FOLDER permission.
+//   POST  — create a new folder (ADMIN/SUPER_ADMIN only).
 //
-// Response shape:
+// Response shape (GET):
 //   { data: FolderNode[] }
 // where FolderNode = { id, name, folderCode, parentId, sortOrder,
 //                      defaultClassId, children: FolderNode[] }
@@ -11,10 +13,30 @@
 // in the tree. (SUPER_ADMIN sees all.)
 
 import { NextResponse } from 'next/server';
+import { z } from 'zod';
+import { Prisma } from '@prisma/client';
 import { prisma } from '@/lib/prisma';
 import { requireUser } from '@/lib/auth-helpers';
 import { filterVisibleFolders } from '@/lib/permissions';
 import { ok, error, ErrorCode } from '@/lib/api-response';
+import { extractRequestMeta, logActivity } from '@/lib/audit';
+
+function isAdmin(role: string): boolean {
+  return role === 'SUPER_ADMIN' || role === 'ADMIN';
+}
+
+const createSchema = z.object({
+  name: z.string().min(1).max(100),
+  /** Uppercased + dash-only token used for autonumbering. Must be unique. */
+  folderCode: z
+    .string()
+    .min(1)
+    .max(32)
+    .regex(/^[A-Z0-9_-]+$/, '폴더코드는 영문 대문자/숫자/_-만 허용합니다.'),
+  parentId: z.string().min(1).nullable().optional(),
+  defaultClassId: z.string().min(1).nullable().optional(),
+  sortOrder: z.number().int().min(0).max(9999).optional(),
+});
 
 export interface FolderNode {
   id: string;
@@ -73,6 +95,84 @@ export async function GET(): Promise<NextResponse> {
   const tree = buildTree(filtered);
 
   return ok(tree);
+}
+
+export async function POST(req: Request): Promise<NextResponse> {
+  let user;
+  try {
+    user = await requireUser();
+  } catch (err) {
+    if (err instanceof Response) return err as NextResponse;
+    throw err;
+  }
+  if (!isAdmin(user.role)) {
+    return error(ErrorCode.E_FORBIDDEN, '폴더 생성 권한이 없습니다.');
+  }
+
+  let body: unknown;
+  try {
+    body = await req.json();
+  } catch {
+    return error(ErrorCode.E_VALIDATION, '본문이 유효한 JSON이 아닙니다.');
+  }
+  const parsed = createSchema.safeParse(body);
+  if (!parsed.success) {
+    return error(
+      ErrorCode.E_VALIDATION,
+      undefined,
+      undefined,
+      parsed.error.flatten(),
+    );
+  }
+  const dto = parsed.data;
+
+  // Verify parent exists when supplied — better error than the foreign-key
+  // explosion we'd get from Prisma alone.
+  if (dto.parentId) {
+    const parent = await prisma.folder.findUnique({
+      where: { id: dto.parentId },
+      select: { id: true },
+    });
+    if (!parent) {
+      return error(ErrorCode.E_VALIDATION, '상위 폴더를 찾을 수 없습니다.');
+    }
+  }
+
+  let folder;
+  try {
+    folder = await prisma.folder.create({
+      data: {
+        name: dto.name,
+        folderCode: dto.folderCode,
+        parentId: dto.parentId ?? null,
+        defaultClassId: dto.defaultClassId ?? null,
+        sortOrder: dto.sortOrder ?? 0,
+      },
+    });
+  } catch (e) {
+    if (
+      e instanceof Prisma.PrismaClientKnownRequestError &&
+      e.code === 'P2002'
+    ) {
+      return error(
+        ErrorCode.E_VALIDATION,
+        '이미 사용 중인 폴더코드입니다.',
+      );
+    }
+    throw e;
+  }
+
+  const meta = extractRequestMeta(req);
+  await logActivity({
+    userId: user.id,
+    action: 'FOLDER_CREATE',
+    objectId: null,
+    ipAddress: meta.ipAddress,
+    userAgent: meta.userAgent,
+    metadata: { folderId: folder.id, name: folder.name, code: folder.folderCode },
+  });
+
+  return ok(folder, undefined, { status: 201 });
 }
 
 function buildTree(

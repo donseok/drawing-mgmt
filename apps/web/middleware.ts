@@ -20,6 +20,17 @@ export default auth((req) => {
   const isLoggedIn = !!req.auth;
   const pathname = nextUrl.pathname;
 
+  // BUG-20 — block dev-only routes (`/dev/*`, `/api/v1/dev/*`) in production.
+  // These are utility pages (sample DWG ingest, etc.) that should never be
+  // reachable on a production deployment.
+  const isDevRoute =
+    pathname.startsWith('/dev/') ||
+    pathname === '/dev' ||
+    pathname.startsWith('/api/v1/dev/');
+  if (isDevRoute && process.env.NODE_ENV === 'production') {
+    return NextResponse.rewrite(new URL('/not-found', nextUrl));
+  }
+
   const isAuthPage = pathname === '/login' || pathname.startsWith('/login/');
   // DEV/DEMO: 뷰어와 health는 인증 없이 접근 허용 (DB 미가용 환경에서 샘플 fixture 시연 목적)
   // 운영 전 제거 또는 NODE_ENV 분기 강제.

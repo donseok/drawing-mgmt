@@ -8,9 +8,9 @@
 //   reject  — same as POST /approvals/:id/reject  (active approver only).
 //   defer   — push the active step's order to the back of the queue so the
 //             next step becomes active. Only the active approver may defer.
-//             Comment optional; the deferred step stays WAITING.
-//   recall  — requester only, while the approval is still IN_PROGRESS or
-//             PENDING. Marks the approval CANCELLED and releases the lock on
+//             Comment optional; the deferred step stays PENDING.
+//   recall  — requester only, while the approval is still PENDING.
+//             Marks the approval CANCELLED and releases the lock on
 //             the underlying object (CHECKED_IN).
 //
 // We deliberately keep this thin: approve/reject delegate to the existing
@@ -109,11 +109,11 @@ async function handleDefer(
     include: { steps: { orderBy: { order: 'asc' } } },
   });
   if (!approval) return error(ErrorCode.E_NOT_FOUND);
-  if (approval.status !== ApprovalStatus.IN_PROGRESS) {
+  if (approval.status !== ApprovalStatus.PENDING) {
     return error(ErrorCode.E_STATE_CONFLICT, '진행 중인 결재가 아닙니다.');
   }
 
-  const waitingSteps = approval.steps.filter((s) => s.status === StepStatus.WAITING);
+  const waitingSteps = approval.steps.filter((s) => s.status === StepStatus.PENDING);
   if (waitingSteps.length === 0) {
     return error(ErrorCode.E_STATE_CONFLICT, '대기 중인 결재 단계가 없습니다.');
   }
@@ -172,7 +172,7 @@ async function handleDefer(
   return ok({
     approvalId,
     stepId: activeStep.id,
-    approvalStatus: ApprovalStatus.IN_PROGRESS,
+    approvalStatus: ApprovalStatus.PENDING,
   });
 }
 
@@ -190,10 +190,7 @@ async function handleRecall(
   if (approval.requesterId !== userId) {
     return error(ErrorCode.E_FORBIDDEN, '본인이 상신한 결재만 회수할 수 있습니다.');
   }
-  if (
-    approval.status !== ApprovalStatus.IN_PROGRESS &&
-    approval.status !== ApprovalStatus.PENDING
-  ) {
+  if (approval.status !== ApprovalStatus.PENDING) {
     return error(ErrorCode.E_STATE_CONFLICT, '회수 가능한 상태가 아닙니다.');
   }
 

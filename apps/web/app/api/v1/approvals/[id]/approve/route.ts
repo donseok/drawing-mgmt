@@ -1,9 +1,12 @@
 // POST /api/v1/approvals/:id/approve
 //
-// The current user must be the *active* step approver (lowest-order WAITING).
+// The current user must be the *active* step approver (lowest-order PENDING).
 // Sets that step to APPROVED. If it was the last step, the approval becomes
 // APPROVED, the underlying ObjectEntity transitions to APPROVED, and
 // currentRevision is incremented (resetting currentVersion to 0.0).
+//
+// R4a — schema collapsed PENDING+IN_PROGRESS → PENDING and renamed
+// StepStatus.WAITING → PENDING. The active-step rule is unchanged.
 
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
@@ -59,12 +62,12 @@ export async function POST(
   });
   if (!approval) return error(ErrorCode.E_NOT_FOUND);
 
-  if (approval.status !== ApprovalStatus.IN_PROGRESS) {
+  if (approval.status !== ApprovalStatus.PENDING) {
     return error(ErrorCode.E_STATE_CONFLICT, '진행 중인 결재가 아닙니다.');
   }
 
   // Identify the active step.
-  const activeStep = approval.steps.find((s) => s.status === StepStatus.WAITING);
+  const activeStep = approval.steps.find((s) => s.status === StepStatus.PENDING);
   if (!activeStep) {
     return error(ErrorCode.E_STATE_CONFLICT, '대기 중인 결재 단계가 없습니다.');
   }
@@ -73,7 +76,7 @@ export async function POST(
   }
 
   const isLast =
-    approval.steps.filter((s) => s.status === StepStatus.WAITING).length === 1;
+    approval.steps.filter((s) => s.status === StepStatus.PENDING).length === 1;
 
   const now = new Date();
 
@@ -90,9 +93,9 @@ export async function POST(
     });
 
     if (!isLast) {
-      // Approval still in progress.
+      // Approval still in progress (more steps to act).
       return {
-        approvalStatus: ApprovalStatus.IN_PROGRESS,
+        approvalStatus: ApprovalStatus.PENDING,
         objectState: approval.revision.object.state,
       };
     }

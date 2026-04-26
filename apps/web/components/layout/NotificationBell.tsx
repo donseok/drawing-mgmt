@@ -3,7 +3,7 @@
 import * as React from 'react';
 import Link from 'next/link';
 import { Bell, Check, Settings2 } from 'lucide-react';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   Popover,
   PopoverContent,
@@ -11,81 +11,91 @@ import {
 } from '@/components/ui/popover';
 import { cn } from '@/lib/cn';
 import { queryKeys } from '@/lib/queries';
+import { api, ApiError } from '@/lib/api-client';
+import { activityLabel } from '@/lib/activity-labels';
 
-interface MockNotification {
+// BE notification shape — synthesized from ActivityLog rows on the server.
+// `read` is always false today; the schema has no Notification table so
+// mark-read is a no-op success and we maintain the read state locally.
+interface NotificationItemDTO {
   id: string;
+  type: string;
   title: string;
-  body?: string;
-  href?: string;
-  time: string;
+  body: string;
+  ts: string;
   read: boolean;
 }
 
-// MOCK fetcher — TODO: replace with real `/api/v1/notifications/unread-count`.
-async function fetchUnreadCount(): Promise<number> {
-  return 3;
+function formatTime(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
+  const now = new Date();
+  const sameDay =
+    d.getFullYear() === now.getFullYear() &&
+    d.getMonth() === now.getMonth() &&
+    d.getDate() === now.getDate();
+  if (sameDay) {
+    const pad = (n: number) => String(n).padStart(2, '0');
+    return `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  }
+  // YYYY-MM-DD for older entries
+  return iso.slice(0, 10);
 }
 
-// MOCK list — TODO: `/api/v1/notifications?limit=5`.
-const MOCK_NOTIFICATIONS: MockNotification[] = [
-  {
-    id: 'n-1',
-    title: '결재 요청',
-    body: 'CGL-MEC-2026-00012 R3 개정',
-    href: '/approval?box=waiting',
-    time: '10:23',
-    read: false,
-  },
-  {
-    id: 'n-2',
-    title: '체크인 완료',
-    body: 'CGL-ELE-2026-00031 메인 컨트롤 패널',
-    href: '/objects/obj-3',
-    time: '09:55',
-    read: false,
-  },
-  {
-    id: 'n-3',
-    title: '결재 승인',
-    body: 'BFM-PRC-2026-00008 소둔로 공정 P&ID',
-    href: '/objects/obj-4',
-    time: '09:14',
-    read: false,
-  },
-  {
-    id: 'n-4',
-    title: '시스템 공지',
-    body: '4/27 02:00~04:00 시스템 점검 예정',
-    href: '/admin/notices',
-    time: '어제',
-    read: true,
-  },
-];
-
-/**
- * NotificationBell — Header bell icon (DESIGN §4.2).
- * - Shows unread badge (count, capped at 99+).
- * - Click opens a Popover with the latest notifications.
- *
- * If/when Designer-2 ships `@/components/notifications/NotificationPanel`, the
- * inline body below should be swapped out for `<NotificationPanel />` (see
- * NotificationPanelTrigger.tsx for the wrapper that prefers the shared panel
- * when present).
- */
 export function NotificationBell({ className }: { className?: string }) {
-  const { data: count = 0 } = useQuery({
+  const queryClient = useQueryClient();
+  // Locally-tracked read ids — BUG-11 lets users dismiss notifications even
+  // though the BE has no Notification table yet. The set survives
+  // re-renders but resets on full reload (acceptable until a real table ships).
+  const [readIds, setReadIds] = React.useState<Set<string>>(() => new Set());
+
+  const { data: countRaw = 0 } = useQuery<number, ApiError>({
     queryKey: queryKeys.notifications.unreadCount(),
-    queryFn: fetchUnreadCount,
+    queryFn: () => api.get<number>('/api/v1/notifications/unread-count'),
     staleTime: 30_000,
     placeholderData: 0,
   });
+
+  const { data: items = [] } = useQuery<NotificationItemDTO[], ApiError>({
+    queryKey: queryKeys.notifications.all(),
+    queryFn: () =>
+      api.get<NotificationItemDTO[]>('/api/v1/notifications', {
+        query: { limit: 10 },
+      }),
+    staleTime: 30_000,
+  });
+
+  // Effective unread = server count minus locally-marked reads (clamped at 0).
+  const visibleUnread = Math.max(0, countRaw - readIds.size);
+
+  const markAllRead = async () => {
+    // Optimistically zero the badge by adding every visible id to the local
+    // read set. Then fire fire-and-forget POSTs so the BE audit trail still
+    // reflects intent (the endpoint is a 200-only no-op when there's no
+    // Notification table).
+    const ids = items.filter((i) => !readIds.has(i.id)).map((i) => i.id);
+    setReadIds((prev) => {
+      const next = new Set(prev);
+      for (const id of ids) next.add(id);
+      return next;
+    });
+    // Reset the unread-count cache so the badge updates without waiting for
+    // the next refetch.
+    queryClient.setQueryData(queryKeys.notifications.unreadCount(), 0);
+
+    await Promise.allSettled(
+      ids.map((id) => api.post(`/api/v1/notifications/${id}/read`)),
+    );
+  };
 
   return (
     <Popover>
       <PopoverTrigger asChild>
         <button
           type="button"
-          aria-label={count > 0 ? `읽지 않은 알림 ${count}건` : '알림'}
+          aria-label={
+            visibleUnread > 0 ? `읽지 않은 알림 ${visibleUnread}건` : '알림'
+          }
           title="알림"
           className={cn(
             'relative inline-flex h-8 w-8 items-center justify-center rounded-md text-fg-muted',
@@ -94,77 +104,77 @@ export function NotificationBell({ className }: { className?: string }) {
           )}
         >
           <Bell className="h-4 w-4" />
-          {count > 0 && (
+          {visibleUnread > 0 && (
             <span
               aria-hidden
               className="absolute right-1 top-1 inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-danger px-1 text-[10px] font-semibold leading-none text-white"
             >
-              {count > 99 ? '99+' : count}
+              {visibleUnread > 99 ? '99+' : visibleUnread}
             </span>
           )}
         </button>
       </PopoverTrigger>
-      <PopoverContent
-        align="end"
-        sideOffset={8}
-        className="w-80 p-0"
-      >
-        <NotificationListBody notifications={MOCK_NOTIFICATIONS} />
+      <PopoverContent align="end" sideOffset={8} className="w-80 p-0">
+        <NotificationListBody
+          items={items}
+          readIds={readIds}
+          onMarkAllRead={markAllRead}
+        />
       </PopoverContent>
     </Popover>
   );
 }
 
-/**
- * Inline notification list body. Used as a fallback while Designer-2's
- * `<NotificationPanel />` lands. Renders title + body + time, with a "모두 읽음"
- * action and a footer link to the full notifications view.
- */
 export function NotificationListBody({
-  notifications,
+  items,
+  readIds,
+  onMarkAllRead,
 }: {
-  notifications: MockNotification[];
+  items: NotificationItemDTO[];
+  readIds: Set<string>;
+  onMarkAllRead: () => void;
 }) {
+  const allRead = items.every((i) => readIds.has(i.id));
   return (
     <div className="flex flex-col">
       <div className="flex items-center justify-between border-b border-border px-3 py-2">
         <span className="text-sm font-semibold text-fg">알림</span>
         <button
           type="button"
-          className="inline-flex h-7 items-center gap-1 rounded px-2 text-xs text-fg-muted hover:bg-bg-muted hover:text-fg"
+          onClick={onMarkAllRead}
+          disabled={allRead || items.length === 0}
+          className="inline-flex h-7 items-center gap-1 rounded px-2 text-xs text-fg-muted hover:bg-bg-muted hover:text-fg disabled:cursor-not-allowed disabled:opacity-50"
         >
           <Check className="h-3.5 w-3.5" />
           모두 읽음
         </button>
       </div>
       <ul className="max-h-80 overflow-auto">
-        {notifications.length === 0 ? (
+        {items.length === 0 ? (
           <li className="px-3 py-6 text-center text-xs text-fg-muted">
             새 알림이 없습니다.
           </li>
         ) : (
-          notifications.map((n) => {
-            const Wrapper: React.ElementType = n.href ? Link : 'div';
-            const wrapperProps = n.href ? { href: n.href } : {};
+          items.map((n) => {
+            const isRead = readIds.has(n.id) || n.read;
             return (
               <li key={n.id} className="border-b border-border last:border-b-0">
-                <Wrapper
-                  {...wrapperProps}
+                <div
                   className={cn(
                     'flex items-start gap-2 px-3 py-2.5 text-sm hover:bg-bg-subtle',
-                    !n.read && 'bg-brand/5',
+                    !isRead && 'bg-brand/5',
                   )}
                 >
                   <span
                     aria-hidden
                     className={cn(
                       'mt-1.5 inline-block h-1.5 w-1.5 shrink-0 rounded-full',
-                      n.read ? 'bg-transparent' : 'bg-brand',
+                      isRead ? 'bg-transparent' : 'bg-brand',
                     )}
                   />
-                  <span className="flex-1 min-w-0">
+                  <span className="min-w-0 flex-1">
                     <span className="block truncate text-[13px] font-medium text-fg">
-                      {n.title}
+                      {n.title || activityLabel(n.type)}
                     </span>
                     {n.body && (
                       <span className="mt-0.5 block truncate text-[12px] text-fg-muted">
@@ -173,9 +183,9 @@ export function NotificationListBody({
                     )}
                   </span>
                   <span className="ml-1 shrink-0 font-mono text-[11px] text-fg-subtle">
-                    {n.time}
+                    {formatTime(n.ts)}
                   </span>
-                </Wrapper>
+                </div>
               </li>
             );
           })

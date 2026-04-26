@@ -47,6 +47,14 @@ export const queryKeys = {
     unreadCount: () => ['notifications', 'unread-count'] as const,
   },
 
+  // R7 — workspace personalization. `list` keys by `type` so toggling a
+  // single kind doesn't invalidate the other.
+  pins: {
+    all: () => ['pins'] as const,
+    list: (type?: 'folder' | 'object') =>
+      ['pins', 'list', type ?? 'all'] as const,
+  },
+
   admin: {
     users: () => ['admin', 'users'] as const,
     organizations: () => ['admin', 'organizations'] as const,

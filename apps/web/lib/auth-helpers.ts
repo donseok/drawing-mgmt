@@ -16,6 +16,10 @@ export type SessionUser = Omit<User, 'passwordHash'>;
 /**
  * Returns the current user (without passwordHash) if logged in, else null.
  * Use in RSC where you'd handle the null case yourself.
+ *
+ * F4-04 — soft-deleted accounts (`deletedAt IS NOT NULL`) are treated as
+ * unauthenticated even if they still hold a valid session cookie, so an
+ * admin retiring an account immediately revokes access on the next request.
  */
 export async function getCurrentUser(): Promise<SessionUser | null> {
   const session = await auth();
@@ -26,6 +30,7 @@ export async function getCurrentUser(): Promise<SessionUser | null> {
     where: { id: userId },
   });
   if (!user) return null;
+  if (user.deletedAt) return null;
 
   // Strip the password hash defensively.
   const { passwordHash: _omit, ...rest } = user;

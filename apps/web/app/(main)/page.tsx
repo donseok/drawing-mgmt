@@ -5,8 +5,6 @@ import {
   Lock,
   ArrowRight,
   Plus,
-  FileText,
-  Folder,
   Activity,
   Search,
   UploadCloud,
@@ -17,6 +15,7 @@ import {
   ShieldCheck,
 } from 'lucide-react';
 import { cn } from '@/lib/cn';
+import { PinnedPanel } from '@/components/workspace/PinnedPanel';
 
 const STAT_CARDS = [
   {
@@ -108,12 +107,9 @@ const SAVED_VIEWS = [
   { label: '리비전 비교 필요', count: 4, href: '/search?view=compare', icon: GitCompare },
 ];
 
-const FAVORITES = [
-  { id: 'obj-1', kind: 'object', number: 'CGL-MEC-2026-00012', name: '메인롤러 어셈블리', state: 'R3 · 현장배포본' },
-  { id: 'obj-2', kind: 'object', number: 'CGL-MEC-2026-00013', name: '가이드롤러 베이스', state: 'R1 · 검토중' },
-  { id: 'f-cgl2', kind: 'folder', name: 'CGL-2 / 메인라인', code: 'CGL-2', state: '98건' },
-  { id: 'obj-3', kind: 'object', number: 'CGL-ELE-2026-00031', name: '메인 컨트롤 패널', state: 'R2 · 체크아웃' },
-] as const;
+// R7 — FAVORITES fixture removed; replaced by <PinnedPanel /> which fetches
+// live `/api/v1/me/pins`. Kept the layout slot identical so the row of
+// "Recent activity / Pinned" tiles still composes the same on load.
 
 const RECENT_ACTIVITY = [
   { time: '10:23', no: 'CGL-MEC-2026-00012', action: '체크인', user: '박영호', actionColor: 'text-info' },
@@ -149,10 +145,10 @@ export default async function WorkspaceHomePage() {
               <Search className="h-4 w-4" />
               자료 검색
             </Link>
-            <button type="button" className="app-action-button h-9">
+            <Link href="/search?action=bulk" className="app-action-button h-9">
               <UploadCloud className="h-4 w-4" />
               일괄 등록
-            </button>
+            </Link>
             <Link href="/search?action=new" className="app-action-button-primary h-9">
               <Plus className="h-4 w-4" />
               신규 자료 등록
@@ -273,37 +269,7 @@ export default async function WorkspaceHomePage() {
             </ul>
           </section>
 
-          <section className="app-panel overflow-hidden" aria-label="핀 고정 도면">
-            <div className="app-panel-header">
-              <div>
-                <div className="app-kicker">Pinned</div>
-                <h2 className="text-sm font-semibold text-fg">핀 고정 도면/폴더</h2>
-              </div>
-              <button type="button" className="app-icon-button h-7 w-7" aria-label="핀 추가">
-                <Plus className="h-4 w-4" />
-              </button>
-            </div>
-            <div className="divide-y divide-border">
-              {FAVORITES.map((f) => (
-                <Link
-                  key={f.id}
-                  href={f.kind === 'object' ? `/objects/${f.id}` : `/search?folder=${f.id}`}
-                  className="flex items-center gap-3 px-4 py-3 transition-colors hover:bg-bg-subtle"
-                >
-                  <span className="inline-flex h-9 w-9 items-center justify-center rounded-md border border-border bg-bg-subtle text-fg-subtle">
-                    {f.kind === 'object' ? <FileText className="h-4 w-4" /> : <Folder className="h-4 w-4" />}
-                  </span>
-                  <span className="min-w-0 flex-1">
-                    <span className="block truncate text-sm font-medium text-fg">{f.name}</span>
-                    <span className="block truncate font-mono text-[11px] text-fg-muted">
-                      {f.kind === 'object' ? f.number : f.code}
-                    </span>
-                  </span>
-                  <span className="shrink-0 text-[12px] text-fg-muted">{f.state}</span>
-                </Link>
-              ))}
-            </div>
-          </section>
+          <PinnedPanel />
         </div>
       </div>
     </div>

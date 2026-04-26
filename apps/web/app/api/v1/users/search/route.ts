@@ -20,7 +20,7 @@
 
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
-import { Prisma, EmploymentType } from '@prisma/client';
+import { Prisma } from '@prisma/client';
 import { prisma } from '@/lib/prisma';
 import { requireUser } from '@/lib/auth-helpers';
 import { ok, error, ErrorCode } from '@/lib/api-response';
@@ -59,9 +59,12 @@ export async function GET(req: Request): Promise<NextResponse> {
     return ok({ items: [] as Array<unknown> });
   }
 
+  // F4-04 — `deletedAt IS NULL` is the canonical "active user" filter.
+  // RETIRED is no longer needed as a soft-delete proxy; HR analytics can
+  // still read it independently.
   const where: Prisma.UserWhereInput = {
     AND: [
-      { employmentType: { not: EmploymentType.RETIRED } },
+      { deletedAt: null },
       {
         OR: [
           { username: { contains: term, mode: 'insensitive' } },

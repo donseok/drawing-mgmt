@@ -1,15 +1,19 @@
 // GET /api/v1/approvals?box=waiting|done|sent|recall|trash
 //
 // Inboxes (TRD §6.2):
-//   waiting — approvals where the current user has a WAITING step that is
-//             the active (lowest-order WAITING) step for an IN_PROGRESS approval.
+//   waiting — approvals where the current user has a PENDING step that is
+//             the active (lowest-order PENDING) step for a PENDING approval.
 //   done    — approvals where the current user has any acted step
 //             (APPROVED or REJECTED).
 //   sent    — approvals requested by the current user that are still active
-//             or have terminated normally (IN_PROGRESS / APPROVED / REJECTED).
+//             or have terminated normally (PENDING / APPROVED / REJECTED).
 //   recall  — approvals requested by the current user that were CANCELLED
 //             (회수). Distinct from `sent` so the FE can render a dedicated tab.
 //   trash   — approvals on objects that were soft-deleted (legacy alias).
+//
+// R4a (F4-01/F4-02): The schema collapsed PENDING+IN_PROGRESS → PENDING and
+// renamed StepStatus.WAITING → PENDING. "Currently being worked on" is no
+// longer a status — it's derived from step state.
 //
 // On first request, if the Approval table is empty, a tiny demo seed is
 // inserted so the FE can render something useful out-of-the-box. The seed
@@ -78,10 +82,9 @@ export async function GET(req: Request): Promise<NextResponse> {
         requesterId: user.id,
         status: {
           in: [
-            ApprovalStatus.IN_PROGRESS,
+            ApprovalStatus.PENDING,
             ApprovalStatus.APPROVED,
             ApprovalStatus.REJECTED,
-            ApprovalStatus.PENDING,
           ],
         },
       },
@@ -133,28 +136,28 @@ export async function GET(req: Request): Promise<NextResponse> {
   }
 
   // waiting
-  // Approvals that are IN_PROGRESS and where the current user has a WAITING
-  // step at the *lowest* WAITING order (i.e. it's their turn).
+  // Approvals that are PENDING and where the current user has a PENDING step
+  // at the *lowest* PENDING order (i.e. it's their turn).
   const candidates = await prisma.approval.findMany({
     where: {
-      status: ApprovalStatus.IN_PROGRESS,
-      steps: { some: { approverId: user.id, status: StepStatus.WAITING } },
+      status: ApprovalStatus.PENDING,
+      steps: { some: { approverId: user.id, status: StepStatus.PENDING } },
     },
     include: baseInclude,
     orderBy: { createdAt: 'desc' },
   });
 
   const data = candidates.filter((a) => {
-    const waitingOrders = a.steps
-      .filter((s) => s.status === StepStatus.WAITING)
+    const pendingOrders = a.steps
+      .filter((s) => s.status === StepStatus.PENDING)
       .map((s) => s.order);
-    if (waitingOrders.length === 0) return false;
-    const minOrder = Math.min(...waitingOrders);
+    if (pendingOrders.length === 0) return false;
+    const minOrder = Math.min(...pendingOrders);
     return a.steps.some(
       (s) =>
         s.order === minOrder &&
         s.approverId === user.id &&
-        s.status === StepStatus.WAITING,
+        s.status === StepStatus.PENDING,
     );
   });
 

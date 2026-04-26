@@ -2,9 +2,20 @@
 
 import * as React from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { ChevronRight, FolderOpen, Layers3, Plus, CheckCircle2, Lock, Send, MapPin } from 'lucide-react';
+import {
+  ChevronRight,
+  FolderOpen,
+  Layers3,
+  Plus,
+  CheckCircle2,
+  Lock,
+  Send,
+  MapPin,
+  Star,
+} from 'lucide-react';
 import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
+import { useSession } from 'next-auth/react';
 import { toast } from 'sonner';
 import { SubSidebar } from '@/components/layout/SubSidebar';
 import { FolderTree } from '@/components/folder-tree/FolderTree';
@@ -20,12 +31,23 @@ import { useUiStore } from '@/stores/uiStore';
 import { queryKeys } from '@/lib/queries';
 import { api, ApiError } from '@/lib/api-client';
 import { CONTROL_STATE, deriveControlState } from '@/lib/control-state';
+import { cn } from '@/lib/cn';
 import type { SortValue } from '@/components/object-list/SortMenu';
 import {
   NewObjectDialog,
   type NewObjectFormValues,
 } from '@/components/object-list/NewObjectDialog';
-import { NewApprovalDialog } from '@/components/approval/NewApprovalDialog';
+import { BulkCreateDialog } from '@/components/object-list/BulkCreateDialog';
+import {
+  ObjectMoveDialog,
+  type ObjectMoveMode,
+} from '@/components/object-list/ObjectMoveDialog';
+import { TransmittalDialog } from '@/components/object-list/TransmittalDialog';
+import {
+  NewApprovalDialog,
+  type BulkObjectSummary,
+  type NewApprovalSubmitPayload,
+} from '@/components/approval/NewApprovalDialog';
 
 // ── Server response shapes (mirror /api/v1/{folders,objects}) ─────────────
 interface ServerFolderNode {
@@ -108,11 +130,10 @@ function adaptObject(o: ServerObjectSummary): ObjectRow {
   };
 }
 
-// /api/v1/me payload — id for lock checks, role for admin-delete gate.
-interface MeResponse {
-  id: string;
-  role?: 'SUPER_ADMIN' | 'ADMIN' | 'USER' | 'PARTNER';
-}
+// R6 — `me` is now derived from `useSession()`. The /api/v1/me endpoint stays
+// available for callers that still want a fresh DB-backed user (e.g. when
+// `signatureFile` matters), but RowMenu's lock + admin-delete gates only need
+// id + role which the JWT already carries.
 
 // Object mutation actions wired in R3b SIDE-C. Mirrors the per-row
 // dropdown items in <RowMenu>. `release` is approval submission and
@@ -199,14 +220,48 @@ const MemoSubSidebar = React.memo(function MemoSubSidebar({
   selectedId,
   onSelect,
   systemViews,
+  pinnedFolders,
+  pinnedFolderIds,
+  onTogglePin,
 }: {
   folders: FolderNode[];
   selectedId?: string;
   onSelect: (node: FolderNode) => void;
   systemViews: { key: string; label: string; count: number; icon: React.ComponentType<{ className?: string }> }[];
+  pinnedFolders: { id: string; name: string; folderCode: string }[];
+  pinnedFolderIds: ReadonlySet<string>;
+  onTogglePin: (node: FolderNode, nextPinned: boolean) => void;
 }) {
   return (
     <SubSidebar title="폴더 트리">
+      {/* R7 — pinned folders surface here as a quick-jump strip. Empty state
+          is hidden so first-time users don't see a redundant section. */}
+      {pinnedFolders.length > 0 && (
+        <div className="mb-3 space-y-1 border-b border-border pb-3">
+          <div className="px-1 pb-1 text-[11px] font-semibold uppercase text-fg-subtle">
+            즐겨찾기
+          </div>
+          {pinnedFolders.map((p) => (
+            <button
+              key={p.id}
+              type="button"
+              onClick={() =>
+                onSelect({ id: p.id, code: p.folderCode, name: p.name })
+              }
+              className={cn(
+                'group flex h-8 w-full items-center gap-2 rounded-md px-2 text-sm transition-colors',
+                p.id === selectedId
+                  ? 'bg-bg text-fg shadow-sm ring-1 ring-border'
+                  : 'text-fg-muted hover:bg-bg-muted hover:text-fg',
+              )}
+            >
+              <Star className="h-3.5 w-3.5 fill-current text-amber-500" />
+              <span className="flex-1 truncate text-left">{p.name}</span>
+              <span className="font-mono text-[10px] text-fg-subtle">{p.folderCode}</span>
+            </button>
+          ))}
+        </div>
+      )}
       <div className="mb-3 space-y-1 border-b border-border pb-3">
         <div className="px-1 pb-1 text-[11px] font-semibold uppercase text-fg-subtle">Saved Views</div>
         {systemViews.map((view) => {
@@ -231,6 +286,8 @@ const MemoSubSidebar = React.memo(function MemoSubSidebar({
         selectedId={selectedId}
         onSelect={onSelect}
         defaultExpanded={folders.map((f) => f.id)}
+        pinnedFolderIds={pinnedFolderIds}
+        onTogglePin={onTogglePin}
       />
     </SubSidebar>
   );
@@ -307,11 +364,17 @@ export default function SearchPage() {
   });
 
   // Signed-in user — used by RowMenu to gate self-only CHECKED_OUT actions.
-  const { data: me } = useQuery<MeResponse>({
-    queryKey: queryKeys.me(),
-    queryFn: () => api.get<MeResponse>('/api/v1/me'),
-    staleTime: 5 * 60 * 1000,
-  });
+  // R6: useSession() resolves synchronously on first render thanks to the
+  // server-hydrated SessionProvider, so we no longer flash "guest" UI for one
+  // tick on cold loads.
+  const { data: session } = useSession();
+  const me = React.useMemo(
+    () =>
+      session?.user
+        ? { id: session.user.id, role: session.user.role }
+        : undefined,
+    [session?.user],
+  );
 
   const folders = data?.folders ?? [];
   const allObjects = data?.objects ?? [];
@@ -403,6 +466,65 @@ export default function SearchPage() {
   const handleSelectFolder = React.useCallback((node: FolderNode) => {
     setSelectedFolder(node);
   }, []);
+
+  // R7 — pin state. We only fetch folder pins on this page; the home tile
+  // grabs both kinds via its own query. Optimistic toggle keeps the star
+  // responsive even on slow links.
+  type PinFolderItem = {
+    kind: 'folder';
+    pinId: string;
+    sortOrder: number;
+    folder: { id: string; name: string; folderCode: string };
+  };
+  const pinsQuery = useQuery<{ items: PinFolderItem[] }, ApiError>({
+    queryKey: queryKeys.pins.list('folder'),
+    queryFn: () =>
+      api.get<{ items: PinFolderItem[] }>('/api/v1/me/pins', {
+        query: { type: 'folder' },
+      }),
+    staleTime: 60_000,
+  });
+  const pinnedFolders = pinsQuery.data?.items ?? [];
+  const pinnedFolderIds = React.useMemo(
+    () => new Set(pinnedFolders.map((p) => p.folder.id)),
+    [pinnedFolders],
+  );
+
+  const pinMutation = useMutation<
+    unknown,
+    ApiError,
+    { folderId: string; nextPinned: boolean; pinId?: string }
+  >({
+    mutationFn: ({ folderId, nextPinned, pinId }) => {
+      if (nextPinned) {
+        return api.post('/api/v1/me/pins', { type: 'folder', targetId: folderId });
+      }
+      if (!pinId) throw new ApiError('핀 식별자를 찾을 수 없습니다.', { status: 400 });
+      return api.delete(`/api/v1/me/pins/${pinId}`);
+    },
+    onSuccess: (_d, vars) => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.pins.all() });
+      toast.success(vars.nextPinned ? '즐겨찾기에 추가했습니다.' : '즐겨찾기에서 제외했습니다.');
+    },
+    onError: (err, vars) => {
+      toast.error(
+        vars.nextPinned ? '핀 고정 실패' : '핀 해제 실패',
+        { description: err.message },
+      );
+    },
+  });
+
+  const handleTogglePin = React.useCallback(
+    (node: FolderNode, nextPinned: boolean) => {
+      const existing = pinnedFolders.find((p) => p.folder.id === node.id);
+      pinMutation.mutate({
+        folderId: node.id,
+        nextPinned,
+        pinId: existing?.pinId,
+      });
+    },
+    [pinnedFolders, pinMutation],
+  );
 
   const handleClosePreview = React.useCallback(() => {
     setDetailPanelOpen(false);
@@ -677,24 +799,78 @@ export default function SearchPage() {
     const targets = selectedIds
       .map(findRow)
       .filter((r): r is ObjectRow => r !== undefined);
-    // Promise.all so the optimistic onMutate runs across the whole selection
-    // first; one failure won't roll back the others (each mutation owns its
-    // own snapshot, by design — partial failure is the realistic outcome).
+    // Promise.allSettled so the optimistic onMutate runs across the whole
+    // selection first; one failure won't roll back the others (each mutation
+    // owns its own snapshot, by design — partial failure is the realistic
+    // outcome).
     const results = await Promise.allSettled(
       targets.map((row) =>
         deleteMutation.mutateAsync({ objectId: row.id, number: row.number }),
       ),
     );
-    const failed = results.filter((r) => r.status === 'rejected').length;
-    if (failed > 0) {
-      // Re-throw so the toolbar's ConfirmDialog surfaces the error toast
-      // (it expects either resolve = success or throw = fail).
-      throw new Error(`${failed}건 삭제에 실패했습니다.`);
+
+    // F4-03 — collect per-row failures and group by error code (권한/상태/기타)
+    // so the toast tells the user which numbers failed and why instead of just
+    // "{N}건 실패".
+    const failures: { number: string; reason: string }[] = [];
+    results.forEach((r, idx) => {
+      if (r.status === 'rejected') {
+        const row = targets[idx]!;
+        const err = r.reason;
+        const reason =
+          err instanceof ApiError
+            ? friendlyDeleteFailure(err)
+            : err instanceof Error
+              ? err.message
+              : '알 수 없는 오류';
+        failures.push({ number: row.number, reason });
+      }
+    });
+
+    const okCount = targets.length - failures.length;
+
+    // Drop succeeded ids from the selection so the next bulk action targets
+    // only what remains. Failed rows stay selected so the user can retry.
+    if (okCount > 0) {
+      const failedIds = new Set(
+        failures
+          .map((f) => targets.find((t) => t.number === f.number)?.id)
+          .filter((id): id is string => !!id),
+      );
+      setSelectedIds((prev) => prev.filter((id) => failedIds.has(id)));
     }
-    setSelectedIds([]);
+
+    if (failures.length === 0) {
+      toast.success(`${okCount}건을 삭제했습니다.`);
+      return;
+    }
+
+    // Group by reason for a compact toast description.
+    const grouped = new Map<string, string[]>();
+    for (const f of failures) {
+      const list = grouped.get(f.reason) ?? [];
+      list.push(f.number);
+      grouped.set(f.reason, list);
+    }
+    const description = Array.from(grouped.entries())
+      .map(([reason, nums]) => `• ${reason}: ${nums.join(', ')}`)
+      .join('\n');
+
+    toast.error(
+      `${okCount}건 성공, ${failures.length}건 실패`,
+      { description },
+    );
+
+    // We don't re-throw — the toolbar's ConfirmDialog would otherwise also
+    // toast a generic error, doubling the noise for partial-failure cases.
   }, [selectedIds, findRow, deleteMutation]);
 
-  const handleBulkDownload = React.useCallback(() => {
+  // R19b — bulk ZIP download. The legacy staggered <a download> approach
+  // worked but produced one file per click; Chrome batches the prompts past
+  // ~5 files and forces the user to authorize each one. We now stream every
+  // master attachment through jszip on the client, then trigger a single
+  // Blob URL download for the resulting ZIP.
+  const handleBulkDownload = React.useCallback(async () => {
     if (selectedIds.length === 0) return;
     const targets = selectedIds
       .map(findRow)
@@ -706,41 +882,262 @@ export default function SearchPage() {
       });
       return;
     }
-    // Browsers throttle simultaneous downloads — stagger per attachment so
-    // each <a download> click is processed individually. 80ms is a touch
-    // more than the 50ms baseline to give Chrome's download dialog headroom.
-    targets.forEach((row, idx) => {
-      const url = `/api/v1/attachments/${row.masterAttachmentId}/file?download=1`;
-      window.setTimeout(() => {
-        const a = document.createElement('a');
-        a.href = url;
-        a.rel = 'noopener';
-        // Hint a filename — server-side Content-Disposition still wins.
-        a.download = row.number;
-        document.body.appendChild(a);
-        a.click();
-        a.remove();
-      }, idx * 80);
-    });
-    toast.success(`${targets.length}건 다운로드를 시작했습니다.`);
+
+    // Lazy-load jszip so the search route bundle stays slim for users who
+    // never trigger this path.
+    const { default: JSZip } = await import('jszip');
+    const zip = new JSZip();
+    const failures: string[] = [];
+    toast(`${targets.length}건 패키징 중…`);
+
+    // Sequential fetch keeps the browser from opening N concurrent sockets;
+    // for a typical drawing batch (~10 files, ~tens of MB total) sequential
+    // is also faster than parallel because of HTTP/1.1 connection limits.
+    for (const row of targets) {
+      try {
+        const res = await fetch(
+          `/api/v1/attachments/${row.masterAttachmentId}/file?download=1`,
+          { credentials: 'include' },
+        );
+        if (!res.ok) {
+          failures.push(row.number);
+          continue;
+        }
+        const blob = await res.blob();
+        const cd = res.headers.get('Content-Disposition') ?? '';
+        const filename = parseDispositionFilename(cd) ?? row.number;
+        zip.file(filename, blob);
+      } catch {
+        failures.push(row.number);
+      }
+    }
+
+    const okCount = targets.length - failures.length;
+    if (okCount === 0) {
+      toast.error('다운로드 실패', {
+        description: '선택한 모든 첨부를 가져오지 못했습니다.',
+      });
+      return;
+    }
+
+    const zipBlob = await zip.generateAsync({ type: 'blob' });
+    const url = URL.createObjectURL(zipBlob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `drawings-${new Date().toISOString().slice(0, 10)}.zip`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 30_000);
+
+    if (failures.length === 0) {
+      toast.success(`${okCount}건을 ZIP으로 다운로드했습니다.`);
+    } else {
+      toast.error(`${okCount}건 성공, ${failures.length}건 실패`, {
+        description: `실패 자료: ${failures.join(', ')}`,
+      });
+    }
   }, [selectedIds, findRow]);
 
-  const handleBulkPlaceholder = React.useCallback(
-    (label: string) => () => {
-      // 이동/복사: 폴더 picker 미구현이라 placeholder. 결재상신은 의미가 약해
-      // (선택 N건이 동일 결재선이 될 가능성이 낮음) 별도 안내.
-      toast(`${label} 준비 중`, {
-        description: '다음 라운드에서 제공될 예정입니다.',
-      });
-    },
-    [],
-  );
+  // R17 — bulk move/copy. The toolbar placeholders are now real: open the
+  // move dialog with the current selection, route to /bulk-move or /bulk-copy
+  // depending on mode, and surface partial failures the same grouped-toast
+  // way as bulk delete (F4-03).
+  const [moveState, setMoveState] = React.useState<{
+    mode: ObjectMoveMode;
+    ids: string[];
+  } | null>(null);
 
+  const handleBulkMoveOpen = React.useCallback(() => {
+    if (selectedIds.length === 0) return;
+    setMoveState({ mode: 'move', ids: selectedIds });
+  }, [selectedIds]);
+  const handleBulkCopyOpen = React.useCallback(() => {
+    if (selectedIds.length === 0) return;
+    setMoveState({ mode: 'copy', ids: selectedIds });
+  }, [selectedIds]);
+
+  // R18 — transmittal. Selection ids feed the dialog; the dialog handles
+  // POST /api/v1/lobbies and routes to /lobby/<id> on success.
+  const [transmittalOpen, setTransmittalOpen] = React.useState(false);
+  const handleBulkTransmittal = React.useCallback(() => {
+    if (selectedIds.length === 0) return;
+    setTransmittalOpen(true);
+  }, [selectedIds]);
+
+  interface BulkMoveCopyResponse {
+    successes: Array<{ id?: string; srcId?: string; newId?: string; newNumber?: string }>;
+    failures: Array<{ id: string; code: string; message: string }>;
+  }
+
+  const moveMutation = useMutation<
+    BulkMoveCopyResponse,
+    ApiError,
+    { mode: ObjectMoveMode; ids: string[]; targetFolderId: string }
+  >({
+    mutationFn: ({ mode, ids, targetFolderId }) =>
+      api.post<BulkMoveCopyResponse>(
+        mode === 'move'
+          ? '/api/v1/objects/bulk-move'
+          : '/api/v1/objects/bulk-copy',
+        { ids, targetFolderId },
+      ),
+    onSuccess: (res, vars) => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.objects.all() });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.folders.all() });
+
+      const okCount = res.successes.length;
+      const failCount = res.failures.length;
+      const verb = vars.mode === 'move' ? '이동' : '복사';
+
+      if (failCount === 0) {
+        toast.success(`${okCount}건 ${verb}을(를) 완료했습니다.`);
+        if (vars.mode === 'move') setSelectedIds([]);
+        return;
+      }
+      // Group by reason for a compact summary.
+      const grouped = new Map<string, string[]>();
+      for (const f of res.failures) {
+        const row = findRow(f.id);
+        const numLabel = row?.number ?? f.id.slice(-6);
+        const reason = friendlyReleaseFailure(f.code, f.message);
+        const list = grouped.get(reason) ?? [];
+        list.push(numLabel);
+        grouped.set(reason, list);
+      }
+      const description = Array.from(grouped.entries())
+        .map(([reason, nums]) => `• ${reason}: ${nums.join(', ')}`)
+        .join('\n');
+      toast.error(`${okCount}건 성공, ${failCount}건 실패`, { description });
+
+      // Move: keep failed ids in selection so user can retry. Copy: leave
+      // selection alone — copies don't consume the source, retry rarely
+      // matches the user's mental model.
+      if (vars.mode === 'move') {
+        const failIds = new Set(res.failures.map((f) => f.id));
+        setSelectedIds((prev) => prev.filter((id) => failIds.has(id)));
+      }
+    },
+    onError: (err, vars) => {
+      const verb = vars.mode === 'move' ? '이동' : '복사';
+      toast.error(`${verb} 실패`, { description: err.message });
+    },
+  });
+
+  // R4c (F4-06) — bulk approval submit. Opens NewApprovalDialog in multi mode
+  // with the current selection's summaries; the dialog resolves into a single
+  // POST /api/v1/objects/bulk-release call. Per-row failures surface as a
+  // grouped toast (mirrors F4-03 bulk delete).
+  const [bulkReleaseTargets, setBulkReleaseTargets] = React.useState<
+    BulkObjectSummary[]
+  >([]);
   const handleBulkSubmitApproval = React.useCallback(() => {
-    toast.warning('결재 상신은 단건 모드에서만 사용해주세요.', {
-      description: '여러 자료를 동일 결재선으로 묶어 상신하는 흐름은 별도 카드로 다룹니다.',
-    });
-  }, []);
+    if (selectedIds.length === 0) return;
+    const releasable = selectedIds
+      .map(findRow)
+      .filter((r): r is ObjectRow => r !== undefined)
+      .filter((r) => r.state === 'CHECKED_IN');
+    if (releasable.length === 0) {
+      toast.warning('결재상신 가능한 자료가 없습니다.', {
+        description: '체크인 상태(CHECKED_IN)의 자료만 일괄 상신할 수 있습니다.',
+      });
+      return;
+    }
+    if (releasable.length < selectedIds.length) {
+      toast.warning(
+        `${releasable.length}건만 상신 대상으로 선택됩니다.`,
+        {
+          description:
+            '체크인 상태가 아닌 자료는 자동으로 제외됩니다. 진행하시려면 다이얼로그에서 결재선을 입력하세요.',
+        },
+      );
+    }
+    setBulkReleaseTargets(
+      releasable.map((r) => ({ id: r.id, number: r.number, name: r.name })),
+    );
+  }, [selectedIds, findRow]);
+
+  interface BulkReleaseSuccess {
+    id: string;
+    approvalId: string;
+    objectState: ObjectState;
+  }
+  interface BulkReleaseFailure {
+    id: string;
+    code: string;
+    message: string;
+  }
+  interface BulkReleaseResponse {
+    successes: BulkReleaseSuccess[];
+    failures: BulkReleaseFailure[];
+  }
+
+  const bulkReleaseMutation = useMutation<
+    BulkReleaseResponse,
+    ApiError,
+    { ids: string[]; payload: NewApprovalSubmitPayload }
+  >({
+    mutationFn: ({ ids, payload }) =>
+      api.post<BulkReleaseResponse>('/api/v1/objects/bulk-release', {
+        ids,
+        title: payload.title,
+        approvers: payload.approvers,
+      }),
+    onSuccess: (res, vars) => {
+      // Refetch the grid + any detail pages the user may bounce into. The
+      // bulk endpoint already wrote audit logs server-side.
+      void queryClient.invalidateQueries({ queryKey: queryKeys.objects.all() });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.approvals.all() });
+
+      const okCount = res.successes.length;
+      const failCount = res.failures.length;
+      const total = vars.ids.length;
+
+      if (failCount === 0) {
+        toast.success(`${okCount}건 결재상신을 완료했습니다.`);
+        // Drop succeeded ids from the selection.
+        const okIds = new Set(res.successes.map((s) => s.id));
+        setSelectedIds((prev) => prev.filter((id) => !okIds.has(id)));
+        return;
+      }
+
+      // Group failures by reason for a compact summary toast (same shape as
+      // the bulk-delete handler so the UX feels consistent).
+      const grouped = new Map<string, string[]>();
+      for (const f of res.failures) {
+        const row = findRow(f.id);
+        const numLabel = row?.number ?? f.id.slice(-6);
+        const reason = friendlyReleaseFailure(f.code, f.message);
+        const list = grouped.get(reason) ?? [];
+        list.push(numLabel);
+        grouped.set(reason, list);
+      }
+      const description = Array.from(grouped.entries())
+        .map(([reason, nums]) => `• ${reason}: ${nums.join(', ')}`)
+        .join('\n');
+
+      toast.error(`${okCount}/${total}건 성공, ${failCount}건 실패`, {
+        description,
+      });
+      // Keep failed rows selected so the user can retry them; drop succeeded.
+      const failIds = new Set(res.failures.map((f) => f.id));
+      setSelectedIds((prev) => prev.filter((id) => failIds.has(id)));
+    },
+    onError: (err) => {
+      // Whole batch never ran (auth / validation). Surface the BE message.
+      toast.error('결재상신 실패', { description: err.message });
+    },
+  });
+
+  const handleBulkReleaseSubmit = React.useCallback(
+    async (payload: NewApprovalSubmitPayload) => {
+      const ids = bulkReleaseTargets.map((t) => t.id);
+      if (ids.length === 0) return;
+      await bulkReleaseMutation.mutateAsync({ ids, payload });
+      setBulkReleaseTargets([]);
+    },
+    [bulkReleaseTargets, bulkReleaseMutation],
+  );
 
   return (
     <div className="flex h-full min-h-0 min-w-0 flex-1 overflow-hidden">
@@ -749,6 +1146,9 @@ export default function SearchPage() {
         selectedId={selectedFolder?.id}
         onSelect={handleSelectFolder}
         systemViews={systemViews}
+        pinnedFolders={pinnedFolders.map((p) => p.folder)}
+        pinnedFolderIds={pinnedFolderIds}
+        onTogglePin={handleTogglePin}
       />
 
       <section className="flex min-w-0 flex-1 flex-col overflow-hidden bg-bg">
@@ -812,9 +1212,10 @@ export default function SearchPage() {
           // R3c-3 #5 — bulk actions wired to the selection.
           onDelete={handleBulkDelete}
           onDownload={handleBulkDownload}
-          onMove={handleBulkPlaceholder('이동')}
-          onCopy={handleBulkPlaceholder('복사')}
+          onMove={handleBulkMoveOpen}
+          onCopy={handleBulkCopyOpen}
           onSubmitApproval={handleBulkSubmitApproval}
+          onTransmittal={handleBulkTransmittal}
         />
 
         {/* min-w-0 lets the section flex shrink so the preview keeps its
@@ -861,6 +1262,47 @@ export default function SearchPage() {
         onSubmit={handleCreateObject}
       />
 
+      {/* R16 — bulk register. Triggered by `/search?action=bulk` (home tile +
+          future toolbar entry). Closes by clearing the action param so
+          back-button + URL share both work. */}
+      <BulkCreateDialog
+        open={action === 'bulk'}
+        onOpenChange={(open) => {
+          if (!open) closeNewDialog();
+        }}
+      />
+
+      {/* R17 — bulk move/copy. The dialog drives the destination picker; the
+          mutation does the actual fan-out and toast. */}
+      {moveState && (
+        <ObjectMoveDialog
+          open
+          onOpenChange={(o) => {
+            if (!o) setMoveState(null);
+          }}
+          mode={moveState.mode}
+          selectedCount={moveState.ids.length}
+          currentFolderId={selectedFolder?.id}
+          onConfirm={async (targetFolderId) => {
+            await moveMutation.mutateAsync({
+              mode: moveState.mode,
+              ids: moveState.ids,
+              targetFolderId,
+            });
+            setMoveState(null);
+          }}
+        />
+      )}
+
+      {/* R18 — transmittal. Bundles the selection's master attachments into a
+          Lobby and ships to selected partner orgs. Routes to /lobby/<id>. */}
+      <TransmittalDialog
+        open={transmittalOpen}
+        onOpenChange={setTransmittalOpen}
+        objectIds={selectedIds}
+        defaultFolderId={selectedFolder?.id}
+      />
+
       <NewApprovalDialog
         open={releaseTarget !== null}
         onOpenChange={(open) => {
@@ -870,6 +1312,17 @@ export default function SearchPage() {
         objectNumber={releaseTarget?.number}
         objectName={releaseTarget?.name}
         onSubmit={handleReleaseSubmit}
+      />
+
+      {/* R4c — bulk approval. Opens when the toolbar's 결재상신 fan-out
+          collects ≥1 CHECKED_IN row from the selection. */}
+      <NewApprovalDialog
+        open={bulkReleaseTargets.length > 0}
+        onOpenChange={(open) => {
+          if (!open) setBulkReleaseTargets([]);
+        }}
+        objectSummaries={bulkReleaseTargets}
+        onSubmit={handleBulkReleaseSubmit}
       />
 
       {/* R3c-3 #3 — Grid cancel-checkout confirm. Copy is intentionally
@@ -888,6 +1341,65 @@ export default function SearchPage() {
       />
     </div>
   );
+}
+
+// R19b — pull the filename out of a Content-Disposition header. Supports
+// both the legacy `filename="..."` and RFC 5987 `filename*=UTF-8''...` forms.
+function parseDispositionFilename(header: string): string | null {
+  if (!header) return null;
+  // RFC 5987 form takes priority — it's the only one that survives non-ASCII
+  // chars without encoding issues.
+  const star = /filename\*=(?:[^']*)''([^;]+)/i.exec(header);
+  if (star && star[1]) {
+    try {
+      return decodeURIComponent(star[1]);
+    } catch {
+      // fall through to plain form
+    }
+  }
+  const plain = /filename="([^"]+)"/i.exec(header);
+  if (plain && plain[1]) return plain[1];
+  return null;
+}
+
+// F4-03 — surface per-row delete failures with reason groups. Maps the BE's
+// canonical error codes to a short Korean label.
+function friendlyDeleteFailure(err: ApiError): string {
+  switch (err.code) {
+    case 'E_FORBIDDEN':
+      return '권한 없음';
+    case 'E_STATE_CONFLICT':
+      return '상태 충돌';
+    case 'E_LOCKED':
+      return '잠금 상태';
+    case 'E_NOT_FOUND':
+      return '대상 없음';
+    case 'E_VALIDATION':
+      return '유효성 오류';
+    default:
+      return err.message ?? '오류';
+  }
+}
+
+// F4-06 — bulk-release errors arrive in the 200 envelope as { code, message }
+// per row instead of as ApiError instances. Same friendly mapping, different
+// input shape, so we keep it separate to avoid forcing every caller to wrap
+// the row in an ApiError.
+function friendlyReleaseFailure(code: string, message: string): string {
+  switch (code) {
+    case 'E_FORBIDDEN':
+      return '권한 없음';
+    case 'E_STATE_CONFLICT':
+      return '상태 충돌(체크인 상태가 아님)';
+    case 'E_LOCKED':
+      return '잠금 상태';
+    case 'E_NOT_FOUND':
+      return '대상 없음';
+    case 'E_VALIDATION':
+      return '유효성 오류';
+    default:
+      return message || '오류';
+  }
 }
 
 function Metric({

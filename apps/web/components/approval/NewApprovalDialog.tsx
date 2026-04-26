@@ -54,18 +54,38 @@ export interface NewApprovalSubmitPayload {
   approvers: ApproverInput[];
 }
 
+/**
+ * Lightweight summary for multi-mode rendering. R4c (F4-06) routes a list of
+ * these in via `objectSummaries` so the user can see what they're submitting
+ * before committing to a shared approval line.
+ */
+export interface BulkObjectSummary {
+  id: string;
+  number: string;
+  name: string;
+}
+
 export interface NewApprovalDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  /** Object whose new revision is being submitted. */
+  /** Single-mode: object whose new revision is being submitted. */
   objectId?: string;
-  /** Optional pre-fill cues for the title field. */
+  /** Single-mode: pre-fill cues for the title field. */
   objectNumber?: string;
   objectName?: string;
+  /**
+   * Multi-mode (R4c): if non-empty, the dialog renders the bulk-release UI —
+   * shared title + shared approver line, with a per-row chip list. Mutually
+   * exclusive with `objectId` (when both are present, multi wins).
+   */
+  objectSummaries?: BulkObjectSummary[];
   /**
    * Called with the validated payload. The dialog awaits the promise and
    * closes itself only on resolve. On reject it leaves the dialog open so
    * the caller can surface a toast and let the user retry.
+   *
+   * In multi-mode the caller is responsible for fan-out to the bulk endpoint
+   * and for surfacing per-row failures (mirrors the F4-03 bulk-delete UX).
    */
   onSubmit?: (payload: NewApprovalSubmitPayload) => Promise<void> | void;
 }
@@ -120,30 +140,49 @@ function defaultTitle(objectNumber?: string, objectName?: string): string {
   return '';
 }
 
+function defaultBulkTitle(summaries: BulkObjectSummary[]): string {
+  // BE appends the per-row number, so the user-supplied portion stays short.
+  // Default conveys count + first row so search hits land near the obvious
+  // entry point.
+  if (summaries.length === 0) return '';
+  if (summaries.length === 1) {
+    return defaultTitle(summaries[0]!.number, summaries[0]!.name);
+  }
+  return `${summaries.length}건 일괄 결재 상신`;
+}
+
 export function NewApprovalDialog({
   open,
   onOpenChange,
   objectId,
   objectNumber,
   objectName,
+  objectSummaries,
   onSubmit,
 }: NewApprovalDialogProps): JSX.Element {
+  const isMulti = (objectSummaries?.length ?? 0) > 0;
+  const summaries = objectSummaries ?? [];
   const [title, setTitle] = React.useState('');
   const [picker, setPicker] = React.useState('');
   const [approvers, setApprovers] = React.useState<ApproverCandidate[]>([]);
   const [submitting, setSubmitting] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
 
-  // Reset state on each open.
+  // Reset state on each open. Title default depends on mode.
   React.useEffect(() => {
     if (open) {
-      setTitle(defaultTitle(objectNumber, objectName));
+      setTitle(
+        isMulti ? defaultBulkTitle(summaries) : defaultTitle(objectNumber, objectName),
+      );
       setPicker('');
       setApprovers([]);
       setSubmitting(false);
       setError(null);
     }
-  }, [open, objectNumber, objectName]);
+    // summaries identity changes per-render but length is the only thing the
+    // default title depends on, so we deliberately track count + first id only.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, isMulti, summaries.length, summaries[0]?.id, objectNumber, objectName]);
 
   // 250ms debounce — `picker` is the controlled input, `debouncedPicker`
   // is what feeds the query. While the user is typing, react-query keeps
@@ -242,12 +281,14 @@ export function NewApprovalDialog({
       onOpenChange={(next) => {
         if (!submitting) onOpenChange(next);
       }}
-      title="결재 상신"
+      title={isMulti ? `결재 상신 (${summaries.length}건 일괄)` : '결재 상신'}
       size="lg"
       description={
-        objectNumber
-          ? `${objectNumber} 의 신규 리비전을 상신합니다.`
-          : '결재선을 지정하고 신규 리비전을 상신합니다.'
+        isMulti
+          ? `선택한 ${summaries.length}건에 동일한 결재선을 적용해 일괄 상신합니다.`
+          : objectNumber
+            ? `${objectNumber} 의 신규 리비전을 상신합니다.`
+            : '결재선을 지정하고 신규 리비전을 상신합니다.'
       }
       footer={
         <>
@@ -268,14 +309,43 @@ export function NewApprovalDialog({
       <form id="new-approval-form" onSubmit={submit} className="flex flex-col gap-4" noValidate>
         {/* hidden — the BE never reads this from the body, but consumers may
             want to mirror it back for analytics or debugging. */}
-        <input type="hidden" value={objectId ?? ''} readOnly />
+        <input
+          type="hidden"
+          value={isMulti ? summaries.map((s) => s.id).join(',') : objectId ?? ''}
+          readOnly
+        />
+
+        {/* Multi-mode preview list — shows what the shared approval line will
+            target. Scrollable so 50-row batches don't blow up the dialog. */}
+        {isMulti ? (
+          <div className="flex flex-col gap-1.5">
+            <Label>대상 자료 ({summaries.length}건)</Label>
+            <div className="max-h-32 overflow-auto rounded-md border border-border bg-bg-subtle p-2 text-[12px]">
+              <ul className="space-y-1">
+                {summaries.map((s) => (
+                  <li key={s.id} className="flex items-baseline gap-2">
+                    <span className="font-mono text-fg">{s.number}</span>
+                    <span className="truncate text-fg-muted">{s.name}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+            <p className="text-xs text-fg-subtle">
+              제목 끝에는 자료번호가 자동으로 덧붙어 결재함에서 식별됩니다.
+            </p>
+          </div>
+        ) : null}
 
         <Field label="결재 제목" required htmlFor="approval-title">
           <Input
             id="approval-title"
             value={title}
             onChange={(e) => setTitle(e.target.value)}
-            placeholder="예: CGL 1호기 라인 배치도 Rev.B 승인 요청"
+            placeholder={
+              isMulti
+                ? '예: 4월 정기 도면 일괄 승인'
+                : '예: CGL 1호기 라인 배치도 Rev.B 승인 요청'
+            }
             maxLength={200}
             autoFocus
           />

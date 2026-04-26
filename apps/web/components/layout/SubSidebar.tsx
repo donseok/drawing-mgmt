@@ -1,8 +1,14 @@
 'use client';
 
-import { type PointerEvent as ReactPointerEvent, type ReactNode, useCallback } from 'react';
+import {
+  type PointerEvent as ReactPointerEvent,
+  type ReactNode,
+  useCallback,
+  useEffect,
+} from 'react';
 import { ChevronsLeft, ChevronsRight } from 'lucide-react';
 import { useUiStore } from '@/stores/uiStore';
+import { useMediaQuery } from '@/hooks/useMediaQuery';
 import { cn } from '@/lib/cn';
 
 interface SubSidebarProps {
@@ -20,6 +26,17 @@ export function SubSidebar({ title, children, toolbar, footer, className }: SubS
   const width = useUiStore((s) => s.sidebarWidth);
   const setWidth = useUiStore((s) => s.setSidebarWidth);
   const toggle = useUiStore((s) => s.toggleSidebar);
+  const setOpen = useUiStore((s) => s.setSidebarOpen);
+
+  // BUG-04 — auto-collapse on small screens. The strip-rail (32 px) lets the
+  // user re-open via tap; without this, a 288 px sidebar swallows ~74% of a
+  // 390 px viewport and the main content becomes unreadable.
+  const isNarrow = useMediaQuery('(max-width: 767px)');
+  useEffect(() => {
+    if (isNarrow && open) setOpen(false);
+    // We deliberately do NOT auto-open when isNarrow flips back to false —
+    // the user's last manual choice should win on resize.
+  }, [isNarrow, open, setOpen]);
 
   const startResize = useCallback(
     (event: ReactPointerEvent<HTMLDivElement>) => {

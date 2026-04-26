@@ -79,11 +79,11 @@ export async function ensureApprovalDemoSeed(): Promise<void> {
       revisionId: 'rev-1-r1',
       title: 'CGL #1 라인 펌프 설치도 R1 결재',
       requesterId: kim.id,
-      status: ApprovalStatus.IN_PROGRESS,
+      status: ApprovalStatus.PENDING,
       completedAt: null,
       steps: [
-        { order: 1, approverId: manager.id, status: StepStatus.WAITING },
-        { order: 2, approverId: admin.id, status: StepStatus.WAITING },
+        { order: 1, approverId: manager.id, status: StepStatus.PENDING },
+        { order: 2, approverId: admin.id, status: StepStatus.PENDING },
       ],
     },
     // 2) waiting — admin already approved, manager is up next (also a
@@ -93,7 +93,7 @@ export async function ensureApprovalDemoSeed(): Promise<void> {
       revisionId: 'rev-3-r1',
       title: 'CGL #1 메인 배전반 결선도 R1 결재',
       requesterId: park.id,
-      status: ApprovalStatus.IN_PROGRESS,
+      status: ApprovalStatus.PENDING,
       completedAt: null,
       steps: [
         {
@@ -103,7 +103,7 @@ export async function ensureApprovalDemoSeed(): Promise<void> {
           actedAt: days(1),
           comment: '검토 완료',
         },
-        { order: 2, approverId: manager.id, status: StepStatus.WAITING },
+        { order: 2, approverId: manager.id, status: StepStatus.PENDING },
       ],
     },
     // 3) sent — completed approval, requester=manager
@@ -133,7 +133,7 @@ export async function ensureApprovalDemoSeed(): Promise<void> {
       status: ApprovalStatus.CANCELLED,
       completedAt: days(5),
       steps: [
-        { order: 1, approverId: manager.id, status: StepStatus.WAITING },
+        { order: 1, approverId: manager.id, status: StepStatus.PENDING },
       ],
     },
   ];
