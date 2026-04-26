@@ -182,22 +182,21 @@ export function buildScene(doc: DxfDocument): BuiltScene {
       }
     }
 
-    // R12 — solid hatches per layer. Pattern hatches degrade to outline
-    // (ShapeGeometry can't render the pattern; we fall back so the user at
-    // least sees the boundary loop).
+    // R12 — solid hatches per layer (triangulated mesh).
+    // R25 — pattern hatches (ANSI31 / ANSI32 / DOTS) emit a LineSegments fill
+    // plus a boundary outline. Both paths produce one or more Object3D nodes
+    // and a list of disposables.
     const layerHatches = hatchesByLayer.get(name);
     if (layerHatches && layerHatches.length > 0) {
       for (const h of layerHatches) {
         const built = buildHatchMesh(THREE_NS, h, layerColor);
         if (built) {
-          group.add(built.mesh);
-          disposables.push({
-            geometry: built.geometry,
-            material: built.material,
-          });
+          group.add(built.object);
+          for (const d of built.disposables) disposables.push(d);
         } else {
-          // Fallback: push the boundary loops as line segments so the user
-          // at least sees the perimeter when the fill couldn't be built.
+          // Hard fallback: push the boundary loops as line segments so the
+          // user at least sees the perimeter when no fill could be built
+          // (e.g. degenerate loops < 3 vertices).
           const fbColor = aciToRgb(
             h.color === 256 || h.color === 0 ? layerColor : h.color,
           );
@@ -313,64 +312,279 @@ function addEntity(
 }
 
 /**
- * R12 — turn a HATCH (solid only) into a triangulated mesh via THREE.Shape.
- * The first loop is the outer boundary; subsequent loops become holes via
- * Shape.holes. ShapeGeometry runs earcut internally so we don't ship our
- * own triangulator. Returns null for non-solid (pattern) hatches and for
- * loops too small to triangulate — the caller falls back to outline.
+ * R12 / R25 — build a renderable for a HATCH entity. Returns either:
+ *  - solid hatches: triangulated semi-transparent fill via THREE.Shape +
+ *    ShapeGeometry (earcut runs internally). Outer loop = boundary, the rest
+ *    become holes.
+ *  - pattern hatches (R25): LineSegments crosshatch generated inside the
+ *    boundary bounding box, point-in-polygon-clipped against the loops, plus
+ *    an outline. Recognises ANSI31 (45°), ANSI32 (45°+135°), DOTS (short
+ *    dashes), defaulting to ANSI31 for any unknown name.
+ *
+ * Returns null only when the loops are degenerate (< 3 vertices) so the
+ * caller can fall back to the boundary-only outline path.
  */
 function buildHatchMesh(
   THREE_NS: typeof THREE,
   hatch: HatchEntity,
   layerFallbackAci: number,
-): { mesh: THREE.Mesh; geometry: THREE.BufferGeometry; material: THREE.Material } | null {
-  if (!hatch.solid) return null;
+): {
+  object: THREE.Object3D;
+  disposables: { geometry: THREE.BufferGeometry; material: THREE.Material }[];
+} | null {
   const outer = hatch.loops[0];
   if (!outer || outer.length < 3) return null;
-
-  const shape = new THREE_NS.Shape();
-  shape.moveTo(outer[0]!.x, outer[0]!.y);
-  for (let i = 1; i < outer.length; i++) {
-    shape.lineTo(outer[i]!.x, outer[i]!.y);
-  }
-  shape.closePath();
-
-  for (let li = 1; li < hatch.loops.length; li++) {
-    const loop = hatch.loops[li]!;
-    if (loop.length < 3) continue;
-    const hole = new THREE_NS.Path();
-    hole.moveTo(loop[0]!.x, loop[0]!.y);
-    for (let i = 1; i < loop.length; i++) {
-      hole.lineTo(loop[i]!.x, loop[i]!.y);
-    }
-    hole.closePath();
-    shape.holes.push(hole);
-  }
-
-  let geom: THREE.ShapeGeometry;
-  try {
-    geom = new THREE_NS.ShapeGeometry(shape);
-  } catch {
-    return null;
-  }
 
   const resolvedAci =
     hatch.color === 256 || hatch.color === 0 ? layerFallbackAci : hatch.color;
   const colorRgb = aciToRgb(resolvedAci);
 
-  const mat = new THREE_NS.MeshBasicMaterial({
-    color: colorRgb,
-    transparent: true,
-    opacity: 0.45, // see-through so overlapping line work stays visible
-    side: THREE_NS.DoubleSide,
-    depthWrite: false,
-  });
-  const mesh = new THREE_NS.Mesh(geom, mat);
-  // Render hatches *behind* line work — set z slightly negative so they sit
-  // under the LineSegments drawn at z=0.
-  mesh.position.z = -0.01;
-  mesh.userData.dxfKind = 'hatch';
-  return { mesh, geometry: geom, material: mat };
+  if (hatch.solid) {
+    const shape = new THREE_NS.Shape();
+    shape.moveTo(outer[0]!.x, outer[0]!.y);
+    for (let i = 1; i < outer.length; i++) {
+      shape.lineTo(outer[i]!.x, outer[i]!.y);
+    }
+    shape.closePath();
+
+    for (let li = 1; li < hatch.loops.length; li++) {
+      const loop = hatch.loops[li]!;
+      if (loop.length < 3) continue;
+      const hole = new THREE_NS.Path();
+      hole.moveTo(loop[0]!.x, loop[0]!.y);
+      for (let i = 1; i < loop.length; i++) {
+        hole.lineTo(loop[i]!.x, loop[i]!.y);
+      }
+      hole.closePath();
+      shape.holes.push(hole);
+    }
+
+    let geom: THREE.ShapeGeometry;
+    try {
+      geom = new THREE_NS.ShapeGeometry(shape);
+    } catch {
+      return null;
+    }
+
+    const mat = new THREE_NS.MeshBasicMaterial({
+      color: colorRgb,
+      transparent: true,
+      opacity: 0.45, // see-through so overlapping line work stays visible
+      side: THREE_NS.DoubleSide,
+      depthWrite: false,
+    });
+    const mesh = new THREE_NS.Mesh(geom, mat);
+    // Render hatches *behind* line work — set z slightly negative so they sit
+    // under the LineSegments drawn at z=0.
+    mesh.position.z = -0.01;
+    mesh.userData.dxfKind = 'hatch';
+    return { object: mesh, disposables: [{ geometry: geom, material: mat }] };
+  }
+
+  // ── R25 pattern hatch ────────────────────────────────────────────────────
+  const angles = anglesForPattern(hatch.patternName);
+  const baseAngle = hatch.patternAngle ?? 0;
+  const scale = hatch.patternScale && hatch.patternScale > 0 ? hatch.patternScale : 1;
+  const spacing = Math.max(0.5, scale * 1.0);
+  const isDots = (hatch.patternName ?? '').toUpperCase() === 'DOTS';
+
+  // Build the outline first (always present) so the boundary stays visible
+  // even if the in-polygon clip filters out every fill segment.
+  const outlinePositions: number[] = [];
+  for (const loop of hatch.loops) {
+    for (let li = 0; li < loop.length - 1; li++) {
+      const a = loop[li]!;
+      const b = loop[li + 1]!;
+      outlinePositions.push(a.x, a.y, 0, b.x, b.y, 0);
+    }
+    const last = loop[loop.length - 1]!;
+    const first = loop[0]!;
+    outlinePositions.push(last.x, last.y, 0, first.x, first.y, 0);
+  }
+
+  // Bounding box from the outer loop — pattern lines sweep across this AABB,
+  // segments outside the boundary are filtered out by ray-cast point-in-poly.
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (const p of outer) {
+    if (p.x < minX) minX = p.x;
+    if (p.y < minY) minY = p.y;
+    if (p.x > maxX) maxX = p.x;
+    if (p.y > maxY) maxY = p.y;
+  }
+  // Add a small margin so the line that grazes a vertex still gets covered.
+  const margin = spacing;
+  minX -= margin; minY -= margin; maxX += margin; maxY += margin;
+  const bboxDiag = Math.hypot(maxX - minX, maxY - minY);
+  const cx = (minX + maxX) / 2;
+  const cy = (minY + maxY) / 2;
+
+  const fillPositions: number[] = [];
+  // For DOTS we draw very short dashes (one fifth of spacing) at the angle
+  // sample points so the rendered pattern resembles a dot grid.
+  const dashLen = isDots ? Math.max(0.05, spacing * 0.2) : 0;
+
+  for (const angDeg of angles) {
+    const angle = ((angDeg + baseAngle) * Math.PI) / 180;
+    const cos = Math.cos(angle);
+    const sin = Math.sin(angle);
+    // For each line at offset `t` from the bbox centre along the perpendicular
+    // direction, the line equation in world space is parametric:
+    //   p(s) = centre + perp * t + dir * s,  s ∈ [-bboxDiag, +bboxDiag]
+    // We sweep `t` in `spacing` steps from -diag/2 - margin to +diag/2 + margin.
+    const halfRange = bboxDiag / 2 + spacing;
+    for (let t = -halfRange; t <= halfRange; t += spacing) {
+      // Line endpoints across the bbox.
+      const ax = cx - sin * t - cos * bboxDiag;
+      const ay = cy + cos * t - sin * bboxDiag;
+      const bx = cx - sin * t + cos * bboxDiag;
+      const by = cy + cos * t + sin * bboxDiag;
+
+      if (isDots) {
+        // Sample points along the line at `spacing` intervals; at each sample
+        // emit a tiny dash centred on the sample if the sample is inside the
+        // boundary. This gives a recognisable dot grid without per-pixel work.
+        const segLen = Math.hypot(bx - ax, by - ay);
+        const step = spacing;
+        for (let s = step / 2; s <= segLen; s += step) {
+          const px = ax + ((bx - ax) * s) / segLen;
+          const py = ay + ((by - ay) * s) / segLen;
+          if (!pointInHatch(px, py, hatch.loops)) continue;
+          // Tiny horizontal dash so the dot is visible even at thin line widths.
+          fillPositions.push(
+            px - dashLen / 2, py, 0,
+            px + dashLen / 2, py, 0,
+          );
+        }
+      } else {
+        // Standard cross-hatch: walk along the line in `spacing/2` steps,
+        // grouping consecutive in-polygon samples into output segments. This
+        // is cheaper than full segment-vs-polygon clipping and accurate enough
+        // for engineering plots.
+        const samples = Math.max(8, Math.ceil((bboxDiag * 2) / (spacing / 2)));
+        let runStart: { x: number; y: number } | null = null;
+        let lastSample: { x: number; y: number } | null = null;
+        for (let i = 0; i <= samples; i++) {
+          const u = i / samples;
+          const px = ax + (bx - ax) * u;
+          const py = ay + (by - ay) * u;
+          const inside = pointInHatch(px, py, hatch.loops);
+          if (inside) {
+            if (runStart === null) runStart = { x: px, y: py };
+            lastSample = { x: px, y: py };
+          } else if (runStart && lastSample) {
+            fillPositions.push(
+              runStart.x, runStart.y, 0,
+              lastSample.x, lastSample.y, 0,
+            );
+            runStart = null;
+            lastSample = null;
+          }
+        }
+        if (runStart && lastSample) {
+          fillPositions.push(
+            runStart.x, runStart.y, 0,
+            lastSample.x, lastSample.y, 0,
+          );
+        }
+      }
+    }
+  }
+
+  const group = new THREE_NS.Group();
+  group.userData.dxfKind = 'hatch-pattern';
+  group.position.z = -0.005;
+  const disposables: { geometry: THREE.BufferGeometry; material: THREE.Material }[] = [];
+
+  if (fillPositions.length > 0) {
+    const fillGeom = new THREE_NS.BufferGeometry();
+    fillGeom.setAttribute(
+      'position',
+      new THREE_NS.BufferAttribute(new Float32Array(fillPositions), 3),
+    );
+    const fillMat = new THREE_NS.LineBasicMaterial({ color: colorRgb, linewidth: 1 });
+    const fillMesh = new THREE_NS.LineSegments(fillGeom, fillMat);
+    fillMesh.userData.dxfKind = 'hatch-pattern-fill';
+    group.add(fillMesh);
+    disposables.push({ geometry: fillGeom, material: fillMat });
+  }
+
+  // Always emit the outline so the user sees the boundary, even if the fill
+  // came back empty (e.g. all-hole / very thin loops).
+  const outlineGeom = new THREE_NS.BufferGeometry();
+  outlineGeom.setAttribute(
+    'position',
+    new THREE_NS.BufferAttribute(new Float32Array(outlinePositions), 3),
+  );
+  const outlineMat = new THREE_NS.LineBasicMaterial({ color: colorRgb, linewidth: 1 });
+  const outlineMesh = new THREE_NS.LineSegments(outlineGeom, outlineMat);
+  outlineMesh.userData.dxfKind = 'hatch-pattern-outline';
+  group.add(outlineMesh);
+  disposables.push({ geometry: outlineGeom, material: outlineMat });
+
+  return { object: group, disposables };
+}
+
+/**
+ * Pattern angle table. Returns the base angle set (degrees, CCW from +X) for
+ * a known AutoCAD-style hatch name. Unknown patterns fall back to ANSI31.
+ *
+ * The patternAngle from the DXF is added on top in the caller.
+ */
+function anglesForPattern(name: string | undefined): number[] {
+  const upper = (name ?? '').toUpperCase();
+  switch (upper) {
+    case 'ANSI31':
+      return [45];
+    case 'ANSI32':
+      return [45, 135];
+    case 'DOTS':
+      // Dots are sampled along axis-aligned lines so the grid is regular.
+      return [0, 90];
+    default:
+      // Most field DXFs use ANSI31; this also covers SOLID-but-misflagged
+      // entities (rare but observed) without crashing the renderer.
+      return [45];
+  }
+}
+
+/**
+ * Point-in-polygon test that respects HATCH loop convention: the first loop
+ * is the outer boundary, subsequent loops are holes. A point is "inside the
+ * hatched area" when it's inside the outer ring AND outside every hole.
+ *
+ * Uses the standard ray-casting algorithm — count how many polygon edges a
+ * horizontal ray (y = py, x → +∞) crosses. Odd ⇒ inside. Vertices touching
+ * the ray are handled by treating the lower-y vertex as inclusive and the
+ * higher-y vertex as exclusive, which avoids double-counting at corners.
+ */
+function pointInHatch(px: number, py: number, loops: { x: number; y: number }[][]): boolean {
+  const ringCount = loops.length;
+  if (ringCount === 0) return false;
+  if (!pointInRing(px, py, loops[0]!)) return false;
+  for (let i = 1; i < ringCount; i++) {
+    if (pointInRing(px, py, loops[i]!)) return false;
+  }
+  return true;
+}
+
+function pointInRing(px: number, py: number, ring: { x: number; y: number }[]): boolean {
+  let inside = false;
+  const n = ring.length;
+  for (let i = 0, j = n - 1; i < n; j = i++) {
+    const xi = ring[i]!.x;
+    const yi = ring[i]!.y;
+    const xj = ring[j]!.x;
+    const yj = ring[j]!.y;
+    // Half-open edge convention: edge spans [min(yi,yj), max(yi,yj)).
+    const intersect =
+      yi > py !== yj > py &&
+      px < ((xj - xi) * (py - yi)) / (yj - yi) + xi;
+    if (intersect) inside = !inside;
+  }
+  return inside;
 }
 
 /**

@@ -942,22 +942,32 @@ function readMText(pairs: CodePair[]): TextEntity | null {
  * are skipped — they're rare in field drawings, and supporting them needs a
  * curve-tessellation pass that belongs in a later phase.
  *
- * Solid status comes from group 70: 1 = solid, 0 = pattern. Patterns are
- * recorded but rendered as outline-only (caller decides via `solid`).
+ * Solid status comes from group 70: 1 = solid, 0 = pattern.
+ *
+ * R25 — for pattern hatches we additionally capture group 2 (pattern name),
+ * 52 (pattern angle in degrees), and 41 (pattern scale) so the scene builder
+ * can render line-segment fills. Pattern fields are advisory; absent values
+ * fall through to the renderer's defaults (ANSI31, 0°, scale 1).
  */
 function readHatch(pairs: CodePair[]): HatchEntity | null {
   const { layer, color } = commonEntityFields(pairs);
   let solid = false;
   let pathCount = 0;
+  let patternName: string | undefined;
+  let patternAngle: number | undefined;
+  let patternScale: number | undefined;
   // We walk pairs sequentially because path/loop boundaries are positional
   // (the same group code repeats across loops with no parent marker).
   const loops: V2[][] = [];
   let i = 0;
-  // Locate the boundary block — group 91 marks "number of boundary paths"
-  // and the loop pairs follow until 75 (hatch style) or 2 (pattern name).
+  // Pre-boundary header: collect 70 (solid flag), 2 (pattern name), and locate
+  // 91 (boundary path count) which kicks off the loop block. Other codes here
+  // (5/100/330/410/8/...) are entity metadata — `commonEntityFields` already
+  // grabbed layer/color so we just skip them.
   for (; i < pairs.length; i++) {
     const p = pairs[i]!;
     if (p.code === 70) solid = (Number.parseInt(p.value, 10) || 0) === 1;
+    else if (p.code === 2) patternName = p.value;
     else if (p.code === 91) {
       pathCount = Number.parseInt(p.value, 10) || 0;
       i++;
@@ -968,10 +978,13 @@ function readHatch(pairs: CodePair[]): HatchEntity | null {
 
   // Now the next `pathCount` paths follow. Each path begins with code 92
   // (boundary path type flags). For polyline boundary (bit 1 set), code 93
-  // (vertex count) and then alternating 10/20 vertex coords.
+  // (vertex count) and then alternating 10/20 vertex coords. We stop the
+  // boundary block when we've seen all paths AND we hit code 75 (hatch
+  // style) or 76 (hatch pattern type) which always come right after.
   let pathsSeen = 0;
   let pendingX: number | null = null;
   let currentLoop: V2[] | null = null;
+  let boundaryEndIdx = i;
   for (; i < pairs.length && pathsSeen < pathCount; i++) {
     const p = pairs[i]!;
     if (p.code === 92) {
@@ -994,15 +1007,36 @@ function readHatch(pairs: CodePair[]): HatchEntity | null {
         currentLoop.push({ x: pendingX, y });
       }
       pendingX = null;
-    } else if (p.code === 75 || p.code === 2) {
-      // End of boundary block.
+    } else if (p.code === 75 || p.code === 76) {
+      // End of boundary block — these come immediately after the last path.
+      boundaryEndIdx = i;
       break;
     }
   }
   if (currentLoop && currentLoop.length >= 3) loops.push(currentLoop);
+  if (boundaryEndIdx === 0) boundaryEndIdx = i;
+
+  // R25 — pattern definition tail. Codes after the boundary block include
+  // 52 (pattern angle, degrees) and 41 (pattern scale). These only matter
+  // for non-solid hatches; we always sweep so the parser stays defensive
+  // against writer-specific orderings.
+  for (let k = boundaryEndIdx; k < pairs.length; k++) {
+    const p = pairs[k]!;
+    if (p.code === 52) {
+      const v = parseFloat(p.value);
+      if (Number.isFinite(v)) patternAngle = v;
+    } else if (p.code === 41) {
+      const v = parseFloat(p.value);
+      if (Number.isFinite(v) && v !== 0) patternScale = v;
+    }
+  }
 
   if (loops.length === 0) return null;
-  return { kind: 'hatch', layer, color, loops, solid };
+  const out: HatchEntity = { kind: 'hatch', layer, color, loops, solid };
+  if (patternName !== undefined) out.patternName = patternName;
+  if (patternAngle !== undefined) out.patternAngle = patternAngle;
+  if (patternScale !== undefined) out.patternScale = patternScale;
+  return out;
 }
 
 function readLwPolyline(pairs: CodePair[]): PolylineEntity | null {
