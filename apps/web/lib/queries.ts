@@ -60,6 +60,7 @@ export const queryKeys = {
     organizations: () => ['admin', 'organizations'] as const,
     groups: () => ['admin', 'groups'] as const,
     classes: () => ['admin', 'classes'] as const,
+    classAttributes: (classId: string) => ['admin', 'classes', classId, 'attributes'] as const,
     folders: () => ['admin', 'folders'] as const,
     notices: () => ['admin', 'notices'] as const,
     audit: (params: Record<string, unknown> = {}) => ['admin', 'audit', params] as const,

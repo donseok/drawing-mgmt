@@ -52,7 +52,10 @@ _workspace_prev_*/
 .claude/worktrees/
 .claude/settings.local.json
 
-# Playwright MCP artifacts
+# Playwright
+apps/web/e2e/.auth/
+apps/web/test-results/
+apps/web/playwright-report/
 .playwright-mcp/
 
 # Local screenshots from manual verification

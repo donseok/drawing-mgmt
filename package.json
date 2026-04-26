@@ -15,7 +15,8 @@
     "db:studio": "pnpm --filter @drawing-mgmt/web db:studio",
     "worker:dev": "pnpm --filter @drawing-mgmt/worker dev",
     "docker:up": "docker compose up -d",
-    "docker:down": "docker compose down"
+    "docker:down": "docker compose down",
+    "test:e2e": "pnpm -F web test:e2e"
   },
   "devDependencies": {
     "typescript": "^5.5.0"
