@@ -63,14 +63,25 @@ export interface TextEntity extends EntityBase {
 }
 
 /**
- * R12 — solid HATCH only (pattern hatches degrade to outline). Each loop is
- * an ordered ring of points; the first loop is the outer boundary, subsequent
- * loops are holes. Three.Shape consumes this layout directly.
+ * R12 — solid HATCH consumed via three.Shape. Each loop is an ordered ring of
+ * points; the first loop is the outer boundary, subsequent loops are holes.
+ *
+ * R25 — pattern HATCH metadata. When `solid === false`, the scene builder
+ * uses `patternName` to pick a hatch line set (ANSI31 / ANSI32 / DOTS), then
+ * crosshatches inside the boundary at `patternAngle` (degrees, base offset)
+ * with line spacing scaled by `patternScale`. Fields are optional because
+ * pre-R25 DXFs that the parser saw without pattern data still parse.
  */
 export interface HatchEntity extends EntityBase {
   kind: 'hatch';
   loops: V2[][];
   solid: boolean;
+  /** Pattern name from group 2 (e.g. "ANSI31", "ANSI32", "DOTS", "SOLID"). */
+  patternName?: string;
+  /** Pattern angle in degrees from group 52. Defaults to 0 when absent. */
+  patternAngle?: number;
+  /** Pattern scale from group 41. Defaults to 1 when absent or zero. */
+  patternScale?: number;
 }
 
 export type DxfEntity =
