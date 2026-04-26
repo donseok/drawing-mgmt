@@ -390,7 +390,8 @@ export function ObjectTable({
                       <button
                         type="button"
                         onClick={header.column.getToggleSortingHandler()}
-                        className="inline-flex items-center gap-1 hover:text-fg"
+                        aria-label={`정렬: ${typeof header.column.columnDef.header === 'string' ? header.column.columnDef.header : header.column.id}`}
+                        className="inline-flex items-center gap-1 rounded hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                       >
                         {flexRender(header.column.columnDef.header, header.getContext())}
                         {sorted === 'asc' ? (
@@ -441,7 +442,10 @@ export function ObjectTable({
                 aria-selected={isSelected}
                 className={cn(
                   'group cursor-pointer transition-colors',
-                  'hover:bg-bg-subtle focus-visible:bg-bg-muted focus-visible:outline-none',
+                  // Keep the row tinted on focus and let the global
+                  // :focus-visible outline (globals.css) draw the ring so
+                  // <tr> doesn't need its own outline-suppression dance.
+                  'hover:bg-bg-subtle focus-visible:bg-bg-muted',
                   isSelected && 'bg-brand/5 shadow-[inset_3px_0_0_hsl(var(--brand))]',
                 )}
               >

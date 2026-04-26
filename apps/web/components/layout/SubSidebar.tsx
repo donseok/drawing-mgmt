@@ -99,7 +99,7 @@ export function SubSidebar({ title, children, toolbar, footer, className }: SubS
             onClick={toggle}
             aria-label="사이드바 접기"
             title="사이드바 접기 (⌘B)"
-            className="inline-flex h-6 w-6 items-center justify-center rounded text-fg-muted hover:bg-bg-muted hover:text-fg"
+            className="inline-flex h-6 w-6 items-center justify-center rounded text-fg-muted hover:bg-bg-muted hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           >
             <ChevronsLeft className="h-4 w-4" />
           </button>

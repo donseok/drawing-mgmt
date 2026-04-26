@@ -143,7 +143,7 @@ export function NotificationListBody({
           type="button"
           onClick={onMarkAllRead}
           disabled={allRead || items.length === 0}
-          className="inline-flex h-7 items-center gap-1 rounded px-2 text-xs text-fg-muted hover:bg-bg-muted hover:text-fg disabled:cursor-not-allowed disabled:opacity-50"
+          className="inline-flex h-7 items-center gap-1 rounded px-2 text-xs text-fg-muted hover:bg-bg-muted hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
         >
           <Check className="h-3.5 w-3.5" />
           모두 읽음
@@ -201,7 +201,7 @@ export function NotificationListBody({
         <Link
           href="/admin"
           aria-label="알림 설정"
-          className="inline-flex h-7 w-7 items-center justify-center rounded text-fg-muted hover:bg-bg-muted hover:text-fg"
+          className="inline-flex h-7 w-7 items-center justify-center rounded text-fg-muted hover:bg-bg-muted hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         >
           <Settings2 className="h-3.5 w-3.5" />
         </Link>

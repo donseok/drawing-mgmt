@@ -49,6 +49,7 @@ export function ThemeToggle({
               aria-pressed={active}
               className={cn(
                 'inline-flex h-7 items-center gap-1.5 rounded px-2 text-[12px] font-medium transition-colors',
+                'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
                 active
                   ? 'bg-bg text-fg shadow-sm ring-1 ring-border'
                   : 'text-fg-muted hover:bg-bg-muted hover:text-fg',

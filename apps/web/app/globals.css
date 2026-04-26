@@ -185,11 +185,36 @@
       monospace;
   }
 
-  /* Focus visible — DESIGN §11 (a11y) */
+  /* Focus visible — DESIGN §11 (a11y).
+   *
+   * Global fallback so any interactive element gets a visible focus ring
+   * even when individual components forgot to add Tailwind's
+   * `focus-visible:ring-*` utilities (BUG-019 audit). Components that *do*
+   * declare their own ring still win because the base rule below is
+   * overridden by Tailwind's `outline-none` + `ring-*` utilities applied
+   * via the `focus-visible:` variant. Keep this minimal — no shadow/glow,
+   * just the outline shape so it matches our DESIGN spec. */
   :focus-visible {
     outline: 2px solid hsl(var(--ring));
     outline-offset: 2px;
     border-radius: 2px;
+  }
+
+  /* Strengthen the contract for the most commonly-missed interactive
+   * surfaces. Anything inside the app that is genuinely interactive should
+   * land here even if the author forgot the utility classes. The Tailwind
+   * `outline-none` reset on focused inputs/buttons (e.g. shadcn primitives)
+   * still wins — we only fill the gap when no other rule applies. */
+  button:focus-visible,
+  [role='button']:focus-visible,
+  [role='treeitem']:focus-visible,
+  a:focus-visible,
+  input:focus-visible,
+  select:focus-visible,
+  textarea:focus-visible,
+  [tabindex]:not([tabindex='-1']):focus-visible {
+    outline: 2px solid hsl(var(--ring));
+    outline-offset: 2px;
   }
 
   /* Selection */

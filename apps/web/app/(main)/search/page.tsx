@@ -30,6 +30,7 @@ import { ConfirmDialog } from '@/components/ConfirmDialog';
 import { useUiStore } from '@/stores/uiStore';
 import { queryKeys } from '@/lib/queries';
 import { api, ApiError } from '@/lib/api-client';
+import { cn } from '@/lib/cn';
 import { CONTROL_STATE, deriveControlState } from '@/lib/control-state';
 import { cn } from '@/lib/cn';
 import type { SortValue } from '@/components/object-list/SortMenu';
@@ -223,6 +224,8 @@ const MemoSubSidebar = React.memo(function MemoSubSidebar({
   pinnedFolders,
   pinnedFolderIds,
   onTogglePin,
+  activeViewKey,
+  onSelectView,
 }: {
   folders: FolderNode[];
   selectedId?: string;
@@ -231,6 +234,8 @@ const MemoSubSidebar = React.memo(function MemoSubSidebar({
   pinnedFolders: { id: string; name: string; folderCode: string }[];
   pinnedFolderIds: ReadonlySet<string>;
   onTogglePin: (node: FolderNode, nextPinned: boolean) => void;
+  activeViewKey?: string | null;
+  onSelectView: (key: string) => void;
 }) {
   return (
     <SubSidebar title="폴더 트리">
@@ -266,13 +271,22 @@ const MemoSubSidebar = React.memo(function MemoSubSidebar({
         <div className="px-1 pb-1 text-[11px] font-semibold uppercase text-fg-subtle">Saved Views</div>
         {systemViews.map((view) => {
           const Icon = view.icon;
+          const active = activeViewKey === view.key;
           return (
             <button
               key={view.key}
               type="button"
-              className="flex h-8 w-full items-center gap-2 rounded-md px-2 text-sm text-fg-muted transition-colors hover:bg-bg-muted hover:text-fg"
+              aria-pressed={active}
+              onClick={() => onSelectView(view.key)}
+              className={cn(
+                'flex h-8 w-full items-center gap-2 rounded-md px-2 text-sm transition-colors',
+                'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+                active
+                  ? 'bg-brand/10 text-brand'
+                  : 'text-fg-muted hover:bg-bg-muted hover:text-fg',
+              )}
             >
-              <Icon className="h-4 w-4 text-fg-subtle" />
+              <Icon className={cn('h-4 w-4', active ? 'text-brand' : 'text-fg-subtle')} />
               <span className="flex-1 text-left">{view.label}</span>
               <span className="rounded bg-bg-muted px-1.5 py-0.5 text-[11px] font-semibold text-fg-muted">
                 {view.count}
@@ -525,6 +539,45 @@ export default function SearchPage() {
     },
     [pinnedFolders, pinMutation],
   );
+
+  // R25 — saved view shortcuts in the sub-sidebar. Each preset translates to
+  // a state-filter on the existing grid query so we don't need a new endpoint.
+  // `field`/`issues` are visualization-only shortcuts today (the BE doesn't
+  // yet expose `controlState=FIELD` or `issueCount>0` filters); we surface a
+  // toast so the click is never silent and the sidebar still reflects the
+  // active selection via aria-pressed.
+  const [activeViewKey, setActiveViewKey] = React.useState<string | null>(null);
+  const handleSelectView = React.useCallback((key: string) => {
+    if (key === 'checkedout') {
+      setActiveViewKey('checkedout');
+      setFilters((f) => ({ ...f, state: 'CHECKED_OUT' }));
+      setSearch('');
+    } else if (key === 'review') {
+      setActiveViewKey('review');
+      setFilters((f) => ({ ...f, state: 'IN_APPROVAL' }));
+      setSearch('');
+    } else if (key === 'field') {
+      setActiveViewKey('field');
+      toast('현장배포본 필터 준비 중', {
+        description: '서버 필터가 추가되면 자동 적용됩니다.',
+      });
+    } else if (key === 'issues') {
+      setActiveViewKey('issues');
+      toast('미해결 이슈 필터 준비 중', {
+        description: '서버 필터가 추가되면 자동 적용됩니다.',
+      });
+    }
+  }, []);
+
+  // Reset the sidebar's "active view" highlight whenever the user manually
+  // clears the state filter (or applies a different one).
+  React.useEffect(() => {
+    if (activeViewKey === 'checkedout' && filters.state !== 'CHECKED_OUT') {
+      setActiveViewKey(null);
+    } else if (activeViewKey === 'review' && filters.state !== 'IN_APPROVAL') {
+      setActiveViewKey(null);
+    }
+  }, [activeViewKey, filters.state]);
 
   const handleClosePreview = React.useCallback(() => {
     setDetailPanelOpen(false);
@@ -1149,6 +1202,8 @@ export default function SearchPage() {
         pinnedFolders={pinnedFolders.map((p) => p.folder)}
         pinnedFolderIds={pinnedFolderIds}
         onTogglePin={handleTogglePin}
+        activeViewKey={activeViewKey}
+        onSelectView={handleSelectView}
       />
 
       <section className="flex min-w-0 flex-1 flex-col overflow-hidden bg-bg">

@@ -143,11 +143,11 @@ export function ObjectTableToolbar({
   return (
     <div className="app-toolbar">
       <div className="flex min-h-12 flex-wrap items-center gap-2 px-4 py-2">
-        <div className="inline-flex h-8 rounded-md border border-border bg-bg-subtle p-0.5">
+        <div className="inline-flex h-8 rounded-md border border-border bg-bg-subtle p-0.5" role="group" aria-label="뷰 모드">
           <button
             type="button"
             aria-pressed="true"
-            className="inline-flex items-center gap-1 rounded bg-bg px-2 text-[12px] font-semibold text-fg shadow-sm ring-1 ring-border"
+            className="inline-flex items-center gap-1 rounded bg-bg px-2 text-[12px] font-semibold text-fg shadow-sm ring-1 ring-border focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           >
             <Layers3 className="h-3.5 w-3.5 text-brand" />
             문서 그리드
@@ -160,7 +160,7 @@ export function ObjectTableToolbar({
                 description: '도면 시트 세트 보기는 다음 라운드에서 제공됩니다.',
               })
             }
-            className="inline-flex items-center gap-1 rounded px-2 text-[12px] font-medium text-fg-muted hover:bg-bg-muted hover:text-fg"
+            className="inline-flex items-center gap-1 rounded px-2 text-[12px] font-medium text-fg-muted hover:bg-bg-muted hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           >
             시트 세트
           </button>
@@ -307,7 +307,7 @@ export function ObjectTableToolbar({
           <button
             type="button"
             onClick={onClearFilters}
-            className="text-[12px] text-fg-muted underline-offset-2 hover:text-fg hover:underline"
+            className="rounded text-[12px] text-fg-muted underline-offset-2 hover:text-fg hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           >
             필터 초기화
           </button>
@@ -399,6 +399,7 @@ function ToolbarAction({
       onClick={onClick}
       className={cn(
         'inline-flex h-7 items-center gap-1 whitespace-nowrap rounded px-1.5 text-[12px] hover:bg-bg-muted',
+        'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
         destructive ? 'text-danger hover:bg-danger/10' : 'text-fg',
       )}
     >
