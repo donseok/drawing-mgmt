@@ -50,3 +50,11 @@ fixtures/dxf/*.dxf
 _workspace/
 _workspace_prev_*/
 .claude/worktrees/
+.claude/settings.local.json
+
+# Playwright MCP artifacts
+.playwright-mcp/
+
+# Local screenshots from manual verification
+/login.png
+/main.png
