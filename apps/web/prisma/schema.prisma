@@ -447,6 +447,15 @@ model ConversionJob {
   startedAt    DateTime?
   finishedAt   DateTime?
   createdAt    DateTime         @default(now())
+  // R29 V-INF-6 — persistent paths for the conversion artifacts. The worker
+  // already writes preview.dxf and thumbnail.png under
+  // ${FILE_STORAGE_ROOT}/<attachmentId>/, but until R29 we never recorded the
+  // paths on the row. Recording them lets routes/UI fan out (e.g. the
+  // thumbnail streaming endpoint) without re-deriving the storage layout.
+  // Both are nullable: a job that produced no thumbnail (PDF missing, DXF
+  // generation failed) just leaves the field unset.
+  dxfPath       String?
+  thumbnailPath String?
 
   attachment Attachment @relation(fields: [attachmentId], references: [id], onDelete: Cascade)
 
