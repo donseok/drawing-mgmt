@@ -76,6 +76,28 @@ export function LoginForm({
         return;
       }
       if (res.error) {
+        // R40 MFA-FE — Auth.js v5 surfaces the bridge token through the
+        // `code` field as `mfa_required:<base64url-jwt>` (auth.ts
+        // MfaRequiredError). Detect it BEFORE the generic error path so the
+        // user is whisked to the second-factor page instead of seeing a
+        // misleading "로그인에 실패했습니다" banner.
+        const code = res.code ?? res.error;
+        if (typeof code === 'string' && code.startsWith('mfa_required:')) {
+          const token = code.slice('mfa_required:'.length);
+          // Mirror token into sessionStorage so a refresh on /login/mfa
+          // (which would drop the query param off History.state) recovers.
+          try {
+            sessionStorage.setItem('mfaBridgeToken', token);
+          } catch {
+            // sessionStorage may be disabled (incognito quota / SSR fallback);
+            // the URL query string still carries the token.
+          }
+          const search = new URLSearchParams();
+          search.set('token', token);
+          if (callbackUrl) search.set('callbackUrl', callbackUrl);
+          router.replace(`/login/mfa?${search.toString()}`);
+          return;
+        }
         // Auth.js v5 returns the CredentialsSignin.code as `code` in error
         // (e.g. 'invalid_credentials', 'account_locked').
         setErrorCode(res.code ?? res.error);
@@ -253,6 +275,16 @@ function mapErrorCode(code: string | null): string | null {
       return '이미 다른 방식으로 가입된 계정입니다. 관리자에게 문의하세요.';
     case 'AccessDenied':
       return '접근이 거부되었습니다. 관리자에게 문의하세요.';
+    // R40 MFA-FE — surfaced when /login/mfa kicks the user back here because
+    // the bridge token expired, was forged, or the per-attempt counter hit
+    // its cap. Spec docs/_specs/r40_mfa_login_security_pdf.md §A.3.
+    case 'mfa_token_expired':
+      return '인증 시간이 만료되었습니다. 처음부터 다시 로그인하세요.';
+    case 'mfa_locked':
+    case 'mfa_session_lost':
+      return '인증 시도 횟수를 초과했거나 세션이 만료되었습니다. 처음부터 다시 로그인하세요.';
+    case 'mfa_disabled':
+      return '2단계 인증이 비활성화되었습니다. 처음부터 다시 로그인하세요.';
     default:
       return '로그인에 실패했습니다. 다시 시도하세요.';
   }

@@ -1,6 +1,9 @@
 // React Query keys factory. Centralizes query key construction so cache
 // invalidation stays consistent across components.
 
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { api, type ApiError } from '@/lib/api-client';
+
 // R39 — `me` is callable (`queryKeys.me()` → `['me']`) and also exposes a
 // nested `mfa()` factory (`queryKeys.me.mfa()` → `['me','mfa']`). The hybrid
 // shape is built via `Object.assign` because R28+ callers already depend on
@@ -144,3 +147,55 @@ export const queryKeys = {
 } as const;
 
 export type QueryKeys = typeof queryKeys;
+
+// ──────────────────────────────────────────────────────────────────────────
+// Hooks — co-located here when the cache key is the only thing the hook
+// shares with the rest of the app. Keep this section small; per-feature
+// hooks belong next to the page that owns them.
+// ──────────────────────────────────────────────────────────────────────────
+
+/**
+ * R39 SEC-4 / R40 — npm-audit summary surface. Both /admin/security cards and
+ * any future "보안 뱃지" surface (e.g. global header) read from the same key.
+ * Cache TTL is large because the BE caches the audit blob for ~15min and a
+ * fresh run only fires from the dedicated [지금 검사] mutation.
+ */
+export interface AdminSecurityAuditResponse {
+  vulnerabilities: { critical: number; high: number; moderate: number; low: number };
+  count: number;
+  lastChecked: string;
+}
+
+export function useAdminSecurityAudit() {
+  return useQuery<AdminSecurityAuditResponse, ApiError>({
+    queryKey: queryKeys.admin.securityAudit(),
+    queryFn: () =>
+      api.get<AdminSecurityAuditResponse>('/api/v1/admin/security/audit'),
+    // 60s — the BE caches longer; this just keeps idle tab transitions cheap.
+    staleTime: 60_000,
+    // The mutation drives invalidation; auto-refetch on focus would race a
+    // [지금 검사] click and confuse the spinner state.
+    refetchOnWindowFocus: false,
+    // 503 with `AUDIT_RUN_FAILED` is a real-but-recoverable state; let the
+    // page render the error and wire a "다시 시도" button instead of N retries.
+    retry: false,
+  });
+}
+
+/**
+ * R40 — [지금 검사] mutation. Posts to the same audit URL (BE invalidates its
+ * own cache and re-runs `pnpm audit --json`); on settle we invalidate the
+ * shared key so the GET hook above refetches.
+ */
+export function useRunSecurityAudit() {
+  const queryClient = useQueryClient();
+  return useMutation<AdminSecurityAuditResponse, ApiError, void>({
+    mutationFn: () =>
+      api.post<AdminSecurityAuditResponse>('/api/v1/admin/security/audit'),
+    onSettled: () => {
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.admin.securityAudit(),
+      });
+    },
+  });
+}

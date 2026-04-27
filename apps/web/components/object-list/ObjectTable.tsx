@@ -60,6 +60,13 @@ export interface ObjectRow {
   ownerId?: string | null;
   controlState?: ControlState;
   latest?: boolean;
+  /**
+   * R40 S-1 — PDF body 매칭 시 BE가 내려주는 ts_headline 결과
+   * (`...<b>매칭어</b>...` 형식 plain string). null이면 매칭 위치가
+   * number/name/description 측이라 snippet 미생성. 자료명 cell 아래 한 줄
+   * <PdfSnippetLine>으로 렌더된다.
+   */
+  pdfSnippet?: string | null;
 }
 
 interface ObjectTableProps {
@@ -212,9 +219,14 @@ export function ObjectTable({
         accessorKey: 'name',
         header: '자료명',
         cell: ({ row }) => (
-          <span className="block max-w-[420px] truncate font-medium text-fg">
-            {highlight(row.original.name, searchTerm)}
-          </span>
+          <div className="max-w-[420px]">
+            <span className="block truncate font-medium text-fg">
+              {highlight(row.original.name, searchTerm)}
+            </span>
+            {row.original.pdfSnippet ? (
+              <PdfSnippetLine snippet={row.original.pdfSnippet} />
+            ) : null}
+          </div>
         ),
       },
       {
@@ -482,4 +494,69 @@ function highlight(text: string, term?: string) {
       {text.slice(idx + term.length)}
     </>
   );
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// PdfSnippetLine — R40 S-1
+// BE의 ts_headline 결과는 `...<b>매칭어</b>...` 형식의 plain string이다.
+// dangerouslySetInnerHTML은 절대 사용하지 않는다 — 임의의 HTML이 들어와도
+// XSS가 되지 않도록 정규식 split + JSX <mark> 렌더로 안전하게 변환한다.
+// designer §D.3.
+// ──────────────────────────────────────────────────────────────────────────
+
+const PDF_SNIPPET_MAX_CHARS = 80;
+
+function PdfSnippetLine({
+  snippet,
+  maxChars = PDF_SNIPPET_MAX_CHARS,
+}: {
+  snippet: string;
+  maxChars?: number;
+}) {
+  if (!snippet || !snippet.trim()) return null;
+  return (
+    <p className="mt-0.5 truncate text-xs text-fg-muted">
+      <span className="font-medium text-fg-subtle">본문 </span>
+      {renderSnippet(snippet, maxChars)}
+    </p>
+  );
+}
+
+/**
+ * `<b>...</b>` 마커를 `<mark>`로 변환. 정규식 split이라 짝이 안 맞거나
+ * 다른 태그가 섞여 들어와도 plain text로 떨어진다 (XSS 안전 fallback).
+ */
+function renderSnippet(snippet: string, maxChars: number): React.ReactNode {
+  const truncated = truncatePreservingTags(snippet, maxChars);
+  const re = /<b>(.*?)<\/b>/g;
+  const parts: React.ReactNode[] = [];
+  let lastIndex = 0;
+  let m: RegExpExecArray | null;
+  let key = 0;
+  while ((m = re.exec(truncated)) !== null) {
+    if (m.index > lastIndex) {
+      parts.push(truncated.slice(lastIndex, m.index));
+    }
+    parts.push(
+      <mark
+        key={key++}
+        className="rounded bg-amber-200/60 px-0.5 text-fg dark:bg-amber-500/30"
+      >
+        {m[1]}
+      </mark>,
+    );
+    lastIndex = re.lastIndex;
+  }
+  if (lastIndex < truncated.length) {
+    parts.push(truncated.slice(lastIndex));
+  }
+  return <>{parts}</>;
+}
+
+function truncatePreservingTags(snippet: string, maxChars: number): string {
+  // BE는 MaxFragments=1, MaxWords=20으로 자체 짧게 만들어 보내므로 실제 잘림은
+  // 거의 없다. 안전망 — `<b>...</b>` 마커 길이를 제외한 가시 글자 수가
+  // maxChars + 마커 페어 길이를 넘어가면 단순 slice + ellipsis.
+  if (snippet.length <= maxChars + 7 /* "<b></b>".length */) return snippet;
+  return snippet.slice(0, maxChars) + '…';
 }

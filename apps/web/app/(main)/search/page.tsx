@@ -81,6 +81,10 @@ interface ServerObjectSummary {
   masterAttachmentId: string | null;
   createdAt: string;
   updatedAt: string;
+  // R40 S-1 — `q`가 PDF 본문에 매칭됐을 때만 ts_headline 결과(`<b>...</b>`
+  // 마커 포함 plain string)가 채워짐. number/name/description 매칭이면
+  // null. FE는 이 필드가 있을 때만 결과 cell 하단에 1줄 snippet을 렌더.
+  pdfSnippet?: string | null;
 }
 
 function adaptFolder(node: ServerFolderNode): FolderNode {
@@ -128,6 +132,9 @@ function adaptObject(o: ServerObjectSummary): ObjectRow {
     ownerId: o.ownerId,
     controlState,
     latest: true,
+    // R40 S-1 — pass the BE-supplied PDF snippet through. ObjectTable's name
+    // cell renders <PdfSnippetLine> when this is non-null/non-empty.
+    pdfSnippet: o.pdfSnippet ?? null,
   };
 }
 

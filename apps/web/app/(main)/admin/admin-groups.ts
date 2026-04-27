@@ -121,9 +121,12 @@ export const ADMIN_GROUPS: AdminGroup[] = [
       // R39 SEC-4 — npm-audit summary. Sits at the bottom of 통합 / 로그
       // because dependency vulnerability tracking is a cross-cutting concern
       // (feeds CI gating + ops dashboards) — same mental model as 감사 로그.
+      // R40 designer §J #1 — label is "의존성 보안" (not bare "보안") so the
+      // entry is unambiguous next to other security-flavored menus
+      // (권한 매트릭스 / 바이러스 스캔). Icon stays ShieldCheck (R39 §J #2).
       {
         href: '/admin/security',
-        label: '보안',
+        label: '의존성 보안',
         description: 'npm 의존성 취약점 / 즉시 검사',
         icon: ShieldCheck,
       },
