@@ -68,7 +68,19 @@ export const queryKeys = {
       ['admin', 'users', 'list', params] as const,
     userDetail: (id: string) => ['admin', 'users', 'detail', id] as const,
     organizations: () => ['admin', 'organizations'] as const,
+    // R30 U-3 — admin organization tree. Flat list from BE; FE composes the
+    // tree. All org mutations (create/patch/delete/reorder) invalidate this
+    // single key so the tree re-syncs.
+    organizationsTree: () => ['admin', 'organizations', 'tree'] as const,
+    organizationMembers: (orgId: string, params: { limit?: number } = {}) =>
+      ['admin', 'organizations', orgId, 'members', params] as const,
     groups: () => ['admin', 'groups'] as const,
+    // R30 U-4 — group list + per-group member set. The candidate user pool
+    // for the membership matrix shares the existing `usersList` cache (same
+    // endpoint), so no separate key is needed.
+    groupsList: () => ['admin', 'groups', 'list'] as const,
+    groupMembers: (groupId: string) =>
+      ['admin', 'groups', groupId, 'members'] as const,
     classes: () => ['admin', 'classes'] as const,
     classAttributes: (classId: string) => ['admin', 'classes', classId, 'attributes'] as const,
     folders: () => ['admin', 'folders'] as const,
