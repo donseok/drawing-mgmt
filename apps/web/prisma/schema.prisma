@@ -41,6 +41,11 @@ model User {
   // login (signIn callback in auth.ts). Independent of `username`/`email` so
   // an SSO user keeps the same row even if HR rewrites their handle.
   keycloakSub      String?        @unique
+  // R37 / A-2 — SAML 2.0 NameID (Persistent identifier). Populated on first
+  // SAML SSO login by the ACS endpoint (apps/web/app/api/v1/auth/saml/acs).
+  // Mirrors the Keycloak/OIDC linkage above so SAML users keep a stable row
+  // independent of username/email rewrites at the IdP.
+  samlSub          String?        @unique
   // R35 / N-1 — per-user notification channel preferences. Today only the
   // email channel is toggleable (the in-app feed always receives), but this
   // generalizes cleanly to push/SMS columns later. Default true so existing

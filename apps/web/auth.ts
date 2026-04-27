@@ -16,6 +16,12 @@
 //     On first sign-in we provision a User row (signIn callback) and on
 //     subsequent logins we just bump lastLoginAt. Credentials provider stays
 //     wired so dev/fallback access still works without an IdP.
+//   - R37 / A-2 — optional SAML 2.0 SSO. Auth.js v5 has no native SAML
+//     provider; instead the ACS endpoint at /api/v1/auth/saml/acs validates
+//     the IdP response, provisions the User, and mints a 1-minute HMAC
+//     bridge token. The Credentials provider's `samlBridge` mode below
+//     verifies the token and resolves the User row, so the JWT session
+//     contract stays identical to the credentials and Keycloak paths.
 //
 // See TRD §5.1.
 
@@ -29,6 +35,7 @@ import { z } from 'zod';
 
 import { prisma } from '@/lib/prisma';
 import { authConfig } from '@/auth.config';
+import { verifySamlBridgeToken } from '@/lib/saml';
 
 const LOCKOUT_THRESHOLD = 5;
 const LOCKOUT_DURATION_MS = 30 * 60 * 1000; // 30 min
@@ -75,16 +82,70 @@ class InvalidCredentialsError extends CredentialsSignin {
 class AccountLockedError extends CredentialsSignin {
   code = 'account_locked';
 }
+class InvalidSamlBridgeError extends CredentialsSignin {
+  code = 'saml_bridge_invalid';
+}
 
 const isKeycloakEnabled = process.env.KEYCLOAK_ENABLED === '1';
 
+/**
+ * R37 / A-2 — verify a SAML bridge token, resolve the User row that the
+ * ACS endpoint provisioned, and return the Auth.js User shape. Null/invalid
+ * tokens raise InvalidSamlBridgeError (code: saml_bridge_invalid) so the
+ * login page can surface a stable error.
+ */
+async function authorizeSamlBridge(token: string) {
+  const userId = verifySamlBridgeToken(token);
+  if (!userId) {
+    throw new InvalidSamlBridgeError();
+  }
+
+  const user = await prisma.user.findUnique({ where: { id: userId } });
+  if (!user || user.deletedAt) {
+    // The ACS endpoint just provisioned this row, so missing here means the
+    // token is forged or the user was deactivated mid-flight. Either way
+    // we refuse the session.
+    throw new InvalidSamlBridgeError();
+  }
+
+  return {
+    id: user.id,
+    username: user.username,
+    name: user.fullName,
+    email: user.email ?? undefined,
+    role: user.role,
+    securityLevel: user.securityLevel,
+    organizationId: user.organizationId,
+  };
+}
+
+/**
+ * Credentials authorize() with two modes, distinguished by which field is
+ * populated:
+ *   - `{ username, password }` → standard bcrypt login (default path).
+ *   - `{ samlBridge: <token> }` → R37 A-2 SAML SSO completion. The ACS
+ *     endpoint has already validated the IdP response and provisioned the
+ *     User row; the token vouches for that User.id with HMAC + 1-min ttl.
+ *     We never touch passwordHash on this path.
+ */
 const credentialsProvider = Credentials({
   name: 'credentials',
   credentials: {
     username: { label: '아이디', type: 'text' },
     password: { label: '비밀번호', type: 'password' },
+    // Hidden field — populated only by the SAML callback page redirect from
+    // /api/v1/auth/saml/acs. Type "text" keeps the Auth.js client happy
+    // (we don't render this on the credentials login form).
+    samlBridge: { label: 'samlBridge', type: 'text' },
   },
   async authorize(raw) {
+    // R37 / A-2 — SAML bridge mode. Branches first because the bridge token
+    // path skips bcrypt entirely.
+    const bridge = (raw as Record<string, unknown> | null)?.samlBridge;
+    if (typeof bridge === 'string' && bridge.length > 0) {
+      return authorizeSamlBridge(bridge);
+    }
+
     const parsed = credentialsSchema.safeParse(raw);
     if (!parsed.success) {
       throw new InvalidCredentialsError();
