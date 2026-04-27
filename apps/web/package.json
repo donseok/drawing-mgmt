@@ -31,6 +31,7 @@
     "@aws-sdk/s3-request-presigner": "^3.658.0",
     "@drawing-mgmt/shared": "workspace:*",
     "@hookform/resolvers": "^3.9.0",
+    "@node-saml/node-saml": "^5",
     "@prisma/client": "^5.22.0",
     "@radix-ui/react-avatar": "^1.1.1",
     "@radix-ui/react-checkbox": "^1.1.2",
