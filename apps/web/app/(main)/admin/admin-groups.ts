@@ -118,6 +118,15 @@ export const ADMIN_GROUPS: AdminGroup[] = [
       },
       { href: '/admin/integrations', label: 'API Key', description: '외부 연계 키 발급/취소', icon: Plug },
       { href: '/admin/audit', label: '감사 로그', description: '시스템 활동 이력', icon: ScrollText },
+      // R39 SEC-4 — npm-audit summary. Sits at the bottom of 통합 / 로그
+      // because dependency vulnerability tracking is a cross-cutting concern
+      // (feeds CI gating + ops dashboards) — same mental model as 감사 로그.
+      {
+        href: '/admin/security',
+        label: '보안',
+        description: 'npm 의존성 취약점 / 즉시 검사',
+        icon: ShieldCheck,
+      },
     ],
   },
 ];

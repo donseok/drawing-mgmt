@@ -9,6 +9,7 @@ import { ProfileSection } from '@/components/settings/ProfileSection';
 import { PasswordSection } from '@/components/settings/PasswordSection';
 import { SignatureSection } from '@/components/settings/SignatureSection';
 import { NotificationsSection } from '@/components/settings/NotificationsSection';
+import { MfaSection } from '@/components/settings/MfaSection';
 import { api } from '@/lib/api-client';
 import { queryKeys } from '@/lib/queries';
 
@@ -36,6 +37,19 @@ interface MeResponse {
   notifyBySms?: boolean;
   notifyByKakao?: boolean;
   phoneNumber?: string | null;
+  /**
+   * R39 A-3 — TOTP enrollment timestamp. `null` when MFA is disabled. We rely
+   * on the timestamp (not a separate boolean) so a future "활성 since …" UI
+   * doesn't need a second round-trip. Optional in case a mid-deploy /me
+   * response predates the 0013 migration.
+   */
+  totpEnabledAt?: string | null;
+  /**
+   * R39 A-4 — when set and (now - passwordChangedAt) is in [83d, 90d), settings
+   * surfaces a "곧 만료됨" banner so the user changes proactively. Server-side
+   * the absolute 90d enforcement happens at login (middleware redirect).
+   */
+  passwordChangedAt?: string | null;
   organization: { id: string; name: string; parentId: string | null } | null;
   groups: { id: string; name: string }[];
 }
@@ -92,6 +106,7 @@ export default function SettingsPage() {
           <TabsList>
             <TabsTrigger value="profile">프로필</TabsTrigger>
             <TabsTrigger value="password">비밀번호</TabsTrigger>
+            <TabsTrigger value="security">보안</TabsTrigger>
             <TabsTrigger value="signature">서명</TabsTrigger>
             <TabsTrigger value="notifications">알림</TabsTrigger>
           </TabsList>
@@ -109,7 +124,14 @@ export default function SettingsPage() {
           </TabsContent>
 
           <TabsContent value="password">
-            <PasswordSection />
+            <PasswordSection passwordChangedAt={me.passwordChangedAt ?? null} />
+          </TabsContent>
+
+          <TabsContent value="security">
+            <MfaSection
+              enabled={!!me.totpEnabledAt}
+              enabledAt={me.totpEnabledAt ?? null}
+            />
           </TabsContent>
 
           <TabsContent value="signature">
