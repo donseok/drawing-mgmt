@@ -27,6 +27,7 @@ import {
 } from '@/lib/permissions';
 import { ok, error, ErrorCode } from '@/lib/api-response';
 import { extractRequestMeta, logActivity } from '@/lib/audit';
+import { enqueueConversion } from '@/lib/conversion-queue';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -224,6 +225,29 @@ export async function POST(
     });
   });
 
+  // R28 V-INF-4 — auto-enqueue conversion for DWG uploads. Best-effort: a
+  // queue/db hiccup must not invalidate a successful upload, so we surface
+  // the outcome via response metadata + a system log line.
+  let conversionJobId: string | undefined;
+  let conversionEnqueued = false;
+  if (ext === '.dwg') {
+    const queueResult = await enqueueConversion({
+      attachmentId: created.id,
+      storagePath: `${attachmentId}/${storedName}`,
+      filename: created.filename,
+      mimeType: created.mimeType,
+    });
+    conversionEnqueued = queueResult.ok;
+    conversionJobId = queueResult.jobId;
+    if (!queueResult.ok) {
+      // eslint-disable-next-line no-console
+      console.error(
+        '[attachments] conversion enqueue failed',
+        { attachmentId: created.id, error: queueResult.error },
+      );
+    }
+  }
+
   const meta = extractRequestMeta(req);
   await logActivity({
     userId: user.id,
@@ -236,6 +260,9 @@ export async function POST(
       filename: created.filename,
       isMaster: created.isMaster,
       bytes: file.size,
+      ...(ext === '.dwg'
+        ? { conversionEnqueued, conversionJobId: conversionJobId ?? null }
+        : {}),
     },
   });
 
@@ -246,8 +273,9 @@ export async function POST(
       mimeType: created.mimeType,
       size: created.size.toString(),
       isMaster: created.isMaster,
+      ...(ext === '.dwg' ? { conversionJobId } : {}),
     },
-    undefined,
+    ext === '.dwg' ? { conversionEnqueued } : undefined,
     { status: 201 },
   );
 }

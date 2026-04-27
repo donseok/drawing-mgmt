@@ -7,12 +7,17 @@
 // PDF generation: NOT YET IMPLEMENTED. ODA File Converter only does DWG↔DXF.
 // PDF requires a separate tool (e.g. LibreCAD/QCad CLI, AutoCAD, or rendering
 // the DXF via a SVG → PDF pipeline). Tracked as a follow-up.
+//
+// R28 V-INF-4 — adds ConversionJob row state tracking, BullMQ retry policy,
+// and a LibreDWG `dwg2dxf` subprocess fallback when ODA fails. LibreDWG is
+// GPL → subprocess only, never imported as a library.
 
 import { Worker, type Job } from 'bullmq';
-import IORedis from 'ioredis';
+import { Redis as IORedis } from 'ioredis';
 import pino from 'pino';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
+import { PrismaClient, ConversionStatus } from '@prisma/client';
 import {
   CONVERSION_QUEUE_NAME,
   ConversionJobPayloadSchema,
@@ -20,6 +25,7 @@ import {
   type ConversionResult,
 } from '@drawing-mgmt/shared/conversion';
 import { dwgToDxf } from './oda.js';
+import { dwgToDxfLibre, LibreDwgUnavailableError } from './libredwg.js';
 
 const log = pino({
   level: process.env.LOG_LEVEL ?? 'info',
@@ -30,52 +36,189 @@ const REDIS_URL = process.env.REDIS_URL ?? 'redis://localhost:6379';
 const ODA_CONVERTER_PATH =
   process.env.ODA_CONVERTER_PATH ??
   'C:/Program Files/ODA/ODAFileConverter 27.1.0/ODAFileConverter.exe';
+const LIBREDWG_BIN = process.env.LIBREDWG_DWG2DXF_PATH ?? 'dwg2dxf';
 const FILE_STORAGE_ROOT = path.resolve(
   process.env.FILE_STORAGE_ROOT ?? './.data/files',
 );
 
 const connection = new IORedis(REDIS_URL, { maxRetriesPerRequest: null });
+const prisma = new PrismaClient();
 
-async function processJob(job: Job<ConversionJobPayload>): Promise<ConversionResult> {
-  const startedAt = Date.now();
-  const payload = ConversionJobPayloadSchema.parse(job.data);
-  log.info({ jobId: payload.jobId, attachmentId: payload.attachmentId }, 'conversion start');
+interface ConversionRunResult {
+  dxfOutPath?: string;
+  fallbackUsed: 'oda' | 'libredwg';
+}
 
-  const sourcePath = path.resolve(payload.storagePath);
-  await fs.access(sourcePath);
+/**
+ * Run the actual DXF conversion, trying ODA first and falling through to
+ * LibreDWG if ODA fails. Returns which adapter ultimately produced the file.
+ *
+ * Throws when both adapters fail. The caller (BullMQ Worker) translates the
+ * throw into a job failure / retry per the queue's `attempts` policy.
+ */
+async function convertDwgToDxf(
+  sourcePath: string,
+  outDir: string,
+): Promise<{ dxfOutPath: string; fallbackUsed: 'oda' | 'libredwg' }> {
+  const target = path.join(outDir, 'preview.dxf');
 
-  const outDir = path.join(FILE_STORAGE_ROOT, payload.attachmentId);
-  await fs.mkdir(outDir, { recursive: true });
-
-  let dxfOutPath: string | undefined;
-  if (payload.outputs.includes('dxf')) {
+  // 1) Try ODA first — it's the primary path on machines that have it.
+  try {
     const { dxfPath, cleanup } = await dwgToDxf(sourcePath, {
       converterPath: ODA_CONVERTER_PATH,
     });
     try {
-      const target = path.join(outDir, 'preview.dxf');
       await fs.copyFile(dxfPath, target);
-      dxfOutPath = target;
+      return { dxfOutPath: target, fallbackUsed: 'oda' };
     } finally {
       await cleanup();
     }
+  } catch (odaErr) {
+    const odaMsg = odaErr instanceof Error ? odaErr.message : String(odaErr);
+    log.warn({ err: odaMsg }, 'ODA failed, attempting LibreDWG fallback');
+
+    // 2) LibreDWG fallback. If the binary isn't installed, log + rethrow the
+    // ORIGINAL ODA error so the retry loop sees the real cause.
+    try {
+      const { dxfPath, cleanup } = await dwgToDxfLibre(sourcePath, {
+        binPath: LIBREDWG_BIN,
+      });
+      try {
+        await fs.copyFile(dxfPath, target);
+        return { dxfOutPath: target, fallbackUsed: 'libredwg' };
+      } finally {
+        await cleanup();
+      }
+    } catch (libErr) {
+      if (libErr instanceof LibreDwgUnavailableError) {
+        log.warn(
+          { libredwgBin: LIBREDWG_BIN },
+          'LibreDWG binary unavailable; not falling back further',
+        );
+        throw odaErr; // propagate original ODA error
+      }
+      // Both adapters tried and failed — surface a combined message.
+      const libMsg = libErr instanceof Error ? libErr.message : String(libErr);
+      const combined = new Error(
+        `conversion failed (oda=${odaMsg}; libredwg=${libMsg})`,
+      );
+      throw combined;
+    }
   }
+}
+
+async function processJob(job: Job<ConversionJobPayload>): Promise<ConversionResult> {
+  const startedAt = Date.now();
+  const payload = ConversionJobPayloadSchema.parse(job.data);
+  const attemptNum = job.attemptsMade + 1;
+  log.info(
+    { jobId: payload.jobId, attachmentId: payload.attachmentId, attempt: attemptNum },
+    'conversion start',
+  );
+
+  // Mark PROCESSING + bump attempt + record start time. We always update so a
+  // crash mid-run leaves the row in PROCESSING (admin UI can spot stuck rows).
+  await prisma.conversionJob
+    .update({
+      where: { id: payload.jobId },
+      data: {
+        status: ConversionStatus.PROCESSING,
+        attempt: attemptNum,
+        startedAt: new Date(),
+        errorMessage: null,
+      },
+    })
+    .catch((e) => {
+      // Row may not exist if a retry was triggered against an old jobId — we
+      // log and continue so the conversion itself still happens.
+      log.warn({ jobId: payload.jobId, err: (e as Error).message }, 'conversion-job row update (PROCESSING) failed');
+    });
+
+  let runResult: ConversionRunResult | undefined;
+  try {
+    const sourcePath = path.resolve(payload.storagePath);
+    await fs.access(sourcePath);
+
+    const outDir = path.join(FILE_STORAGE_ROOT, payload.attachmentId);
+    await fs.mkdir(outDir, { recursive: true });
+
+    if (payload.outputs.includes('dxf')) {
+      runResult = await convertDwgToDxf(sourcePath, outDir);
+    } else {
+      runResult = { fallbackUsed: 'oda' };
+    }
+  } catch (err) {
+    const errMessage = err instanceof Error ? err.message : String(err);
+    const isLastAttempt = attemptNum >= (job.opts.attempts ?? 1);
+
+    // BullMQ will retry on throw if attempts remain. Until the last attempt
+    // we keep status=PROCESSING (so the row continues to look "in-flight")
+    // and only stash the latest errorMessage so the admin can peek. On the
+    // FINAL failed attempt we mark FAILED + finishedAt.
+    await prisma.conversionJob
+      .update({
+        where: { id: payload.jobId },
+        data: isLastAttempt
+          ? {
+              status: ConversionStatus.FAILED,
+              errorMessage: errMessage,
+              finishedAt: new Date(),
+            }
+          : {
+              status: ConversionStatus.PROCESSING,
+              errorMessage: errMessage,
+            },
+      })
+      .catch((updateErr) => {
+        log.warn(
+          { jobId: payload.jobId, err: (updateErr as Error).message },
+          'conversion-job row update (FAILED/PROCESSING) failed',
+        );
+      });
+
+    log.error(
+      { jobId: payload.jobId, attempt: attemptNum, isLastAttempt, err: errMessage },
+      'conversion attempt failed',
+    );
+    throw err;
+  }
+
+  const finishedAt = new Date();
+  await prisma.conversionJob
+    .update({
+      where: { id: payload.jobId },
+      data: {
+        status: ConversionStatus.DONE,
+        finishedAt,
+        errorMessage: null,
+      },
+    })
+    .catch((e) => {
+      log.warn({ jobId: payload.jobId, err: (e as Error).message }, 'conversion-job row update (DONE) failed');
+    });
 
   const result: ConversionResult = {
     jobId: payload.jobId,
     attachmentId: payload.attachmentId,
     status: 'DONE',
-    dxfPath: dxfOutPath,
+    dxfPath: runResult?.dxfOutPath,
     durationMs: Date.now() - startedAt,
   };
-  log.info({ ...result }, 'conversion done');
+  log.info(
+    { ...result, fallbackUsed: runResult?.fallbackUsed },
+    'conversion done',
+  );
   return result;
 }
 
-const worker = new Worker<ConversionJobPayload, ConversionResult>(CONVERSION_QUEUE_NAME, processJob, {
-  connection,
-  concurrency: Number(process.env.WORKER_CONCURRENCY ?? 3),
-});
+const worker = new Worker<ConversionJobPayload, ConversionResult>(
+  CONVERSION_QUEUE_NAME,
+  processJob,
+  {
+    connection,
+    concurrency: Number(process.env.WORKER_CONCURRENCY ?? 3),
+  },
+);
 
 worker.on('completed', (job, result) => {
   log.info({ jobId: result.jobId, durationMs: result.durationMs }, 'job completed');
@@ -87,10 +230,19 @@ worker.on('failed', (job, err) => {
 const shutdown = async (sig: string) => {
   log.info({ sig }, 'worker shutting down');
   await worker.close();
+  await prisma.$disconnect().catch(() => undefined);
   await connection.quit();
   process.exit(0);
 };
 process.on('SIGINT', () => shutdown('SIGINT'));
 process.on('SIGTERM', () => shutdown('SIGTERM'));
 
-log.info({ queue: CONVERSION_QUEUE_NAME, redis: REDIS_URL, oda: ODA_CONVERTER_PATH }, 'worker started');
+log.info(
+  {
+    queue: CONVERSION_QUEUE_NAME,
+    redis: REDIS_URL,
+    oda: ODA_CONVERTER_PATH,
+    libredwg: LIBREDWG_BIN,
+  },
+  'worker started',
+);

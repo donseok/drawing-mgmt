@@ -16,11 +16,12 @@ import { dwgToDxf, dxfToDwg } from './oda.js';
 
 async function main() {
   const args = process.argv.slice(2);
-  if (args.length < 1) {
+  const inputArg = args[0];
+  if (!inputArg) {
     console.error('Usage: convert <input.dwg|input.dxf> [outDir]');
     process.exit(2);
   }
-  const input = path.resolve(args[0]);
+  const input = path.resolve(inputArg);
   const outDir = path.resolve(args[1] ?? path.dirname(input));
   await fs.mkdir(outDir, { recursive: true });
 
