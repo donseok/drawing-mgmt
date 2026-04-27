@@ -8,6 +8,7 @@ import { Separator } from '@/components/ui/separator';
 import { ProfileSection } from '@/components/settings/ProfileSection';
 import { PasswordSection } from '@/components/settings/PasswordSection';
 import { SignatureSection } from '@/components/settings/SignatureSection';
+import { NotificationsSection } from '@/components/settings/NotificationsSection';
 import { api } from '@/lib/api-client';
 import { queryKeys } from '@/lib/queries';
 
@@ -21,6 +22,12 @@ interface MeResponse {
   securityLevel: number;
   organizationId: string | null;
   signatureFile: string | null;
+  /**
+   * R35 N-1 — when true, the server enqueues an email on each notification
+   * (subject to MAIL_ENABLED). Defaults to true server-side; we fall back to
+   * `true` here too so a missing field (e.g. mid-deploy) still renders.
+   */
+  notifyByEmail?: boolean;
   organization: { id: string; name: string; parentId: string | null } | null;
   groups: { id: string; name: string }[];
 }
@@ -78,6 +85,7 @@ export default function SettingsPage() {
             <TabsTrigger value="profile">프로필</TabsTrigger>
             <TabsTrigger value="password">비밀번호</TabsTrigger>
             <TabsTrigger value="signature">서명</TabsTrigger>
+            <TabsTrigger value="notifications">알림</TabsTrigger>
           </TabsList>
 
           <TabsContent value="profile">
@@ -98,6 +106,13 @@ export default function SettingsPage() {
 
           <TabsContent value="signature">
             <SignatureSection signatureFile={me.signatureFile} />
+          </TabsContent>
+
+          <TabsContent value="notifications">
+            <NotificationsSection
+              notifyByEmail={me.notifyByEmail ?? true}
+              hasEmail={!!me.email}
+            />
           </TabsContent>
         </Tabs>
 
