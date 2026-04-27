@@ -15,6 +15,7 @@ import { prisma } from '@/lib/prisma';
 import { requireUser } from '@/lib/auth-helpers';
 import { ok, error, ErrorCode } from '@/lib/api-response';
 import { extractRequestMeta, logActivity } from '@/lib/audit';
+import { enqueueNotification } from '@/lib/notifications';
 
 const bodySchema = z.object({
   comment: z.string().max(2000).optional(),
@@ -93,7 +94,26 @@ export async function POST(
     });
 
     if (!isLast) {
-      // Approval still in progress (more steps to act).
+      // Approval still in progress (more steps to act). Notify the next
+      // pending approver — the requester gets the final APPROVE/REJECT
+      // notification when the last step lands.
+      const nextStep = approval.steps.find(
+        (s) => s.status === StepStatus.PENDING && s.id !== activeStep.id,
+      );
+      if (nextStep && nextStep.approverId !== user.id) {
+        await enqueueNotification(tx, {
+          userId: nextStep.approverId,
+          type: 'APPROVAL_REQUEST',
+          title: '결재 차례가 되었습니다',
+          body: approval.title,
+          objectId: approval.revision.object.id,
+          metadata: {
+            approvalId: approval.id,
+            requesterId: approval.requesterId,
+          },
+        });
+      }
+
       return {
         approvalStatus: ApprovalStatus.PENDING,
         objectState: approval.revision.object.state,
@@ -125,6 +145,21 @@ export async function POST(
         lockedById: null,
       },
     });
+
+    // R29 / N-1 — notify the requester that the approval landed.
+    if (approval.requesterId !== user.id) {
+      await enqueueNotification(tx, {
+        userId: approval.requesterId,
+        type: 'APPROVAL_APPROVE',
+        title: '결재가 승인되었습니다',
+        body: `${obj.number} — ${approval.title}`,
+        objectId: obj.id,
+        metadata: {
+          approvalId: approval.id,
+          finalApproverId: user.id,
+        },
+      });
+    }
 
     return {
       approvalStatus: ApprovalStatus.APPROVED,

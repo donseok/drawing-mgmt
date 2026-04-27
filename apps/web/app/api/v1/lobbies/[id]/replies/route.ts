@@ -17,6 +17,7 @@ import { prisma } from '@/lib/prisma';
 import { requireUser } from '@/lib/auth-helpers';
 import { ok, error, ErrorCode } from '@/lib/api-response';
 import { extractRequestMeta, logActivity } from '@/lib/audit';
+import { enqueueNotification } from '@/lib/notifications';
 
 const postSchema = z.object({
   comment: z.string().min(1).max(2000),
@@ -30,6 +31,7 @@ async function loadLobbyForVisibility(id: string) {
     where: { id },
     select: {
       id: true,
+      title: true,
       createdBy: true,
       status: true,
       targets: { select: { companyId: true } },
@@ -167,6 +169,25 @@ export async function POST(
         data: { status: nextStatus },
       });
     }
+
+    // R29 / N-1 — notify the lobby creator that a reply landed. Skip when
+    // the creator replies to their own lobby (clarification scenario).
+    if (lobby.createdBy !== user.id) {
+      await enqueueNotification(tx, {
+        userId: lobby.createdBy,
+        type: 'LOBBY_REPLY',
+        title: '협의 답변이 등록되었습니다',
+        body: `${lobby.title} — ${decision}`,
+        objectId: null,
+        metadata: {
+          lobbyId: lobby.id,
+          decision,
+          replyId: reply.id,
+          replierId: user.id,
+        },
+      });
+    }
+
     return reply;
   });
 

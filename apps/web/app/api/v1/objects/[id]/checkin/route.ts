@@ -19,6 +19,7 @@ import {
 import { ok, error, ErrorCode } from '@/lib/api-response';
 import { canTransition } from '@/lib/state-machine';
 import { extractRequestMeta, logActivity } from '@/lib/audit';
+import { enqueueNotification } from '@/lib/notifications';
 
 const bodySchema = z.object({
   comment: z.string().max(2000).optional(),
@@ -40,6 +41,8 @@ export async function POST(
     where: { id: params.id },
     select: {
       id: true,
+      number: true,
+      name: true,
       folderId: true,
       ownerId: true,
       securityLevel: true,
@@ -115,7 +118,7 @@ export async function POST(
         comment: parsedBody.comment ?? null,
       },
     });
-    return tx.objectEntity.update({
+    const updatedObject = await tx.objectEntity.update({
       where: { id: obj.id },
       data: {
         state: ObjectState.CHECKED_IN,
@@ -123,6 +126,25 @@ export async function POST(
         lockedById: null,
       },
     });
+
+    // R29 / N-1 — notify the owner that their object was checked back in.
+    // Skip if the owner is the actor (no self-notify).
+    if (obj.ownerId !== user.id) {
+      await enqueueNotification(tx, {
+        userId: obj.ownerId,
+        type: 'OBJECT_CHECKIN',
+        title: '자료가 체크인되었습니다',
+        body: `${obj.number} (v${nextVer.toString()})`,
+        objectId: obj.id,
+        metadata: {
+          version: nextVer.toString(),
+          revision: obj.currentRevision,
+          actorId: user.id,
+        },
+      });
+    }
+
+    return updatedObject;
   });
 
   const meta = extractRequestMeta(req);

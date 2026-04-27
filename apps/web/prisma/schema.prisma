@@ -38,11 +38,11 @@ model User {
   // signal that the account is gone (auth + picker queries filter on this).
   deletedAt        DateTime?
 
-  organization Organization?  @relation(fields: [organizationId], references: [id])
-  groups       UserGroup[]
-  ownedObjects ObjectEntity[] @relation("ObjectOwner")
-  lockedObjects ObjectEntity[] @relation("ObjectLocker")
-  approvalsRequested Approval[]    @relation("ApprovalRequester")
+  organization       Organization?   @relation(fields: [organizationId], references: [id])
+  groups             UserGroup[]
+  ownedObjects       ObjectEntity[]  @relation("ObjectOwner")
+  lockedObjects      ObjectEntity[]  @relation("ObjectLocker")
+  approvalsRequested Approval[]      @relation("ApprovalRequester")
   approvalSteps      ApprovalStep[]
   activityLogs       ActivityLog[]
   chatSessions       ChatSession[]
@@ -50,6 +50,10 @@ model User {
   // the home "핀 고정" panel and the search sidebar's 즐겨찾기 section.
   folderPins         UserFolderPin[]
   objectPins         UserObjectPin[]
+  // R29 / N-1 — first-class notification feed. Replaces the previous
+  // ActivityLog-derived synthesis so the bell badge and panel can show
+  // genuine read/unread state.
+  notifications      Notification[]
 
   @@index([organizationId])
   @@index([role])
@@ -57,10 +61,10 @@ model User {
 }
 
 model Organization {
-  id        String  @id @default(cuid())
+  id        String   @id @default(cuid())
   name      String
   parentId  String?
-  sortOrder Int     @default(0)
+  sortOrder Int      @default(0)
   createdAt DateTime @default(now())
 
   parent   Organization?  @relation("OrgTree", fields: [parentId], references: [id])
@@ -71,11 +75,11 @@ model Organization {
 }
 
 model Group {
-  id        String      @id @default(cuid())
-  name      String      @unique
+  id          String      @id @default(cuid())
+  name        String      @unique
   description String?
-  createdAt DateTime    @default(now())
-  users     UserGroup[]
+  createdAt   DateTime    @default(now())
+  users       UserGroup[]
 }
 
 model UserGroup {
@@ -102,14 +106,14 @@ model Folder {
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
 
-  parent      Folder?            @relation("FolderTree", fields: [parentId], references: [id])
-  children    Folder[]           @relation("FolderTree")
-  defaultClass ObjectClass?      @relation(fields: [defaultClassId], references: [id])
-  permissions FolderPermission[]
-  objects     ObjectEntity[]
+  parent       Folder?            @relation("FolderTree", fields: [parentId], references: [id])
+  children     Folder[]           @relation("FolderTree")
+  defaultClass ObjectClass?       @relation(fields: [defaultClassId], references: [id])
+  permissions  FolderPermission[]
+  objects      ObjectEntity[]
   // R7 — see UserFolderPin. Cascade so a folder delete also wipes user pins
   // pointing at it (avoids dangling references in personalization queries).
-  pins        UserFolderPin[]
+  pins         UserFolderPin[]
 
   @@index([parentId])
   @@index([folderCode])
@@ -156,14 +160,14 @@ model ObjectEntity {
   updatedAt       DateTime    @updatedAt
   deletedAt       DateTime?
 
-  folder     Folder                  @relation(fields: [folderId], references: [id])
-  class      ObjectClass             @relation(fields: [classId], references: [id])
-  owner      User                    @relation("ObjectOwner", fields: [ownerId], references: [id])
-  lockedBy   User?                   @relation("ObjectLocker", fields: [lockedById], references: [id])
+  folder     Folder                 @relation(fields: [folderId], references: [id])
+  class      ObjectClass            @relation(fields: [classId], references: [id])
+  owner      User                   @relation("ObjectOwner", fields: [ownerId], references: [id])
+  lockedBy   User?                  @relation("ObjectLocker", fields: [lockedById], references: [id])
   revisions  Revision[]
   attributes ObjectAttributeValue[]
-  links      LinkedObject[]          @relation("LinkSource")
-  linkedFrom LinkedObject[]          @relation("LinkTarget")
+  links      LinkedObject[]         @relation("LinkSource")
+  linkedFrom LinkedObject[]         @relation("LinkTarget")
   activities ActivityLog[]
   pins       UserObjectPin[]
 
@@ -423,12 +427,12 @@ model LobbyTargetCompany {
 // recipient feedback. Decision flag separates plain comments from explicit
 // approve/reject (used by the lobby status badge in the inbox).
 model LobbyReply {
-  id        String   @id @default(cuid())
+  id        String             @id @default(cuid())
   lobbyId   String
   userId    String
   comment   String
   decision  LobbyReplyDecision @default(COMMENT)
-  createdAt DateTime @default(now())
+  createdAt DateTime           @default(now())
 
   lobby Lobby @relation(fields: [lobbyId], references: [id], onDelete: Cascade)
 
@@ -473,6 +477,29 @@ model ActivityLog {
   @@index([userId, createdAt])
   @@index([objectId, createdAt])
   @@index([action, createdAt])
+}
+
+// R29 / N-1 — Notification feed.
+// `type` reuses the ActivityLog action vocabulary (OBJECT_CHECKIN, APPROVE,
+// LOBBY_REPLY, ...) plus dedicated SYSTEM_* / USER_* codes for events that
+// don't have a 1:1 ActivityLog row. `objectId` is denormalized so the FE
+// can route a click without joining; if the related object is deleted we
+// keep the notification (orphan link is acceptable, history > tidiness).
+model Notification {
+  id        String    @id @default(cuid())
+  userId    String
+  type      String
+  title     String
+  body      String?
+  objectId  String?
+  metadata  Json?
+  readAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+  @@index([userId, readAt])
 }
 
 model SystemLog {
@@ -548,16 +575,16 @@ model ManualChunk {
 // API KEY (외부 연계)
 // ─────────────────────────────────────────────────────────────
 model ApiKey {
-  id          String    @id @default(cuid())
-  name        String
-  keyHash     String    @unique
-  prefix      String    @unique
-  scopes      String[]  // ["integration:read"]
-  isActive    Boolean   @default(true)
-  lastUsedAt  DateTime?
-  expiresAt   DateTime?
-  createdAt   DateTime  @default(now())
-  createdBy   String
+  id         String    @id @default(cuid())
+  name       String
+  keyHash    String    @unique
+  prefix     String    @unique
+  scopes     String[] // ["integration:read"]
+  isActive   Boolean   @default(true)
+  lastUsedAt DateTime?
+  expiresAt  DateTime?
+  createdAt  DateTime  @default(now())
+  createdBy  String
 }
 
 // ─────────────────────────────────────────────────────────────

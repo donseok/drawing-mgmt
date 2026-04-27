@@ -1,21 +1,19 @@
 // GET /api/v1/notifications/unread-count
 //
-// Returns the unread notification count for the bell badge in the header
-// (BUG-012). Until a real Notification table exists we approximate "unread"
-// as "ActivityLog rows for this user in the last 24 hours" — small enough to
-// be useful, bounded so the badge never flashes a huge number.
+// Unread Notification rows for the current user (R29 / N-1). Drives the
+// header bell badge. Capped at 99 so the badge never renders a 4-digit
+// number — anything beyond is "99+" in the FE.
 //
-// Response shape: a bare integer (api-client unwraps `data` so the FE sees
-// `number`).
+// Response shape:
+//   { ok: true, data: { count: number } }
 //
-// Owned by BE-2.
+// Owned by BE-2 — see `_workspace/api_contract.md` §3.4.
 
 import { NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { requireUser } from '@/lib/auth-helpers';
 import { ok } from '@/lib/api-response';
 
-const WINDOW_HOURS = 24;
 const MAX_COUNT = 99;
 
 export async function GET(): Promise<NextResponse> {
@@ -27,11 +25,9 @@ export async function GET(): Promise<NextResponse> {
     throw err;
   }
 
-  const since = new Date(Date.now() - WINDOW_HOURS * 60 * 60 * 1000);
-  const raw = await prisma.activityLog.count({
-    where: { userId: user.id, createdAt: { gte: since } },
+  const raw = await prisma.notification.count({
+    where: { userId: user.id, readAt: null },
   });
 
-  // Cap so the bell badge never has to render a 4-digit number.
-  return ok(Math.min(raw, MAX_COUNT));
+  return ok({ count: Math.min(raw, MAX_COUNT) });
 }
