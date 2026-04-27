@@ -331,6 +331,10 @@ function readLayer(
   let name = '';
   let color = 7;
   let flags = 0;
+  // R37 — DXF group 370 on a LAYER record carries the layer-default line
+  // weight (1/100 mm, with `-3` = LWDEFAULT). Stays optional so test fixtures
+  // and pre-R13 LAYER tables that omit the code parse cleanly.
+  let lineWeight: number | undefined;
   let j = from;
   for (; j < slice.length; j++) {
     const p = slice[j]!;
@@ -338,19 +342,22 @@ function readLayer(
     if (p.code === 2) name = p.value;
     else if (p.code === 62) color = Number.parseInt(p.value, 10) || 7;
     else if (p.code === 70) flags = Number.parseInt(p.value, 10) || 0;
+    else if (p.code === 370) {
+      const n = Number.parseInt(p.value, 10);
+      if (Number.isFinite(n)) lineWeight = n;
+    }
   }
   if (!name) return { layer: null, next: j };
-  return {
-    layer: {
-      name,
-      // Negative color in the LAYER table means the layer is off — we treat
-      // off-layers as visible-but-grey rather than hiding entirely so users
-      // can manually toggle.
-      color: Math.abs(color),
-      frozen: (flags & 1) === 1,
-    },
-    next: j,
+  const layer: DxfLayerInfo = {
+    name,
+    // Negative color in the LAYER table means the layer is off — we treat
+    // off-layers as visible-but-grey rather than hiding entirely so users
+    // can manually toggle.
+    color: Math.abs(color),
+    frozen: (flags & 1) === 1,
   };
+  if (lineWeight !== undefined) layer.lineWeight = lineWeight;
+  return { layer, next: j };
 }
 
 // ── ENTITIES ──────────────────────────────────────────────────────────────
@@ -760,21 +767,38 @@ function readEntity(kind: string, pairs: CodePair[]): DxfEntity | null {
   }
 }
 
-function commonEntityFields(pairs: CodePair[]): { layer: string; color: number } {
+function commonEntityFields(pairs: CodePair[]): {
+  layer: string;
+  color: number;
+  /** Undefined when group 370 is absent — most fixtures, in which case the
+   *  scene builder falls back to a default px width. */
+  lineWeight?: number;
+} {
   let layer = '0';
   let color = 256; // ByLayer
+  let lineWeight: number | undefined;
   for (const p of pairs) {
     if (p.code === 8) layer = p.value;
     else if (p.code === 62) {
       const n = Number.parseInt(p.value, 10);
       if (Number.isFinite(n)) color = n;
+    } else if (p.code === 370) {
+      // R37 V-2 — DXF group 370 (line weight). Negative values are sentinels
+      // (-1=ByLayer, -2=ByBlock, -3=LWDEFAULT); non-negative = 1/100 mm.
+      const n = Number.parseInt(p.value, 10);
+      if (Number.isFinite(n)) lineWeight = n;
     }
   }
-  return { layer, color };
+  const out: { layer: string; color: number; lineWeight?: number } = {
+    layer,
+    color,
+  };
+  if (lineWeight !== undefined) out.lineWeight = lineWeight;
+  return out;
 }
 
 function readLine(pairs: CodePair[]): LineEntity | null {
-  const { layer, color } = commonEntityFields(pairs);
+  const { layer, color, lineWeight } = commonEntityFields(pairs);
   let x1 = 0;
   let y1 = 0;
   let x2 = 0;
@@ -787,17 +811,19 @@ function readLine(pairs: CodePair[]): LineEntity | null {
     else if (p.code === 21) { y2 = parseFloat(p.value); seen |= 8; }
   }
   if (seen !== 0xf) return null;
-  return {
+  const out: LineEntity = {
     kind: 'line',
     layer,
     color,
     p1: { x: x1, y: y1 },
     p2: { x: x2, y: y2 },
   };
+  if (lineWeight !== undefined) out.lineWeight = lineWeight;
+  return out;
 }
 
 function readCircle(pairs: CodePair[]): CircleEntity | null {
-  const { layer, color } = commonEntityFields(pairs);
+  const { layer, color, lineWeight } = commonEntityFields(pairs);
   let cx = NaN;
   let cy = NaN;
   let r = NaN;
@@ -809,11 +835,19 @@ function readCircle(pairs: CodePair[]): CircleEntity | null {
   if (!Number.isFinite(cx) || !Number.isFinite(cy) || !Number.isFinite(r) || r <= 0) {
     return null;
   }
-  return { kind: 'circle', layer, color, center: { x: cx, y: cy }, radius: r };
+  const out: CircleEntity = {
+    kind: 'circle',
+    layer,
+    color,
+    center: { x: cx, y: cy },
+    radius: r,
+  };
+  if (lineWeight !== undefined) out.lineWeight = lineWeight;
+  return out;
 }
 
 function readArc(pairs: CodePair[]): ArcEntity | null {
-  const { layer, color } = commonEntityFields(pairs);
+  const { layer, color, lineWeight } = commonEntityFields(pairs);
   let cx = NaN;
   let cy = NaN;
   let r = NaN;
@@ -836,7 +870,7 @@ function readArc(pairs: CodePair[]): ArcEntity | null {
   ) {
     return null;
   }
-  return {
+  const out: ArcEntity = {
     kind: 'arc',
     layer,
     color,
@@ -845,10 +879,12 @@ function readArc(pairs: CodePair[]): ArcEntity | null {
     startAngle: start,
     endAngle: end,
   };
+  if (lineWeight !== undefined) out.lineWeight = lineWeight;
+  return out;
 }
 
 function readText(pairs: CodePair[]): TextEntity | null {
-  const { layer, color } = commonEntityFields(pairs);
+  const { layer, color, lineWeight } = commonEntityFields(pairs);
   let x = NaN;
   let y = NaN;
   let height = NaN;
@@ -875,7 +911,7 @@ function readText(pairs: CodePair[]): TextEntity | null {
   ) {
     return null;
   }
-  return {
+  const out: TextEntity = {
     kind: 'text',
     layer,
     color,
@@ -885,10 +921,12 @@ function readText(pairs: CodePair[]): TextEntity | null {
     content,
     hAlign,
   };
+  if (lineWeight !== undefined) out.lineWeight = lineWeight;
+  return out;
 }
 
 function readMText(pairs: CodePair[]): TextEntity | null {
-  const { layer, color } = commonEntityFields(pairs);
+  const { layer, color, lineWeight } = commonEntityFields(pairs);
   let x = NaN;
   let y = NaN;
   let height = NaN;
@@ -924,7 +962,7 @@ function readMText(pairs: CodePair[]): TextEntity | null {
     .replace(/[{}]/g, '')
     .trim();
   if (content.length === 0) return null;
-  return {
+  const out: TextEntity = {
     kind: 'text',
     layer,
     color,
@@ -934,6 +972,8 @@ function readMText(pairs: CodePair[]): TextEntity | null {
     content,
     hAlign: 0,
   };
+  if (lineWeight !== undefined) out.lineWeight = lineWeight;
+  return out;
 }
 
 /**
@@ -950,7 +990,7 @@ function readMText(pairs: CodePair[]): TextEntity | null {
  * fall through to the renderer's defaults (ANSI31, 0°, scale 1).
  */
 function readHatch(pairs: CodePair[]): HatchEntity | null {
-  const { layer, color } = commonEntityFields(pairs);
+  const { layer, color, lineWeight } = commonEntityFields(pairs);
   let solid = false;
   let pathCount = 0;
   let patternName: string | undefined;
@@ -1036,11 +1076,12 @@ function readHatch(pairs: CodePair[]): HatchEntity | null {
   if (patternName !== undefined) out.patternName = patternName;
   if (patternAngle !== undefined) out.patternAngle = patternAngle;
   if (patternScale !== undefined) out.patternScale = patternScale;
+  if (lineWeight !== undefined) out.lineWeight = lineWeight;
   return out;
 }
 
 function readLwPolyline(pairs: CodePair[]): PolylineEntity | null {
-  const { layer, color } = commonEntityFields(pairs);
+  const { layer, color, lineWeight } = commonEntityFields(pairs);
   let closed = false;
   const pts: V2[] = [];
   let pendingX: number | null = null;
@@ -1061,7 +1102,15 @@ function readLwPolyline(pairs: CodePair[]): PolylineEntity | null {
     }
   }
   if (pts.length < 2) return null;
-  return { kind: 'polyline', layer, color, points: pts, closed };
+  const out: PolylineEntity = {
+    kind: 'polyline',
+    layer,
+    color,
+    points: pts,
+    closed,
+  };
+  if (lineWeight !== undefined) out.lineWeight = lineWeight;
+  return out;
 }
 
 /**
@@ -1079,7 +1128,7 @@ function readPolylineWithVertices(
   let j = startIdx + 1;
   while (j < slice.length && slice[j]!.code !== 0) j++;
   const headerPairs = slice.slice(startIdx + 1, j);
-  const { layer, color } = commonEntityFields(headerPairs);
+  const { layer, color, lineWeight } = commonEntityFields(headerPairs);
   let flags = 0;
   for (const p of headerPairs) {
     if (p.code === 70) flags = Number.parseInt(p.value, 10) || 0;
@@ -1122,8 +1171,13 @@ function readPolylineWithVertices(
   if (pts.length < 2) {
     return { entity: null, next: j };
   }
-  return {
-    entity: { kind: 'polyline', layer, color, points: pts, closed },
-    next: j,
+  const entity: PolylineEntity = {
+    kind: 'polyline',
+    layer,
+    color,
+    points: pts,
+    closed,
   };
+  if (lineWeight !== undefined) entity.lineWeight = lineWeight;
+  return { entity, next: j };
 }
