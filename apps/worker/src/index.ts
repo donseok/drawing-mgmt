@@ -1,16 +1,18 @@
 // DWG conversion worker entry.
 //
-// Pulls ConversionJob payloads off BullMQ, runs ODA File Converter to produce
-// DXF (and other targets when implemented), stores results under
-// FILE_STORAGE_ROOT/<attachmentId>/, and reports paths back via the result.
+// Two BullMQ Workers run in this process:
+//   1. `dwg-conversion` (CONVERSION_QUEUE_NAME) — DWG → DXF + thumbnail.
+//   2. `pdf-print` (PDF_PRINT_QUEUE_NAME, R31 P-1) — DXF → PDF for printing.
 //
-// PDF generation: NOT YET IMPLEMENTED. ODA File Converter only does DWG↔DXF.
-// PDF requires a separate tool (e.g. LibreCAD/QCad CLI, AutoCAD, or rendering
-// the DXF via a SVG → PDF pipeline). Tracked as a follow-up.
+// Both share the `ConversionJob` row for status (PENDING → PROCESSING →
+// DONE/FAILED) and the same Redis/Prisma singletons.
 //
 // R28 V-INF-4 — adds ConversionJob row state tracking, BullMQ retry policy,
 // and a LibreDWG `dwg2dxf` subprocess fallback when ODA fails. LibreDWG is
 // GPL → subprocess only, never imported as a library.
+//
+// R31 P-1 — adds the `pdf-print` queue + worker. PDF rendering uses pdf-lib
+// (MIT) over our own DXF mapper — no GPL/AGPL deps. See `./pdf.ts`.
 
 import { Worker, type Job } from 'bullmq';
 import { Redis as IORedis } from 'ioredis';
@@ -21,12 +23,17 @@ import { PrismaClient, ConversionStatus } from '@prisma/client';
 import {
   CONVERSION_QUEUE_NAME,
   ConversionJobPayloadSchema,
+  PDF_PRINT_QUEUE_NAME,
+  PdfPrintJobPayloadSchema,
   type ConversionJobPayload,
   type ConversionResult,
+  type PdfPrintJobPayload,
+  type PdfPrintResult,
 } from '@drawing-mgmt/shared/conversion';
 import { dwgToDxf } from './oda.js';
 import { dwgToDxfLibre, LibreDwgUnavailableError } from './libredwg.js';
 import { generateThumbnail } from './thumbnail.js';
+import { generatePdfFromDxf } from './pdf.js';
 
 const log = pino({
   level: process.env.LOG_LEVEL ?? 'info',
@@ -274,9 +281,208 @@ worker.on('failed', (job, err) => {
   log.error({ jobId: job?.data?.jobId, err: err.message }, 'conversion failed');
 });
 
+// ─────────────────────────────────────────────────────────────────────────
+// R31 P-1 — pdf-print queue worker.
+//
+// Consumes PdfPrintJobPayload jobs and runs `generatePdfFromDxf` (pdf-lib
+// MIT, no GPL deps). Uses the same ConversionJob row for status tracking
+// so the admin UI / status polling endpoint don't need a second model.
+//
+// Job lifecycle on the row:
+//   PENDING  (set by enqueuer)
+//     → PROCESSING (we set on entry; bumps `attempt`)
+//       → DONE     (we set on success; sets `finishedAt`)
+//       OR
+//       → FAILED   (we set ONLY on the final attempt; intermediate retries
+//                   keep status=PROCESSING with errorMessage updated so
+//                   admin can spot in-flight retries)
+//
+// Output: <FILE_STORAGE_ROOT>/<attachmentId>/print-<ctb>-<pageSize>.pdf.
+// We don't persist the PDF path on the row — there's no metadata column
+// and the path is deterministic from the payload, so callers can resolve
+// it themselves. Adding a column is tracked as a follow-up if cache hit
+// detection on the API side needs O(1) row reads.
+// ─────────────────────────────────────────────────────────────────────────
+
+async function processPdfPrintJob(
+  job: Job<PdfPrintJobPayload>,
+): Promise<PdfPrintResult> {
+  const startedAt = Date.now();
+  const payload = PdfPrintJobPayloadSchema.parse(job.data);
+  const attemptNum = job.attemptsMade + 1;
+  log.info(
+    {
+      jobId: payload.jobId,
+      attachmentId: payload.attachmentId,
+      ctb: payload.ctb,
+      pageSize: payload.pageSize,
+      attempt: attemptNum,
+    },
+    'pdf-print start',
+  );
+
+  await prisma.conversionJob
+    .update({
+      where: { id: payload.jobId },
+      data: {
+        status: ConversionStatus.PROCESSING,
+        attempt: attemptNum,
+        startedAt: new Date(),
+        errorMessage: null,
+      },
+    })
+    .catch((e) => {
+      log.warn(
+        { jobId: payload.jobId, err: (e as Error).message },
+        'pdf-print row update (PROCESSING) failed',
+      );
+    });
+
+  let pdfOutPath: string | undefined;
+  try {
+    const outDir = path.join(FILE_STORAGE_ROOT, payload.attachmentId);
+    await fs.mkdir(outDir, { recursive: true });
+
+    // Resolve the DXF input. Prefer the pre-converted path on the payload;
+    // fall back to converting from DWG if missing or unreadable.
+    let dxfPath = payload.dxfPath ? path.resolve(payload.dxfPath) : undefined;
+    if (dxfPath) {
+      try {
+        await fs.access(dxfPath);
+      } catch {
+        log.warn(
+          { jobId: payload.jobId, dxfPath },
+          'pdf-print: hinted dxfPath missing, will convert from DWG',
+        );
+        dxfPath = undefined;
+      }
+    }
+    if (!dxfPath) {
+      const sourcePath = path.resolve(payload.storagePath);
+      await fs.access(sourcePath);
+      const conv = await convertDwgToDxf(sourcePath, outDir);
+      dxfPath = conv.dxfOutPath;
+    }
+
+    pdfOutPath = path.join(
+      outDir,
+      `print-${payload.ctb}-${payload.pageSize}.pdf`,
+    );
+    const result = await generatePdfFromDxf(dxfPath, {
+      ctb: payload.ctb,
+      pageSize: payload.pageSize,
+    });
+
+    if (result.entityCount === 0) {
+      // The DXF parsed but had no Phase-1-supported geometry. Surface a
+      // useful error rather than write an empty PDF the user will then
+      // wonder about.
+      throw new Error(
+        `no drawable entities found (skipped kinds: ${result.skippedKinds.join(', ') || 'none'})`,
+      );
+    }
+
+    await fs.writeFile(pdfOutPath, result.pdf);
+    log.info(
+      {
+        jobId: payload.jobId,
+        pdfOutPath,
+        entityCount: result.entityCount,
+        skippedKinds: result.skippedKinds,
+      },
+      'pdf-print rendered',
+    );
+  } catch (err) {
+    const errMessage = err instanceof Error ? err.message : String(err);
+    const isLastAttempt = attemptNum >= (job.opts.attempts ?? 1);
+
+    await prisma.conversionJob
+      .update({
+        where: { id: payload.jobId },
+        data: isLastAttempt
+          ? {
+              status: ConversionStatus.FAILED,
+              errorMessage: errMessage,
+              finishedAt: new Date(),
+            }
+          : {
+              status: ConversionStatus.PROCESSING,
+              errorMessage: errMessage,
+            },
+      })
+      .catch((updateErr) => {
+        log.warn(
+          { jobId: payload.jobId, err: (updateErr as Error).message },
+          'pdf-print row update (FAILED/PROCESSING) failed',
+        );
+      });
+
+    log.error(
+      {
+        jobId: payload.jobId,
+        attempt: attemptNum,
+        isLastAttempt,
+        err: errMessage,
+      },
+      'pdf-print attempt failed',
+    );
+    throw err;
+  }
+
+  await prisma.conversionJob
+    .update({
+      where: { id: payload.jobId },
+      data: {
+        status: ConversionStatus.DONE,
+        finishedAt: new Date(),
+        errorMessage: null,
+      },
+    })
+    .catch((e) => {
+      log.warn(
+        { jobId: payload.jobId, err: (e as Error).message },
+        'pdf-print row update (DONE) failed',
+      );
+    });
+
+  const result: PdfPrintResult = {
+    jobId: payload.jobId,
+    attachmentId: payload.attachmentId,
+    status: 'DONE',
+    pdfPath: pdfOutPath,
+    durationMs: Date.now() - startedAt,
+  };
+  log.info(result, 'pdf-print done');
+  return result;
+}
+
+const pdfPrintWorker = new Worker<PdfPrintJobPayload, PdfPrintResult>(
+  PDF_PRINT_QUEUE_NAME,
+  processPdfPrintJob,
+  {
+    connection,
+    // PDF rendering is CPU-bound (pdf-lib serialization). Keep concurrency
+    // separate from DWG conversion, defaults to 2.
+    concurrency: Number(process.env.PDF_PRINT_CONCURRENCY ?? 2),
+  },
+);
+
+pdfPrintWorker.on('completed', (_job, result) => {
+  log.info(
+    { jobId: result.jobId, durationMs: result.durationMs },
+    'pdf-print job completed',
+  );
+});
+pdfPrintWorker.on('failed', (job, err) => {
+  log.error(
+    { jobId: job?.data?.jobId, err: err.message },
+    'pdf-print failed',
+  );
+});
+
 const shutdown = async (sig: string) => {
   log.info({ sig }, 'worker shutting down');
-  await worker.close();
+  await Promise.all([worker.close(), pdfPrintWorker.close()]);
   await prisma.$disconnect().catch(() => undefined);
   await connection.quit();
   process.exit(0);
@@ -286,7 +492,7 @@ process.on('SIGTERM', () => shutdown('SIGTERM'));
 
 log.info(
   {
-    queue: CONVERSION_QUEUE_NAME,
+    queues: [CONVERSION_QUEUE_NAME, PDF_PRINT_QUEUE_NAME],
     redis: REDIS_URL,
     oda: ODA_CONVERTER_PATH,
     libredwg: LIBREDWG_BIN,
