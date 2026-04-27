@@ -1,20 +1,34 @@
 // DXF entity tree → three.js scene builder.
 //
-// Phase 1 strategy: one BufferGeometry per (layer × geometry kind) bucket.
-// "Per layer" lets us toggle visibility cheaply via Group.visible. "Per kind"
-// keeps line- vs arc-segment math separate so a single LineSegments draw call
-// can render thousands of LINEs without per-entity object overhead. Curved
-// entities (arc, circle) are tessellated to LINE_SEGMENTS_PER_REVOLUTION.
+// Phase 1 strategy: one BufferGeometry per (layer × geometry kind × line
+// weight) bucket. "Per layer" lets us toggle visibility cheaply via
+// Group.visible. "Per kind" keeps line- vs arc-segment math separate so a
+// single draw call can render thousands of LINEs without per-entity object
+// overhead. "Per line weight" (R37 V-2) is required because LineMaterial
+// carries a single `linewidth`; lines with different widths can't share a
+// material without losing the width. Curved entities (arc, circle) are
+// tessellated to LINE_SEGMENTS_PER_REVOLUTION.
+//
+// R37 V-2 — line strokes are drawn with `LineSegments2` + `LineMaterial`
+// (three.js examples/jsm/lines, MIT). LineMaterial implements wide lines as
+// instanced quads in a screen-space shader, which the stock WebGL `LINES`
+// primitive can't do (1px on every desktop GPU). The trade-off is a Vector2
+// `resolution` uniform that we keep in sync with the canvas size — the
+// builder exposes `setResolution(w, h)` for the React layer to call inside
+// the existing ResizeObserver.
 //
 // What we explicitly DON'T do here:
 //   - LOD / per-frame retessellation. Phase 1 picks a single segment count
 //     and lives with it. LOD comes back when zoom-aware rendering ships.
-//   - Line thickness. WebGL's stock LINES are 1px; promoting to Line2 needs
-//     a separate material per layer and is deferred until users ask.
-//   - Text / inserts / hatches. Parser already drops those; the builder just
-//     mirrors that scope.
+//   - Promote HATCH pattern fills to Line2: pattern lines are typically very
+//     dense and the visual noise from 1.5–2 px strokes dominates the scene.
+//     We deliberately keep them on `LineBasicMaterial` (1px) — it's correct,
+//     fast, and matches AutoCAD's pattern rendering.
 
 import * as THREE from 'three';
+import { LineSegments2 } from 'three/examples/jsm/lines/LineSegments2.js';
+import { LineSegmentsGeometry } from 'three/examples/jsm/lines/LineSegmentsGeometry.js';
+import { LineMaterial } from 'three/examples/jsm/lines/LineMaterial.js';
 
 import {
   type ArcEntity,
@@ -36,6 +50,60 @@ import {
  *  on industrial drawings (which routinely contain thousands of holes). */
 const SEGMENTS_PER_REVOLUTION = 64;
 
+/**
+ * R37 V-2 — line-weight conversion from DXF (1/100 mm) to CSS pixels.
+ *
+ * Anchors picked from R37 spec:
+ *   - 0.13 mm → 0.5 px  (thin construction lines)
+ *   - 0.50 mm → 2.0 px  (standard outline)
+ *   - 1.00 mm → 4.0 px  (heavy callouts)
+ *
+ * The relationship is linear at `px = 4 × mm`, then floored at 1.0 so even
+ * the thinnest lines stay legible — pre-clamp 0.5 px sub-pixels look faded
+ * on a HiDPI display because the alpha-coverage shader can't bias toward
+ * either side of the line. 1 px is also the floor for stock browser stroke
+ * antialiasing so it matches user expectations from PDF/print viewers.
+ */
+const MM_TO_PX = 4;
+/** Default px width when a line has no DXF line-weight (or `-3` LWDEFAULT). */
+const DEFAULT_LINEWEIGHT_PX = 1.5;
+/** Floor so very thin DXF weights still render visibly on screen. */
+const MIN_LINEWEIGHT_PX = 1.0;
+/** Initial value for the LineMaterial.resolution Vector2. The DwgViewer
+ *  React component overwrites this immediately via setResolution(); the
+ *  default keeps SSR / unit tests from dividing by zero. */
+const DEFAULT_RESOLUTION_W = 1024;
+const DEFAULT_RESOLUTION_H = 768;
+
+/**
+ * Resolve an entity's lineWeight against the layer-default. Returns CSS px.
+ *
+ * @param entityWeight  raw value of `EntityBase.lineWeight` or `undefined`
+ * @param layerWeight   raw value of the entity's layer's `lineWeight`,
+ *                       or `undefined`
+ *
+ * Order of precedence:
+ *   1. Entity overrides: any `>= 0` value wins outright.
+ *   2. ByLayer (`-1`, undefined): fall through to the layer's own weight.
+ *   3. ByBlock (`-2`): same as ByLayer for our purposes (INSERT expansion
+ *      already collapsed the block context into the entity's resolved
+ *      colour/layer; we treat ByBlock as ByLayer at this point).
+ *   4. LWDEFAULT (`-3`) or no information at all → DEFAULT_LINEWEIGHT_PX.
+ */
+export function resolveLineWeightPx(
+  entityWeight: number | undefined,
+  layerWeight: number | undefined,
+): number {
+  if (typeof entityWeight === 'number' && entityWeight >= 0) {
+    return Math.max(MIN_LINEWEIGHT_PX, (entityWeight / 100) * MM_TO_PX);
+  }
+  // Entity says ByLayer / ByBlock / LWDEFAULT / nothing — try the layer.
+  if (typeof layerWeight === 'number' && layerWeight >= 0) {
+    return Math.max(MIN_LINEWEIGHT_PX, (layerWeight / 100) * MM_TO_PX);
+  }
+  return DEFAULT_LINEWEIGHT_PX;
+}
+
 export interface SceneLayer {
   name: string;
   /** Layer color resolved to 0xRRGGBB (used when entities are ByLayer). */
@@ -50,6 +118,20 @@ export interface SceneLayer {
 export interface BuiltScene {
   scene: THREE.Scene;
   layers: SceneLayer[];
+  /**
+   * R37 V-2 — every `LineMaterial` instance the builder created. The React
+   * shell uses this list to push the canvas resolution into each material's
+   * `resolution` uniform inside its ResizeObserver. Exposed (rather than
+   * giving callers a setter) so tests can directly verify the materials
+   * exist with the expected linewidths without spinning up a renderer.
+   */
+  lineMaterials: LineMaterial[];
+  /**
+   * Update every owned LineMaterial's `resolution` uniform. Pass the canvas
+   * size in CSS pixels — three.js multiplies internally by the device pixel
+   * ratio when the renderer's setPixelRatio() has been configured.
+   */
+  setResolution: (widthPx: number, heightPx: number) => void;
   /** All disposable geometries / materials owned by this build. The React
    *  component calls `dispose()` to release GPU resources on unmount or when
    *  swapping the source DXF. */
@@ -70,12 +152,20 @@ export function buildScene(doc: DxfDocument): BuiltScene {
   const layersByName = new Map<string, DxfLayerInfo>();
   for (const l of doc.layers) layersByName.set(l.name, l);
 
-  // Bucket entities by (layer, kind) — separate buckets for lines vs curve
-  // segments so each gets its own draw call.
-  type BucketKey = `${string}::${'lines' | 'curves'}`;
+  // Bucket entities by (layer, kind, line weight) — separate buckets for
+  // lines vs curve segments so each gets its own draw call, and one bucket
+  // per resolved lineweight so a single LineMaterial can render the whole
+  // batch (LineMaterial.linewidth is per-material, not per-vertex).
+  //
+  // Quantising the px width to 2 decimal places keeps the bucket count
+  // bounded even when the input has many slightly-different DXF weights —
+  // e.g. 0.13 mm vs 0.15 mm differ by 0.08 px and merge into the same
+  // bucket, which the eye can't distinguish anyway.
+  type BucketKey = string; // `${layer}::${'lines'|'curves'}::${pxKey}`
   interface Bucket {
     layer: string;
     color: number;
+    lineWeightPx: number;
     /** Flat XY pairs ready to be packed into a Float32Array. */
     positions: number[];
   }
@@ -89,12 +179,20 @@ export function buildScene(doc: DxfDocument): BuiltScene {
   // THREE.ShapeGeometry. Like text, each one becomes its own mesh.
   const hatchesByLayer = new Map<string, HatchEntity[]>();
 
-  const getBucket = (layer: string, kind: 'lines' | 'curves', color: number) => {
+  const getBucket = (
+    layer: string,
+    kind: 'lines' | 'curves',
+    color: number,
+    lineWeightPx: number,
+  ) => {
     layerNames.add(layer);
-    const key: BucketKey = `${layer}::${kind}`;
+    // Quantise to 2 decimals so 1.000001 vs 1.000002 don't fragment the
+    // bucket map.
+    const pxKey = lineWeightPx.toFixed(2);
+    const key: BucketKey = `${layer}::${kind}::${pxKey}`;
     const existing = buckets.get(key);
     if (existing) return existing;
-    const next: Bucket = { layer, color, positions: [] };
+    const next: Bucket = { layer, color, lineWeightPx, positions: [] };
     buckets.set(key, next);
     return next;
   };
@@ -129,6 +227,10 @@ export function buildScene(doc: DxfDocument): BuiltScene {
   const sceneLayers: SceneLayer[] = [];
   const disposables: { geometry: THREE.BufferGeometry; material: THREE.Material }[] = [];
   const textDisposables: TextDisposable[] = [];
+  // R37 V-2 — every Line2 material the builder creates so the React layer
+  // can update `resolution` on each resize. Hatch-pattern fills/outlines
+  // intentionally stay on plain `LineBasicMaterial` and aren't tracked here.
+  const lineMaterials: LineMaterial[] = [];
   const THREE_NS = THREE; // alias so the inner buildTextMesh closure reads cleaner
 
   // Stable ordering: LAYER-table order first, then any anonymous layers in
@@ -149,21 +251,26 @@ export function buildScene(doc: DxfDocument): BuiltScene {
     group.name = `layer:${name}`;
     group.visible = meta ? !meta.frozen : true;
 
-    const linesBucket = buckets.get(`${name}::lines`);
-    if (linesBucket && linesBucket.positions.length > 0) {
-      const mat = makeLineMaterial(linesBucket.color, layerColor);
-      const geom = positionsToBufferGeometry(linesBucket.positions);
-      const mesh = new THREE.LineSegments(geom, mat);
-      mesh.userData.dxfKind = 'lines';
-      group.add(mesh);
-      disposables.push({ geometry: geom, material: mat });
-    }
-    const curvesBucket = buckets.get(`${name}::curves`);
-    if (curvesBucket && curvesBucket.positions.length > 0) {
-      const mat = makeLineMaterial(curvesBucket.color, layerColor);
-      const geom = positionsToBufferGeometry(curvesBucket.positions);
-      const mesh = new THREE.LineSegments(geom, mat);
-      mesh.userData.dxfKind = 'curves';
+    // R37 V-2 — emit one Line2 mesh per (layer, kind, line weight) bucket.
+    // Iterate `buckets` rather than fishing keys directly so the new
+    // pxKey-bearing key format stays an implementation detail.
+    for (const [key, bucket] of buckets) {
+      if (bucket.layer !== name) continue;
+      if (bucket.positions.length === 0) continue;
+      // Key shape: `${layer}::${kind}::${px}`. Pull the kind back out so
+      // userData stays stable for any consumer that filters meshes by kind.
+      const kindMatch = /::(lines|curves)::/.exec(key);
+      const kind = (kindMatch?.[1] ?? 'lines') as 'lines' | 'curves';
+      const mat = makeLineMaterial(bucket.color, layerColor, bucket.lineWeightPx);
+      lineMaterials.push(mat);
+      const geom = positionsToLineSegmentsGeometry(bucket.positions);
+      const mesh = new LineSegments2(geom, mat);
+      // LineSegments2 uses an InstancedBufferGeometry whose default
+      // boundingSphere isn't recomputed automatically. We compute it once
+      // here so frustum culling works correctly without forcing a per-frame
+      // recompute.
+      geom.computeBoundingSphere();
+      mesh.userData.dxfKind = kind;
       group.add(mesh);
       disposables.push({ geometry: geom, material: mat });
     }
@@ -200,7 +307,11 @@ export function buildScene(doc: DxfDocument): BuiltScene {
           const fbColor = aciToRgb(
             h.color === 256 || h.color === 0 ? layerColor : h.color,
           );
-          const fbBucket = getBucket(name, 'lines', fbColor);
+          // Boundary outlines use the hatch's resolved line weight (or the
+          // layer default) so they keep the same visual emphasis the hatch
+          // would have had at proper rendering time.
+          const fbWeight = resolveLineWeightPx(h.lineWeight, meta?.lineWeight);
+          const fbBucket = getBucket(name, 'lines', fbColor, fbWeight);
           for (const loop of h.loops) {
             for (let li = 0; li < loop.length - 1; li++) {
               const a = loop[li]!;
@@ -234,6 +345,17 @@ export function buildScene(doc: DxfDocument): BuiltScene {
   return {
     scene,
     layers: sceneLayers,
+    lineMaterials,
+    setResolution(widthPx: number, heightPx: number) {
+      // LineMaterial expects the *render target* resolution in CSS pixels
+      // (it does its own dpr math). Guard against zero/NaN inputs that would
+      // make the shader blow up — return early instead of writing garbage.
+      if (!Number.isFinite(widthPx) || !Number.isFinite(heightPx)) return;
+      if (widthPx <= 0 || heightPx <= 0) return;
+      for (const m of lineMaterials) {
+        m.resolution.set(widthPx, heightPx);
+      }
+    },
     dispose() {
       for (const d of disposables) {
         d.geometry.dispose();
@@ -261,9 +383,15 @@ interface TextDisposable {
 function addEntity(
   e: DxfEntity,
   layersByName: Map<string, DxfLayerInfo>,
-  getBucket: (layer: string, kind: 'lines' | 'curves', color: number) => {
+  getBucket: (
+    layer: string,
+    kind: 'lines' | 'curves',
+    color: number,
+    lineWeightPx: number,
+  ) => {
     layer: string;
     color: number;
+    lineWeightPx: number;
     positions: number[];
   },
   addText: (text: TextEntity) => void,
@@ -278,25 +406,27 @@ function addEntity(
       ? (layerMeta?.color ?? 7)
       : e.color;
   const colorRgb = aciToRgb(resolvedAci);
+  // R37 V-2 — resolve the entity's line weight against its layer default.
+  const lineWeightPx = resolveLineWeightPx(e.lineWeight, layerMeta?.lineWeight);
 
   switch (e.kind) {
     case 'line': {
-      const bucket = getBucket(e.layer, 'lines', colorRgb);
+      const bucket = getBucket(e.layer, 'lines', colorRgb, lineWeightPx);
       pushLineSegment(bucket.positions, e);
       break;
     }
     case 'polyline': {
-      const bucket = getBucket(e.layer, 'lines', colorRgb);
+      const bucket = getBucket(e.layer, 'lines', colorRgb, lineWeightPx);
       pushPolyline(bucket.positions, e);
       break;
     }
     case 'circle': {
-      const bucket = getBucket(e.layer, 'curves', colorRgb);
+      const bucket = getBucket(e.layer, 'curves', colorRgb, lineWeightPx);
       pushCircle(bucket.positions, e);
       break;
     }
     case 'arc': {
-      const bucket = getBucket(e.layer, 'curves', colorRgb);
+      const bucket = getBucket(e.layer, 'curves', colorRgb, lineWeightPx);
       pushArc(bucket.positions, e);
       break;
     }
@@ -825,22 +955,49 @@ function pushArc(out: number[], e: ArcEntity): void {
   }
 }
 
-function positionsToBufferGeometry(positions: number[]): THREE.BufferGeometry {
-  const geom = new THREE.BufferGeometry();
-  // Float32Array for GPU upload — flat copy beats per-vertex Vector3 hot
-  // path which is what the spec warns about.
-  const arr = new Float32Array(positions);
-  geom.setAttribute('position', new THREE.BufferAttribute(arr, 3));
+/**
+ * R37 V-2 — pack a flat XY-pair list into a `LineSegmentsGeometry` ready for
+ * `LineSegments2`. The geometry's `setPositions` accepts a Float32Array of
+ * (start.xyz, end.xyz) pairs — same layout as our existing buckets — so the
+ * call is a one-liner.
+ */
+function positionsToLineSegmentsGeometry(positions: number[]): LineSegmentsGeometry {
+  const geom = new LineSegmentsGeometry();
+  // setPositions copies the data into an InstancedInterleavedBuffer. We pass
+  // a Float32Array directly to skip a redundant intermediate copy.
+  geom.setPositions(new Float32Array(positions));
   return geom;
 }
 
-function makeLineMaterial(rgb: number, layerFallbackAci: number): THREE.LineBasicMaterial {
+function makeLineMaterial(
+  rgb: number,
+  layerFallbackAci: number,
+  linewidthPx: number,
+): LineMaterial {
   // Caller passes the *already resolved* RGB (entity color); we only fall
   // back to the layer color when the resolution returned the document
   // foreground default (which means "no color supplied"). Most callers
   // supply real colors and skip the branch.
   const color = rgb === DEFAULT_FOREGROUND ? aciToRgb(layerFallbackAci) : rgb;
-  return new THREE.LineBasicMaterial({ color, linewidth: 1 });
+  // LineMaterial requires a non-zero `resolution`; the React shell pushes
+  // the live canvas size in via `BuiltScene.setResolution` immediately
+  // after build, but we initialise to a sane default so any pre-mount
+  // `boundingSphere` recompute / unit test doesn't divide by zero.
+  const mat = new LineMaterial({
+    color,
+    linewidth: linewidthPx,
+    // Disabled: when true, `linewidth` is interpreted in world units and
+    // the resolution uniform stops being read. We want screen-space pixels
+    // so the stroke stays the same physical thickness regardless of zoom.
+    worldUnits: false,
+    // Tested with `transparent: true` first; the fragment shader writes
+    // alpha-coverage at the edge anyway and turning it off keeps depth
+    // ordering simple (no depthWrite guard required).
+    transparent: false,
+    dashed: false,
+  });
+  mat.resolution = new THREE.Vector2(DEFAULT_RESOLUTION_W, DEFAULT_RESOLUTION_H);
+  return mat;
 }
 
 /** Helper exported for tests / measurement code that needs to know the

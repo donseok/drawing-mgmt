@@ -15,6 +15,21 @@ interface EntityBase {
   layer: string;
   /** AutoCAD Color Index. 256 = ByLayer, 0 = ByBlock. */
   color: number;
+  /**
+   * R37 V-2 — DXF group code 370 (LineWeight) value.
+   *
+   * Encoding follows the DXF spec:
+   *   - `-1` = ByLayer (resolve from layer's lineWeight)
+   *   - `-2` = ByBlock
+   *   - `-3` = LWDEFAULT (use the document default, currently treated as
+   *     ByLayer)
+   *   - any other non-negative integer = thickness in **1/100 mm**
+   *     (e.g. `13` ≡ 0.13 mm, `50` ≡ 0.50 mm, `211` ≡ 2.11 mm)
+   *
+   * Optional because pre-R37 DXFs the parser saw without group 370 still
+   * round-trip — the scene builder falls back to a sensible default px width.
+   */
+  lineWeight?: number;
 }
 
 export interface LineEntity extends EntityBase {
@@ -97,6 +112,13 @@ export interface DxfLayerInfo {
   color: number;
   /** True when DXF flag bit 1 is set (layer frozen / hidden). */
   frozen: boolean;
+  /**
+   * Layer-default line weight (DXF group 370 on the LAYER record). Same
+   * encoding as `EntityBase.lineWeight` — `-3` (LWDEFAULT) is the most
+   * common value here. Optional so older files / test fixtures without the
+   * record still type-check.
+   */
+  lineWeight?: number;
 }
 
 export interface DxfDocument {

@@ -170,12 +170,22 @@ export const DwgViewer = forwardRef<DwgViewerHandle, DwgViewerProps>(
           const detachCam = cam.attach(renderer.domElement, requestRender);
           cleanups.push(detachCam);
 
+          // R37 V-2 — push the initial canvas size into every Line2 material
+          // so the screen-space wide-line shader has a non-default resolution
+          // before the first frame. Subsequent updates flow through the
+          // ResizeObserver below.
+          built.setResolution(rect.width, rect.height);
+
           // ResizeObserver keeps the renderer + camera frustum in sync when
           // the container changes size (sidebar collapse, fullscreen, etc.).
           const ro = new ResizeObserver(() => {
             const r = container.getBoundingClientRect();
             renderer.setSize(r.width, r.height, false);
             cam.resize(r.width, r.height);
+            // Resolution is the only LineMaterial uniform that depends on
+            // viewport size; updating it here keeps wide-line widths stable
+            // across sidebar collapses, fullscreen toggles, etc.
+            built.setResolution(r.width, r.height);
             requestRender();
           });
           ro.observe(container);
