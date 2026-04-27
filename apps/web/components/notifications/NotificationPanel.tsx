@@ -1,53 +1,64 @@
 'use client';
 
 import * as React from 'react';
-import { BellOff } from 'lucide-react';
+import { BellOff, Check } from 'lucide-react';
 
-import { PopoverPanel } from '@/components/ui/PopoverPanel';
 import { ScrollArea } from '@/components/ui/scroll-area';
+import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { cn } from '@/lib/cn';
 
 /**
- * NotificationPanel — Header bell popover that lists in-app notifications.
+ * NotificationPanel — R29 §B.
  *
- * Built on top of `<PopoverPanel>`. Pure presentational shell:
- *   - The list of `items` is passed in (BE-2 supplies the data via FE-2).
- *   - `onMarkAllRead` is the consumer's hook to call the BE.
- *   - `onItemClick` is fired when a row is activated (used to mark-as-read
- *     and/or navigate via `item.href`).
+ * The previous (R6) build was a presentational shell wrapped in
+ * `<PopoverPanel>`; the new build is the popover *body* only. The bell
+ * (`<NotificationBell>`) keeps owning the popover root + trigger and renders
+ * `<NotificationPanelBody>` as `<PopoverContent>` children. This split is
+ * what lets the bell mount/unmount the body so polling/queries can suspend
+ * while closed.
  *
- * Layout:
- *   ┌─────────────────────────────────────┐
- *   │ 알림                  모두 읽음 처리 │ ← header
- *   ├─────────────────────────────────────┤
- *   │ ● 결재 요청이 도착했습니다  3분 전  │
- *   │   본문 한 줄 클램프…                │ ← scrollable list
- *   │ ─────────────────────────────────── │
- *   │   체크인 완료              1시간 전 │
- *   └─────────────────────────────────────┘
+ * Layout (380×680):
+ *   ┌─────────────────────────────────────────┐
+ *   │ 알림   [3]                  모두 읽음   │ 40
+ *   ├─────────────────────────────────────────┤
+ *   │ [전체  •  읽지 않음]                    │ 36
+ *   ├─────────────────────────────────────────┤
+ *   │ ● 결재 요청이 도착되었습니다 ...        │ list (max ~560)
+ *   │ ─────────────────────────────────────  │
+ *   │   김지원이 회신했습니다 ...              │
+ *   └─────────────────────────────────────────┘
  *
- * Empty state: centered icon + "새로운 알림이 없습니다."
+ * Mark-read / mark-all-read mutations live in the consumer (the bell). This
+ * component is purely presentational + emits intent events.
  */
+
+export type NotificationFilter = 'all' | 'unread';
+
 export interface NotificationItem {
   id: string;
+  type: string;
   title: string;
   body?: string;
   /** ISO 8601 timestamp; rendered as relative ("3분 전") if recent. */
   ts: string;
   read: boolean;
-  /** Optional jump-to URL handled by the consumer. */
-  href?: string;
+  /** When set, clicking the row navigates to `/objects/{objectId}`. */
+  objectId?: string;
 }
 
-export interface NotificationPanelProps {
-  /** Bell button (or any element) that opens the panel. */
-  trigger: React.ReactNode;
-  /** Notifications to render. Pass `[]` to show the empty state. */
-  items: NotificationItem[];
-  /** Called when the "모두 읽음 처리" button is clicked. */
-  onMarkAllRead?: () => void;
-  /** Called when an item is activated (click / Enter). */
-  onItemClick?: (id: string) => void;
+export interface NotificationPanelBodyProps {
+  filter: NotificationFilter;
+  onFilterChange: (next: NotificationFilter) => void;
+  /** Pages from `useInfiniteQuery`; flatten + render in order. */
+  pages: NotificationItem[][];
+  unreadCount: number;
+  isPending: boolean;
+  isError: boolean;
+  hasNextPage: boolean;
+  isFetchingNextPage?: boolean;
+  onLoadMore: () => void;
+  onItemClick: (item: NotificationItem) => void;
+  onMarkAllRead: () => void;
 }
 
 /** Format an ISO timestamp as a Korean relative-time string. */
@@ -63,82 +74,174 @@ function formatRelativeKo(iso: string, now: Date = new Date()): string {
   if (hr < 24) return `${hr}시간 전`;
   const day = Math.floor(hr / 24);
   if (day < 7) return `${day}일 전`;
-  // Older — fall back to YYYY-MM-DD
   const y = then.getFullYear();
   const m = String(then.getMonth() + 1).padStart(2, '0');
   const d = String(then.getDate()).padStart(2, '0');
   return `${y}-${m}-${d}`;
 }
 
-export function NotificationPanel({
-  trigger,
-  items,
-  onMarkAllRead,
+export function NotificationPanelBody({
+  filter,
+  onFilterChange,
+  pages,
+  unreadCount,
+  isPending,
+  isError,
+  hasNextPage,
+  isFetchingNextPage,
+  onLoadMore,
   onItemClick,
-}: NotificationPanelProps): JSX.Element {
-  const hasUnread = items.some((it) => !it.read);
-  const isEmpty = items.length === 0;
+  onMarkAllRead,
+}: NotificationPanelBodyProps): JSX.Element {
+  const items = React.useMemo(() => pages.flat(), [pages]);
+  const isEmpty = !isPending && !isError && items.length === 0;
+
+  // Auto-load on scroll: the sentinel near the bottom triggers `onLoadMore`
+  // once visible. Cheap IntersectionObserver — no library.
+  const sentinelRef = React.useRef<HTMLDivElement | null>(null);
+  React.useEffect(() => {
+    const el = sentinelRef.current;
+    if (!el || !hasNextPage || isFetchingNextPage) return;
+    const io = new IntersectionObserver(
+      (entries) => {
+        for (const entry of entries) {
+          if (entry.isIntersecting) {
+            onLoadMore();
+            break;
+          }
+        }
+      },
+      { rootMargin: '0px 0px 100px 0px' },
+    );
+    io.observe(el);
+    return () => io.disconnect();
+  }, [hasNextPage, isFetchingNextPage, onLoadMore]);
 
   return (
-    <PopoverPanel
-      trigger={trigger}
-      align="end"
-      side="bottom"
-      className="w-[360px] p-0"
+    <div
+      role="region"
+      aria-label="알림 목록"
+      className="flex w-[380px] flex-col"
     >
-      <div role="region" aria-label="알림 목록" className="flex flex-col">
-        {/* Header */}
-        <header className="flex h-10 items-center justify-between border-b border-border px-3">
+      {/* Header — title + unread badge + 모두 읽음 */}
+      <header className="flex h-10 items-center justify-between border-b border-border px-3">
+        <div className="flex items-center gap-2">
           <h2 className="text-sm font-semibold text-fg">알림</h2>
-          <button
-            type="button"
-            onClick={onMarkAllRead}
-            disabled={!hasUnread || !onMarkAllRead}
-            className={cn(
-              'text-xs font-medium text-brand transition-colors',
-              'hover:text-brand-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded-sm px-1.5 py-0.5',
-              'disabled:pointer-events-none disabled:opacity-40',
-            )}
-          >
-            모두 읽음 처리
-          </button>
-        </header>
+          {unreadCount > 0 ? (
+            <span
+              aria-label={`읽지 않은 알림 ${unreadCount}건`}
+              className="inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-brand px-1.5 text-[11px] font-semibold leading-none text-brand-foreground"
+            >
+              {unreadCount > 99 ? '99+' : unreadCount}
+            </span>
+          ) : null}
+        </div>
+        <button
+          type="button"
+          onClick={onMarkAllRead}
+          disabled={unreadCount === 0}
+          className={cn(
+            'inline-flex h-7 items-center gap-1 rounded px-2 text-xs text-fg-muted',
+            'hover:bg-bg-muted hover:text-fg',
+            'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+            'disabled:pointer-events-none disabled:opacity-40',
+          )}
+          aria-disabled={unreadCount === 0}
+        >
+          <Check className="h-3.5 w-3.5" />
+          모두 읽음
+        </button>
+      </header>
 
-        {/* Body */}
-        {isEmpty ? (
-          <div className="flex flex-col items-center justify-center gap-2 px-4 py-12 text-center">
-            <BellOff
-              className="h-8 w-8 text-fg-subtle"
-              strokeWidth={1.5}
-              aria-hidden="true"
-            />
-            <p className="text-sm text-fg-muted">새로운 알림이 없습니다.</p>
-          </div>
-        ) : (
-          <ScrollArea className="max-h-[480px]">
-            <ul role="list" className="divide-y divide-border">
-              {items.map((item) => (
-                <NotificationRow
-                  key={item.id}
-                  item={item}
-                  onClick={() => onItemClick?.(item.id)}
-                />
-              ))}
-            </ul>
-          </ScrollArea>
-        )}
-      </div>
-    </PopoverPanel>
+      {/* Filter tabs */}
+      <Tabs
+        value={filter}
+        onValueChange={(v) => onFilterChange(v as NotificationFilter)}
+      >
+        <TabsList className="h-9 w-full justify-start gap-2 border-b border-border px-3">
+          <TabsTrigger value="all" className="h-7 px-2 text-xs">
+            전체
+          </TabsTrigger>
+          <TabsTrigger value="unread" className="h-7 px-2 text-xs">
+            읽지 않음
+          </TabsTrigger>
+        </TabsList>
+      </Tabs>
+
+      {/* Body */}
+      {isPending ? (
+        <ul className="divide-y divide-border">
+          {Array.from({ length: 5 }).map((_, i) => (
+            <li key={i} className="flex items-start gap-2 px-3 py-2.5">
+              <div className="mt-1.5 h-2 w-2 shrink-0 rounded-full bg-bg-muted" />
+              <div className="flex-1 space-y-1.5">
+                <div className="h-3 w-3/4 rounded bg-bg-muted" />
+                <div className="h-3 w-1/2 rounded bg-bg-muted" />
+              </div>
+            </li>
+          ))}
+        </ul>
+      ) : isError ? (
+        <div className="flex flex-col items-center justify-center gap-1 px-4 py-8 text-center">
+          <p className="text-sm text-danger">알림을 불러오지 못했습니다</p>
+        </div>
+      ) : isEmpty ? (
+        <div className="flex flex-col items-center justify-center gap-2 px-4 py-12 text-center">
+          <BellOff
+            className="h-8 w-8 text-fg-subtle"
+            strokeWidth={1.5}
+            aria-hidden="true"
+          />
+          <p className="text-sm text-fg-muted">
+            {filter === 'unread'
+              ? '읽지 않은 알림이 없습니다.'
+              : '새로운 알림이 없습니다.'}
+          </p>
+          {filter === 'unread' ? (
+            <button
+              type="button"
+              onClick={() => onFilterChange('all')}
+              className="text-xs text-brand hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded px-1"
+            >
+              전체 보기
+            </button>
+          ) : null}
+        </div>
+      ) : (
+        <ScrollArea className="max-h-[560px]">
+          <ul role="list" className="divide-y divide-border">
+            {items.map((item) => (
+              <NotificationRow
+                key={item.id}
+                item={item}
+                onClick={() => onItemClick(item)}
+              />
+            ))}
+          </ul>
+          {hasNextPage ? (
+            <div
+              ref={sentinelRef}
+              className="flex h-9 items-center justify-center px-3 text-[11px] text-fg-subtle"
+            >
+              {isFetchingNextPage ? '불러오는 중…' : ''}
+            </div>
+          ) : (
+            <p className="px-3 py-2 text-center text-[11px] text-fg-subtle">
+              더 이상 알림이 없습니다.
+            </p>
+          )}
+        </ScrollArea>
+      )}
+    </div>
   );
 }
 
-function NotificationRow({
-  item,
-  onClick,
-}: {
+interface RowProps {
   item: NotificationItem;
   onClick: () => void;
-}): JSX.Element {
+}
+
+function NotificationRow({ item, onClick }: RowProps): JSX.Element {
   return (
     <li>
       <button
@@ -148,14 +251,13 @@ function NotificationRow({
           'group relative flex w-full items-start gap-2 px-3 py-2.5 text-left',
           'transition-colors hover:bg-bg-muted',
           'focus-visible:outline-none focus-visible:bg-bg-muted',
-          !item.read && 'bg-bg-subtle',
+          !item.read && 'bg-brand/5',
         )}
       >
-        {/* Unread dot */}
         <span
           aria-hidden="true"
           className={cn(
-            'mt-1.5 inline-block h-2 w-2 shrink-0 rounded-full',
+            'mt-1.5 inline-block h-1.5 w-1.5 shrink-0 rounded-full',
             !item.read ? 'bg-brand' : 'bg-transparent',
           )}
         />
@@ -177,7 +279,14 @@ function NotificationRow({
             </time>
           </div>
           {item.body ? (
-            <p className="truncate text-xs text-fg-muted">{item.body}</p>
+            <p
+              className={cn(
+                'truncate text-xs',
+                !item.read ? 'text-fg-muted' : 'text-fg-subtle',
+              )}
+            >
+              {item.body}
+            </p>
           ) : null}
         </div>
         {!item.read ? <span className="sr-only">읽지 않은 알림</span> : null}

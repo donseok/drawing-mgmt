@@ -2,8 +2,14 @@
 
 import * as React from 'react';
 import Link from 'next/link';
-import { Bell, Check, Settings2 } from 'lucide-react';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useRouter } from 'next/navigation';
+import { Bell, Settings2 } from 'lucide-react';
+import {
+  useInfiniteQuery,
+  useMutation,
+  useQuery,
+  useQueryClient,
+} from '@tanstack/react-query';
 import {
   Popover,
   PopoverContent,
@@ -12,84 +18,238 @@ import {
 import { cn } from '@/lib/cn';
 import { queryKeys } from '@/lib/queries';
 import { api, ApiError } from '@/lib/api-client';
-import { activityLabel } from '@/lib/activity-labels';
+import {
+  NotificationPanelBody,
+  type NotificationFilter,
+  type NotificationItem,
+} from '@/components/notifications/NotificationPanel';
 
-// BE notification shape — synthesized from ActivityLog rows on the server.
-// `read` is always false today; the schema has no Notification table so
-// mark-read is a no-op success and we maintain the read state locally.
-interface NotificationItemDTO {
-  id: string;
-  type: string;
-  title: string;
-  body: string;
-  ts: string;
-  read: boolean;
+/**
+ * NotificationBell — header trigger + popover.
+ *
+ * R29 §B replaces the R6 fake-mark-read flow:
+ *   - `GET /api/v1/notifications` is now real (Notification table) with
+ *     cursor pagination + `unreadOnly` filter.
+ *   - `POST /api/v1/notifications/{id}/read` and `/read-all` actually move
+ *     `readAt`. We use optimistic updates for both so the dot/count flip
+ *     immediately on click.
+ *   - The panel body is `<NotificationPanelBody>` from `notifications/`.
+ *     Bell owns: state, queries, mutations, navigation. Body owns: layout.
+ *
+ * Polling cadence (PM-DECISION-9 default = 30s):
+ *   - Panel closed → only `unread-count` polls @ 30s.
+ *   - Panel open → list refetches on focus; count keeps the same cadence.
+ */
+
+interface NotificationListEnvelope {
+  data: NotificationItem[];
+  meta: { nextCursor: string | null; unreadCount?: number };
 }
 
-function formatTime(iso: string): string {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return '';
-  const now = new Date();
-  const sameDay =
-    d.getFullYear() === now.getFullYear() &&
-    d.getMonth() === now.getMonth() &&
-    d.getDate() === now.getDate();
-  if (sameDay) {
-    const pad = (n: number) => String(n).padStart(2, '0');
-    return `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+interface UnreadCountResponse {
+  count: number;
+}
+
+async function fetchNotifications(params: {
+  unreadOnly?: boolean;
+  cursor?: string;
+  limit?: number;
+}): Promise<NotificationListEnvelope> {
+  const url = new URL('/api/v1/notifications', window.location.origin);
+  if (params.unreadOnly) url.searchParams.set('unreadOnly', '1');
+  if (params.cursor) url.searchParams.set('cursor', params.cursor);
+  url.searchParams.set('limit', String(params.limit ?? 30));
+  const res = await fetch(url.toString(), {
+    credentials: 'include',
+    headers: { Accept: 'application/json' },
+  });
+  const text = await res.text();
+  let parsed: unknown;
+  try {
+    parsed = text ? JSON.parse(text) : undefined;
+  } catch {
+    parsed = undefined;
   }
-  // YYYY-MM-DD for older entries
-  return iso.slice(0, 10);
+  if (!res.ok) {
+    const env = (parsed as { error?: { code?: string; message?: string } } | undefined)
+      ?.error;
+    throw new ApiError(env?.message ?? `Request failed (${res.status})`, {
+      code: env?.code,
+      status: res.status,
+    });
+  }
+  // Some BE versions return either `{ data, meta }` or a bare array;
+  // normalize defensively.
+  if (Array.isArray(parsed)) {
+    return { data: parsed as NotificationItem[], meta: { nextCursor: null } };
+  }
+  // The R29 BE rewrite returns `{ data, meta }`; older builds may also
+  // include an `ok: true` flag — both shapes share the fields we need.
+  const env = parsed as NotificationListEnvelope & { ok?: boolean };
+  return { data: env.data, meta: env.meta ?? { nextCursor: null } };
 }
 
 export function NotificationBell({ className }: { className?: string }) {
+  const router = useRouter();
   const queryClient = useQueryClient();
-  // Locally-tracked read ids — BUG-11 lets users dismiss notifications even
-  // though the BE has no Notification table yet. The set survives
-  // re-renders but resets on full reload (acceptable until a real table ships).
-  const [readIds, setReadIds] = React.useState<Set<string>>(() => new Set());
+  const [open, setOpen] = React.useState(false);
+  const [filter, setFilter] = React.useState<NotificationFilter>('all');
 
-  const { data: countRaw = 0 } = useQuery<number, ApiError>({
+  // ── Unread count (always polled, lightweight). The list query also
+  //    surfaces a `meta.unreadCount` but we keep the dedicated endpoint
+  //    so the badge stays accurate even when the panel is closed.
+  const unreadCountQuery = useQuery<number, ApiError>({
     queryKey: queryKeys.notifications.unreadCount(),
-    queryFn: () => api.get<number>('/api/v1/notifications/unread-count'),
+    queryFn: async () => {
+      const data = await api.get<number | UnreadCountResponse>(
+        '/api/v1/notifications/unread-count',
+      );
+      // BE may return either the bare number (api-client unwraps `data`) or
+      // `{ count }`. Normalize.
+      if (typeof data === 'number') return data;
+      return data?.count ?? 0;
+    },
+    refetchInterval: 30_000,
     staleTime: 30_000,
     placeholderData: 0,
   });
 
-  const { data: items = [] } = useQuery<NotificationItemDTO[], ApiError>({
-    queryKey: queryKeys.notifications.all(),
-    queryFn: () =>
-      api.get<NotificationItemDTO[]>('/api/v1/notifications', {
-        query: { limit: 10 },
+  // ── List query — only enabled while the panel is open. Keyed by filter
+  //    so 전체/읽지 않음 caches separately.
+  const unreadOnly = filter === 'unread';
+  const listQuery = useInfiniteQuery<NotificationListEnvelope, ApiError>({
+    queryKey: queryKeys.notifications.list({ unreadOnly }),
+    queryFn: ({ pageParam }) =>
+      fetchNotifications({
+        unreadOnly,
+        cursor: pageParam as string | undefined,
+        limit: 30,
       }),
+    initialPageParam: undefined,
+    getNextPageParam: (last) => last.meta.nextCursor ?? undefined,
+    enabled: open,
     staleTime: 30_000,
   });
 
-  // Effective unread = server count minus locally-marked reads (clamped at 0).
-  const visibleUnread = Math.max(0, countRaw - readIds.size);
+  // ── Mutations ─────────────────────────────────────────────────────────
+  // Optimistic update for mark-read + mark-all. We patch the list cache
+  // for both filter keys (전체 / 읽지 않음) and the unread-count cache.
+  // On error we restore from the snapshot.
 
-  const markAllRead = async () => {
-    // Optimistically zero the badge by adding every visible id to the local
-    // read set. Then fire fire-and-forget POSTs so the BE audit trail still
-    // reflects intent (the endpoint is a 200-only no-op when there's no
-    // Notification table).
-    const ids = items.filter((i) => !readIds.has(i.id)).map((i) => i.id);
-    setReadIds((prev) => {
-      const next = new Set(prev);
-      for (const id of ids) next.add(id);
-      return next;
-    });
-    // Reset the unread-count cache so the badge updates without waiting for
-    // the next refetch.
-    queryClient.setQueryData(queryKeys.notifications.unreadCount(), 0);
+  const markReadMutation = useMutation<
+    unknown,
+    ApiError,
+    string,
+    {
+      previousAll?: ReturnType<typeof getInfinite>;
+      previousUnread?: ReturnType<typeof getInfinite>;
+      previousCount?: number;
+    }
+  >({
+    mutationFn: (id) => api.post(`/api/v1/notifications/${id}/read`),
+    onMutate: async (id) => {
+      const allKey = queryKeys.notifications.list({ unreadOnly: false });
+      const unreadKey = queryKeys.notifications.list({ unreadOnly: true });
+      const countKey = queryKeys.notifications.unreadCount();
+      await queryClient.cancelQueries({ queryKey: allKey });
+      await queryClient.cancelQueries({ queryKey: unreadKey });
+      await queryClient.cancelQueries({ queryKey: countKey });
+      const previousAll = getInfinite(queryClient, allKey);
+      const previousUnread = getInfinite(queryClient, unreadKey);
+      const previousCount = queryClient.getQueryData<number>(countKey) ?? 0;
+      queryClient.setQueryData(allKey, mapInfinite(previousAll, id, true));
+      queryClient.setQueryData(unreadKey, mapInfinite(previousUnread, id, true));
+      queryClient.setQueryData(countKey, Math.max(0, previousCount - 1));
+      return { previousAll, previousUnread, previousCount };
+    },
+    onError: (_err, _id, ctx) => {
+      if (!ctx) return;
+      queryClient.setQueryData(
+        queryKeys.notifications.list({ unreadOnly: false }),
+        ctx.previousAll,
+      );
+      queryClient.setQueryData(
+        queryKeys.notifications.list({ unreadOnly: true }),
+        ctx.previousUnread,
+      );
+      queryClient.setQueryData(
+        queryKeys.notifications.unreadCount(),
+        ctx.previousCount,
+      );
+    },
+    onSettled: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.notifications.all() });
+    },
+  });
 
-    await Promise.allSettled(
-      ids.map((id) => api.post(`/api/v1/notifications/${id}/read`)),
-    );
-  };
+  const markAllReadMutation = useMutation<
+    unknown,
+    ApiError,
+    void,
+    {
+      previousAll?: ReturnType<typeof getInfinite>;
+      previousUnread?: ReturnType<typeof getInfinite>;
+      previousCount?: number;
+    }
+  >({
+    mutationFn: () => api.post('/api/v1/notifications/read-all'),
+    onMutate: async () => {
+      const allKey = queryKeys.notifications.list({ unreadOnly: false });
+      const unreadKey = queryKeys.notifications.list({ unreadOnly: true });
+      const countKey = queryKeys.notifications.unreadCount();
+      await queryClient.cancelQueries({ queryKey: allKey });
+      await queryClient.cancelQueries({ queryKey: unreadKey });
+      await queryClient.cancelQueries({ queryKey: countKey });
+      const previousAll = getInfinite(queryClient, allKey);
+      const previousUnread = getInfinite(queryClient, unreadKey);
+      const previousCount = queryClient.getQueryData<number>(countKey) ?? 0;
+      queryClient.setQueryData(allKey, mapInfiniteAll(previousAll));
+      queryClient.setQueryData(unreadKey, mapInfiniteAll(previousUnread));
+      queryClient.setQueryData(countKey, 0);
+      return { previousAll, previousUnread, previousCount };
+    },
+    onError: (_err, _v, ctx) => {
+      if (!ctx) return;
+      queryClient.setQueryData(
+        queryKeys.notifications.list({ unreadOnly: false }),
+        ctx.previousAll,
+      );
+      queryClient.setQueryData(
+        queryKeys.notifications.list({ unreadOnly: true }),
+        ctx.previousUnread,
+      );
+      queryClient.setQueryData(
+        queryKeys.notifications.unreadCount(),
+        ctx.previousCount,
+      );
+    },
+    onSettled: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.notifications.all() });
+    },
+  });
+
+  // ── Click handlers ───────────────────────────────────────────────────
+  const handleItemClick = React.useCallback(
+    (item: NotificationItem) => {
+      if (!item.read) {
+        markReadMutation.mutate(item.id);
+      }
+      if (item.objectId) {
+        setOpen(false);
+        router.push(`/objects/${item.objectId}`);
+      }
+    },
+    [markReadMutation, router],
+  );
+
+  const handleMarkAllRead = React.useCallback(() => {
+    markAllReadMutation.mutate();
+  }, [markAllReadMutation]);
+
+  const visibleUnread = unreadCountQuery.data ?? 0;
 
   return (
-    <Popover>
+    <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
         <button
           type="button"
@@ -114,98 +274,80 @@ export function NotificationBell({ className }: { className?: string }) {
           )}
         </button>
       </PopoverTrigger>
-      <PopoverContent align="end" sideOffset={8} className="w-80 p-0">
-        <NotificationListBody
-          items={items}
-          readIds={readIds}
-          onMarkAllRead={markAllRead}
+      <PopoverContent align="end" sideOffset={8} className="w-[380px] p-0">
+        <NotificationPanelBody
+          filter={filter}
+          onFilterChange={setFilter}
+          pages={listQuery.data?.pages.map((p) => p.data) ?? []}
+          unreadCount={visibleUnread}
+          isPending={listQuery.isPending && open}
+          isError={listQuery.isError}
+          hasNextPage={listQuery.hasNextPage}
+          isFetchingNextPage={listQuery.isFetchingNextPage}
+          onLoadMore={() => listQuery.fetchNextPage()}
+          onItemClick={handleItemClick}
+          onMarkAllRead={handleMarkAllRead}
         />
+        <footer className="flex items-center justify-between border-t border-border px-3 py-2">
+          <Link
+            href="/admin/notices"
+            className="text-xs text-fg-muted hover:text-fg hover:underline"
+          >
+            모든 알림 보기
+          </Link>
+          <Link
+            href="/settings"
+            aria-label="알림 설정"
+            className="inline-flex h-7 w-7 items-center justify-center rounded text-fg-muted hover:bg-bg-muted hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          >
+            <Settings2 className="h-3.5 w-3.5" />
+          </Link>
+        </footer>
       </PopoverContent>
     </Popover>
   );
 }
 
-export function NotificationListBody({
-  items,
-  readIds,
-  onMarkAllRead,
-}: {
-  items: NotificationItemDTO[];
-  readIds: Set<string>;
-  onMarkAllRead: () => void;
-}) {
-  const allRead = items.every((i) => readIds.has(i.id));
-  return (
-    <div className="flex flex-col">
-      <div className="flex items-center justify-between border-b border-border px-3 py-2">
-        <span className="text-sm font-semibold text-fg">알림</span>
-        <button
-          type="button"
-          onClick={onMarkAllRead}
-          disabled={allRead || items.length === 0}
-          className="inline-flex h-7 items-center gap-1 rounded px-2 text-xs text-fg-muted hover:bg-bg-muted hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
-        >
-          <Check className="h-3.5 w-3.5" />
-          모두 읽음
-        </button>
-      </div>
-      <ul className="max-h-80 overflow-auto">
-        {items.length === 0 ? (
-          <li className="px-3 py-6 text-center text-xs text-fg-muted">
-            새 알림이 없습니다.
-          </li>
-        ) : (
-          items.map((n) => {
-            const isRead = readIds.has(n.id) || n.read;
-            return (
-              <li key={n.id} className="border-b border-border last:border-b-0">
-                <div
-                  className={cn(
-                    'flex items-start gap-2 px-3 py-2.5 text-sm hover:bg-bg-subtle',
-                    !isRead && 'bg-brand/5',
-                  )}
-                >
-                  <span
-                    aria-hidden
-                    className={cn(
-                      'mt-1.5 inline-block h-1.5 w-1.5 shrink-0 rounded-full',
-                      isRead ? 'bg-transparent' : 'bg-brand',
-                    )}
-                  />
-                  <span className="min-w-0 flex-1">
-                    <span className="block truncate text-[13px] font-medium text-fg">
-                      {n.title || activityLabel(n.type)}
-                    </span>
-                    {n.body && (
-                      <span className="mt-0.5 block truncate text-[12px] text-fg-muted">
-                        {n.body}
-                      </span>
-                    )}
-                  </span>
-                  <span className="ml-1 shrink-0 font-mono text-[11px] text-fg-subtle">
-                    {formatTime(n.ts)}
-                  </span>
-                </div>
-              </li>
-            );
-          })
-        )}
-      </ul>
-      <div className="flex items-center justify-between border-t border-border px-3 py-2">
-        <Link
-          href="/admin/notices"
-          className="text-xs text-fg-muted hover:text-fg hover:underline"
-        >
-          모든 알림 보기
-        </Link>
-        <Link
-          href="/admin"
-          aria-label="알림 설정"
-          className="inline-flex h-7 w-7 items-center justify-center rounded text-fg-muted hover:bg-bg-muted hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-        >
-          <Settings2 className="h-3.5 w-3.5" />
-        </Link>
-      </div>
-    </div>
-  );
+// ── Cache helpers (typed `setQueryData` for `useInfiniteQuery`) ───────────
+
+interface InfinitePages {
+  pages: NotificationListEnvelope[];
+  pageParams: Array<unknown>;
+}
+
+function getInfinite(
+  qc: ReturnType<typeof useQueryClient>,
+  key: readonly unknown[],
+): InfinitePages | undefined {
+  return qc.getQueryData<InfinitePages>(key);
+}
+
+/** Replace one item's `read` flag across every page in the cache. */
+function mapInfinite(
+  prev: InfinitePages | undefined,
+  id: string,
+  read: boolean,
+): InfinitePages | undefined {
+  if (!prev) return prev;
+  return {
+    ...prev,
+    pages: prev.pages.map((page) => ({
+      ...page,
+      data: page.data.map((it) => (it.id === id ? { ...it, read } : it)),
+    })),
+  };
+}
+
+/** Mark every item across every page as read. */
+function mapInfiniteAll(
+  prev: InfinitePages | undefined,
+): InfinitePages | undefined {
+  if (!prev) return prev;
+  return {
+    ...prev,
+    pages: prev.pages.map((page) => ({
+      ...page,
+      data: page.data.map((it) => ({ ...it, read: true })),
+    })),
+  };
 }
