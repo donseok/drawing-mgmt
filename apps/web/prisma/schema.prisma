@@ -37,6 +37,10 @@ model User {
   // for HR/role analytics, but `deletedAt IS NOT NULL` is the canonical
   // signal that the account is gone (auth + picker queries filter on this).
   deletedAt        DateTime?
+  // R33 / A-1 — Keycloak (OIDC) subject identifier. Populated on first OIDC
+  // login (signIn callback in auth.ts). Independent of `username`/`email` so
+  // an SSO user keeps the same row even if HR rewrites their handle.
+  keycloakSub      String?        @unique
 
   organization       Organization?   @relation(fields: [organizationId], references: [id])
   groups             UserGroup[]
@@ -622,6 +626,29 @@ model Upload {
 }
 
 // ─────────────────────────────────────────────────────────────
+// BACKUP (자동 백업 이력) — R33 D-5
+// ─────────────────────────────────────────────────────────────
+// Each backup attempt creates a row. `kind=POSTGRES` runs `pg_dump`,
+// `kind=FILES` tars the FILE_STORAGE_ROOT. Lifecycle:
+//   RUNNING → DONE (storagePath + sizeBytes populated)
+//          → FAILED (errorMessage populated)
+// The admin UI lists rows newest first. Retention sweep deletes both the
+// row and the on-disk artifact past BACKUP_RETENTION_DAYS.
+model Backup {
+  id           String       @id @default(cuid())
+  kind         BackupKind
+  status       BackupStatus @default(RUNNING)
+  storagePath  String?
+  sizeBytes    BigInt?
+  errorMessage String?
+  startedAt    DateTime     @default(now())
+  finishedAt   DateTime?
+
+  @@index([kind, startedAt])
+  @@index([status])
+}
+
+// ─────────────────────────────────────────────────────────────
 // API KEY (외부 연계)
 // ─────────────────────────────────────────────────────────────
 model ApiKey {
@@ -746,4 +773,18 @@ enum UploadStatus {
   COMPLETED
   FAILED
   EXPIRED
+}
+
+// R33 / D-5 — Backup row lifecycle.
+//   POSTGRES — pg_dump of the application DB.
+//   FILES    — tar of FILE_STORAGE_ROOT.
+enum BackupKind {
+  POSTGRES
+  FILES
+}
+
+enum BackupStatus {
+  RUNNING
+  DONE
+  FAILED
 }
