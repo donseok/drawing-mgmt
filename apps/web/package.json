@@ -26,6 +26,8 @@
     "@ai-sdk/anthropic": "^1.0.0",
     "@asteasolutions/zod-to-openapi": "^7.3.4",
     "@auth/prisma-adapter": "2.7.0",
+    "@aws-sdk/client-s3": "^3.658.0",
+    "@aws-sdk/s3-request-presigner": "^3.658.0",
     "@drawing-mgmt/shared": "workspace:*",
     "@hookform/resolvers": "^3.9.0",
     "@prisma/client": "^5.22.0",

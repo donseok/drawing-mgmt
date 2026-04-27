@@ -13,6 +13,16 @@
 //     `appendChunk` call is serialized via a per-upload async lock).
 //   - Hides the `flag: 'a'` open semantics + the offset-equals-size guard
 //     so the route handler stays focused on auth/perm/state.
+//
+// R34 V-INF-1 — *staging stays local even when STORAGE_DRIVER=s3*. Reasons:
+//   - S3 doesn't support byte-level append; emulating it would require
+//     either multipart upload sessions per chunk (costly small parts) or
+//     re-uploading the whole object on every PATCH.
+//   - Chunked uploads are short-lived (1 day TTL) and bounded (2 GB cap),
+//     so local disk is the right scratch space.
+//   - On finalize (POST .../finalize) we hand the assembled buffer to
+//     `getStorage().put(...)` — that's where the driver boundary actually
+//     matters.
 
 import { promises as fs } from 'node:fs';
 import path from 'node:path';

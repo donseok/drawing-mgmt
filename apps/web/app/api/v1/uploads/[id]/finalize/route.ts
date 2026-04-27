@@ -19,7 +19,6 @@
 
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
-import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import { ObjectState, UploadStatus } from '@prisma/client';
@@ -39,16 +38,12 @@ import {
   readUploadBuffer,
   statUpload,
 } from '@/lib/upload-store';
+// R34 V-INF-1 — finalize hands the assembled buffer to the storage adapter
+// so MinIO/S3 deployments work without changing this route.
+import { getStorage } from '@/lib/storage';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
-
-const STORAGE_ROOT = path.isAbsolute(process.env.FILE_STORAGE_ROOT ?? '')
-  ? path.resolve(process.env.FILE_STORAGE_ROOT!)
-  : path.resolve(
-      process.cwd(),
-      process.env.FILE_STORAGE_ROOT ?? './.data/files',
-    );
 
 const bodySchema = z.object({
   /**
@@ -244,29 +239,31 @@ export const POST = withApi<{ params: { id: string } }>(
 
     // Move the bytes into the attachment storage layout.
     const attachmentId = randomUUID();
-    const targetDir = path.join(STORAGE_ROOT, attachmentId);
-    await fs.mkdir(targetDir, { recursive: true });
     const ext = path.extname(upload.filename).toLowerCase() || '';
     const storedName = ext ? `source${ext}` : 'source';
-    const storedPath = path.join(targetDir, storedName);
+    const sourceKey = `${attachmentId}/${storedName}`;
+    const metaKey = `${attachmentId}/meta.json`;
+    const mimeType = upload.mimeType || guessMime(ext);
 
-    // Re-write rather than rename: target FS may differ from temp FS, and
-    // rename across mounts is not atomic. After the write succeeds we delete
-    // the temp file.
-    await fs.writeFile(storedPath, buf);
+    // R34 — storage abstraction. Re-write rather than rename: across-mount
+    // rename isn't atomic and S3 has no rename at all. After the put
+    // succeeds we delete the temp file.
+    const storage = getStorage();
+    await storage.put(sourceKey, buf, {
+      contentType: mimeType,
+      size: totalBytes,
+    });
 
     const sidecar = {
       filename: upload.filename,
-      mimeType: upload.mimeType || guessMime(ext),
+      mimeType,
       size: totalBytes,
-      storagePath: `${attachmentId}/${storedName}`,
+      storagePath: sourceKey,
     };
-    await fs
-      .writeFile(
-        path.join(targetDir, 'meta.json'),
-        JSON.stringify(sidecar, null, 2),
-        'utf8',
-      )
+    await storage
+      .put(metaKey, Buffer.from(JSON.stringify(sidecar, null, 2), 'utf8'), {
+        contentType: 'application/json',
+      })
       .catch(() => undefined);
 
     const wantMaster = body.asAttachment?.isMaster === true;
@@ -317,8 +314,8 @@ export const POST = withApi<{ params: { id: string } }>(
           id: attachmentId,
           versionId: version.id,
           filename: upload.filename,
-          storagePath: `${attachmentId}/${storedName}`,
-          mimeType: upload.mimeType || guessMime(ext),
+          storagePath: sourceKey,
+          mimeType,
           size: BigInt(totalBytes),
           isMaster: becomesMaster,
           checksumSha256: checksum,
@@ -354,7 +351,7 @@ export const POST = withApi<{ params: { id: string } }>(
     if (ext === '.dwg') {
       const queueResult = await enqueueConversion({
         attachmentId: created.id,
-        storagePath: `${attachmentId}/${storedName}`,
+        storagePath: sourceKey,
         filename: created.filename,
         mimeType: created.mimeType,
       });
