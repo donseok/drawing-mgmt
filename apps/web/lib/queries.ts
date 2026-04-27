@@ -44,6 +44,10 @@ export const queryKeys = {
 
   notifications: {
     all: () => ['notifications'] as const,
+    // R29 — list keyed by filter so `전체` and `읽지 않음` tabs cache
+    // separately. `unreadCount` lives at the same root for invalidation.
+    list: (params: { unreadOnly?: boolean } = {}) =>
+      ['notifications', 'list', params] as const,
     unreadCount: () => ['notifications', 'unread-count'] as const,
   },
 
@@ -56,7 +60,13 @@ export const queryKeys = {
   },
 
   admin: {
+    // R29 U-2 — admin/users list & detail. List is `useInfiniteQuery` keyed
+    // by `q` (cursor lives in pageParam). Detail is by id for future single-
+    // user pages; both invalidate together off the `users` root.
     users: () => ['admin', 'users'] as const,
+    usersList: (params: { q?: string } = {}) =>
+      ['admin', 'users', 'list', params] as const,
+    userDetail: (id: string) => ['admin', 'users', 'detail', id] as const,
     organizations: () => ['admin', 'organizations'] as const,
     groups: () => ['admin', 'groups'] as const,
     classes: () => ['admin', 'classes'] as const,
