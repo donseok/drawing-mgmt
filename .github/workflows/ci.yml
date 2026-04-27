@@ -163,3 +163,50 @@ jobs:
           DATABASE_URL: postgresql://drawmgmt:drawmgmt@localhost:5432/drawmgmt
           AUTH_SECRET: ci-build-placeholder-secret-32chars-xxxxx
           REDIS_URL: redis://localhost:6379
+
+  # R40 CI-AUDIT — advisory dependency vulnerability check.
+  #
+  # `pnpm audit --audit-level=high` exits non-zero when ≥1 high/critical
+  # advisory affects the lockfile. We run it on every PR + push as a
+  # **warning** (`continue-on-error: true`) so the workflow card flips
+  # red when there's something to look at, but the merge gate stays open.
+  # Operational guidance + counts are also surfaced in-app via the
+  # /admin/security page (GET/POST /api/v1/admin/security/audit).
+  audit:
+    name: Audit (advisory)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+          run_install: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: "pnpm"
+
+      - name: Get pnpm store directory
+        id: pnpm-store
+        shell: bash
+        run: echo "path=$(pnpm store path --silent)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache pnpm store
+        uses: actions/cache@v4
+        with:
+          path: ${{ steps.pnpm-store.outputs.path }}
+          key: ${{ runner.os }}-pnpm-${{ hashFiles('pnpm-lock.yaml') }}
+          restore-keys: |
+            ${{ runner.os }}-pnpm-
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Audit
+        run: pnpm audit --audit-level=high

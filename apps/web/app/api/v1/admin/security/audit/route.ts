@@ -21,6 +21,7 @@ import type { NextResponse } from 'next/server';
 import { spawn } from 'node:child_process';
 import { requireUser } from '@/lib/auth-helpers';
 import { ok, error, ErrorCode } from '@/lib/api-response';
+import { withApi } from '@/lib/api-helpers';
 
 interface VulnerabilityCounts {
   critical: number;
@@ -252,3 +253,57 @@ export function _resetAuditCacheForTest(): void {
   cached = null;
   cachedAt = 0;
 }
+
+// ─────────────────────────────────────────────────────────────────────────
+// POST /api/v1/admin/security/audit — R40 §2.3.
+//
+// Admin-triggered cache invalidation + immediate re-run. The /admin/security
+// page's [지금 검사] button hits this; the FE invalidates the GET query on
+// the 200 response so the carded counts pick up the fresh result.
+//
+// Authorization is identical to GET (SUPER_ADMIN/ADMIN). We wrap with
+// `withApi({ rateLimit: 'api' })` because this is a mutating endpoint —
+// the rate-limit guard prevents an angry admin from forking dozens of
+// pnpm subprocesses. CSRF is also enforced by `withApi` for non-GET.
+//
+// Behavior on subprocess failure: same fallback as GET — return whatever
+// stale cached value exists, or 503 with `AUDIT_RUN_FAILED`. The cache
+// invalidation step is the single difference from GET.
+// ─────────────────────────────────────────────────────────────────────────
+
+export const POST = withApi({ rateLimit: 'api' }, async () => {
+  let user;
+  try {
+    user = await requireUser();
+  } catch (err) {
+    if (err instanceof Response) return err as NextResponse;
+    throw err;
+  }
+  if (user.role !== 'SUPER_ADMIN' && user.role !== 'ADMIN') {
+    return error(ErrorCode.E_FORBIDDEN);
+  }
+
+  // Force a fresh run — drop the cache regardless of TTL.
+  cached = null;
+  cachedAt = 0;
+
+  let payload: AuditPayload;
+  try {
+    payload = await runPnpmAudit();
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.error('[admin.security.audit] forced re-run failed', err);
+    // Same stale-fallback policy as GET.
+    if (cached) return ok(cached, { cached: true, stale: true });
+    return error(
+      ErrorCode.E_INTERNAL,
+      '의존성 감사 명령 실행에 실패했습니다.',
+      503,
+      { code: 'AUDIT_RUN_FAILED' },
+    );
+  }
+
+  cached = payload;
+  cachedAt = Date.now();
+  return ok(payload, { cached: false });
+});

@@ -14,7 +14,7 @@
 // R31 P-1 — adds the `pdf-print` queue + worker. PDF rendering uses pdf-lib
 // (MIT) over our own DXF mapper — no GPL/AGPL deps. See `./pdf.ts`.
 
-import { Worker, type Job } from 'bullmq';
+import { Worker, Queue, type Job } from 'bullmq';
 import { Redis as IORedis } from 'ioredis';
 import pino from 'pino';
 import { createWriteStream, promises as fs } from 'node:fs';
@@ -25,10 +25,12 @@ import { PrismaClient, ConversionStatus } from '@prisma/client';
 import {
   CONVERSION_QUEUE_NAME,
   ConversionJobPayloadSchema,
+  PDF_EXTRACT_QUEUE_NAME,
   PDF_PRINT_QUEUE_NAME,
   PdfPrintJobPayloadSchema,
   type ConversionJobPayload,
   type ConversionResult,
+  type PdfExtractJobPayload,
   type PdfPrintJobPayload,
   type PdfPrintResult,
 } from '@drawing-mgmt/shared/conversion';
@@ -41,6 +43,7 @@ import { startMailWorker } from './mail-worker.js';
 import { startScanWorker } from './scan-worker.js';
 import { startSmsWorker } from './sms-worker.js';
 import { startKakaoWorker } from './kakao-worker.js';
+import { startPdfExtractWorker } from './pdf-extract-worker.js';
 import { getStorage, type Storage } from './storage.js';
 
 const log = pino({
@@ -332,6 +335,17 @@ async function processJob(job: Job<ConversionJobPayload>): Promise<ConversionRes
       log.warn({ jobId: payload.jobId, err: (e as Error).message }, 'conversion-job row update (DONE) failed');
     });
 
+  // R40 S-1 — when the conversion produced (or already had) a PDF artifact
+  // for this attachment, enqueue a pdf-extract job so the search route can
+  // hit the PDF body via Postgres FTS. Best-effort: failure is logged but
+  // never blocks the conversion DONE response.
+  await maybeEnqueuePdfExtract(payload.attachmentId).catch((e) => {
+    log.warn(
+      { attachmentId: payload.attachmentId, err: (e as Error).message },
+      'pdf-extract enqueue failed (non-fatal)',
+    );
+  });
+
   const result: ConversionResult = {
     jobId: payload.jobId,
     attachmentId: payload.attachmentId,
@@ -345,6 +359,68 @@ async function processJob(job: Job<ConversionJobPayload>): Promise<ConversionRes
     'conversion done',
   );
   return result;
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// R40 S-1 — pdf-extract enqueue helper.
+//
+// Lazy-initialized BullMQ Queue singleton so the bootstrap path doesn't
+// pay the Redis hit when the feature is disabled. We probe storage for
+// the canonical preview PDF key (`<attachmentId>/preview.pdf`) — when
+// present we push a job onto `pdf-extract`. The eponymous worker
+// (apps/worker/src/pdf-extract-worker.ts) consumes the job and writes
+// extracted text back to `Attachment.contentText`.
+//
+// Why probe storage instead of the ConversionJob row's `pdfPath`:
+//   - The main DWG conversion writes only DXF + thumbnail today. A
+//     future pipeline (DXF→PDF for preview) will land bytes at the same
+//     storage key without a row column change. Probing makes us
+//     forward-compatible.
+//   - The print queue writes per-(ctb, pageSize) PDFs that aren't the
+//     master preview — those are NOT what the search FTS should index,
+//     so we deliberately do not enqueue from `pdfPrintWorker`.
+// ─────────────────────────────────────────────────────────────────────────
+
+let pdfExtractQueueSingleton: Queue<PdfExtractJobPayload> | null = null;
+function getPdfExtractQueue(): Queue<PdfExtractJobPayload> {
+  if (!pdfExtractQueueSingleton) {
+    pdfExtractQueueSingleton = new Queue<PdfExtractJobPayload>(
+      PDF_EXTRACT_QUEUE_NAME,
+      {
+        connection,
+        defaultJobOptions: {
+          attempts: 3,
+          backoff: { type: 'exponential', delay: 5_000 },
+          removeOnComplete: { count: 100 },
+          removeOnFail: { count: 500 },
+        },
+      },
+    );
+  }
+  return pdfExtractQueueSingleton;
+}
+
+async function maybeEnqueuePdfExtract(attachmentId: string): Promise<void> {
+  // Honor the feature flag on the enqueue side too — keeps the queue
+  // empty in dev/CI and matches the worker bootstrap gate.
+  if ((process.env.PDF_EXTRACT_ENABLED ?? '1') === '0') return;
+
+  const pdfStorageKey = `${attachmentId}/preview.pdf`;
+  const exists = await storage.exists(pdfStorageKey).catch(() => false);
+  if (!exists) {
+    log.debug({ attachmentId, pdfStorageKey }, 'pdf-extract: no preview.pdf, skip enqueue');
+    return;
+  }
+
+  const queue = getPdfExtractQueue();
+  await queue.add(
+    'extract',
+    { attachmentId, pdfStorageKey },
+    // jobId dedup: one in-flight extract per attachment (an older retry
+    // for the same attachment is replaced by the newer enqueue).
+    { jobId: `${attachmentId}:${pdfStorageKey}` },
+  );
+  log.info({ attachmentId, pdfStorageKey }, 'pdf-extract enqueued');
 }
 
 /**
@@ -657,6 +733,24 @@ const scanWorkerHandle = startScanWorker({ connection, prisma, log });
 const smsWorkerHandle = startSmsWorker({ connection, log });
 const kakaoWorkerHandle = startKakaoWorker({ connection, log });
 
+// ─────────────────────────────────────────────────────────────────────────
+// R40 S-1 — pdf-extract queue worker.
+//
+// Pulls bytes for `<attachmentId>/preview.pdf` from storage, extracts
+// text via pdfjs-dist (Apache 2.0; legacy Node build), writes to
+// `Attachment.contentText`. The Postgres GENERATED column `content_tsv`
+// (migration 0014) picks up the new value automatically — no separate
+// write needed. Disabled when PDF_EXTRACT_ENABLED=0 (matches the
+// enqueue gate above so the queue stays empty).
+// ─────────────────────────────────────────────────────────────────────────
+
+const pdfExtractWorkerHandle = startPdfExtractWorker({
+  connection,
+  prisma,
+  log,
+  storage,
+});
+
 const shutdown = async (sig: string) => {
   log.info({ sig }, 'worker shutting down');
   await Promise.all([
@@ -668,6 +762,10 @@ const shutdown = async (sig: string) => {
     mailWorkerHandle ? mailWorkerHandle.close() : Promise.resolve(),
     smsWorkerHandle ? smsWorkerHandle.close() : Promise.resolve(),
     kakaoWorkerHandle ? kakaoWorkerHandle.close() : Promise.resolve(),
+    pdfExtractWorkerHandle ? pdfExtractWorkerHandle.close() : Promise.resolve(),
+    // Close the enqueue-side Queue too if we ever opened it during this
+    // process's lifetime (lazy-init in `getPdfExtractQueue`).
+    pdfExtractQueueSingleton ? pdfExtractQueueSingleton.close() : Promise.resolve(),
   ]);
   await prisma.$disconnect().catch(() => undefined);
   await connection.quit();
@@ -686,6 +784,7 @@ log.info(
       ...(mailWorkerHandle ? ['mail'] : []),
       ...(smsWorkerHandle ? ['sms'] : []),
       ...(kakaoWorkerHandle ? ['kakao'] : []),
+      ...(pdfExtractWorkerHandle ? [PDF_EXTRACT_QUEUE_NAME] : []),
     ],
     redis: REDIS_URL,
     oda: ODA_CONVERTER_PATH,
@@ -694,6 +793,7 @@ log.info(
     clamavEnabled: process.env.CLAMAV_ENABLED === '1',
     smsEnabled: process.env.SMS_ENABLED === '1',
     kakaoEnabled: process.env.KAKAO_ENABLED === '1',
+    pdfExtractEnabled: (process.env.PDF_EXTRACT_ENABLED ?? '1') !== '0',
   },
   'worker started',
 );

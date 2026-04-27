@@ -106,6 +106,18 @@ type ObjectSummary = {
   masterAttachmentId: string | null;
   createdAt: Date;
   updatedAt: Date;
+  /**
+   * R40 S-1 — `ts_headline` snippet (plain text with `<b>...</b>` markers
+   * around matched lexemes) when `q` matches a PDF attachment's
+   * `contentText`. `null` when:
+   *   - no `q` was provided, or
+   *   - the match was on `number` / `name` / `description` (trgm path)
+   *     instead of PDF body, or
+   *   - no PDF attachment for this object had searchable contentText.
+   * The FE renders the marker via JSX `<mark>` (split on `<b>...</b>`),
+   * NEVER via `dangerouslySetInnerHTML`.
+   */
+  pdfSnippet: string | null;
 };
 
 export async function GET(req: Request): Promise<NextResponse> {
@@ -159,13 +171,30 @@ export async function GET(req: Request): Promise<NextResponse> {
   let cursor: Prisma.ObjectEntityWhereUniqueInput | undefined;
   if (q.cursor) cursor = { id: q.cursor };
 
-  // q (full-text/trigram). When present, we use a raw SQL query for similarity
-  // ordering then filter via the in-list. Otherwise use Prisma's findMany.
+  // q (full-text/trigram + PDF body FTS). When present, we union two
+  // candidate id sets:
+  //   1) pg_trgm similarity over number/name/description (existing path).
+  //   2) R40 S-1 — to_tsquery('simple', $1) @@ Attachment.content_tsv,
+  //      walking Attachment → Version → Revision → ObjectEntity to lift
+  //      the matching attachment row to its owning object. We also pull
+  //      a `ts_headline` snippet here so the FE can show a PDF body
+  //      excerpt under the result card.
+  //
+  // The two sources are OR-unioned (a PDF body match for object O AND a
+  // trgm match on object O's number both contribute to the candidate
+  // set). When we don't have a snippet for an object the FE renders no
+  // body block — `pdfSnippet` is null in the response.
   let candidateIds: string[] | null = null;
+  // attachment-FTS-only — object_id → ts_headline snippet (first match
+  // wins; multiple PDFs per object collapse to the first hit). null
+  // entries are not inserted; absence in the map means "trgm path".
+  const pdfSnippetById = new Map<string, string>();
   if (q.q) {
     const term = q.q.trim();
-    // pg_trgm similarity on number/name/description; threshold 0.1 to be permissive.
-    const rows = await prisma.$queryRaw<Array<{ id: string }>>`
+
+    // 1) pg_trgm similarity on number/name/description; threshold 0.1
+    //    to be permissive. Existing R39 behavior — preserved verbatim.
+    const trgmRows = await prisma.$queryRaw<Array<{ id: string }>>`
       SELECT id
       FROM "ObjectEntity"
       WHERE (
@@ -180,7 +209,61 @@ export async function GET(req: Request): Promise<NextResponse> {
       ) DESC
       LIMIT 500
     `;
-    candidateIds = rows.map((r) => r.id);
+
+    // 2) R40 S-1 — PDF body FTS. The `content_tsv` GENERATED column
+    //    (migration 0014) lets us hit a GIN index for O(log N) lookups.
+    //    `plainto_tsquery` is intentional: user input is unsanitized
+    //    free text and `to_tsquery` would syntax-error on punctuation.
+    //    `ts_headline` gives us a `<b>...</b>`-marked excerpt the FE
+    //    renders via JSX <mark> (NEVER dangerouslySetInnerHTML — see
+    //    contract §8 risk row 2).
+    const ftsRows = await prisma.$queryRaw<
+      Array<{ object_id: string; snippet: string | null }>
+    >`
+      SELECT
+        o.id AS object_id,
+        ts_headline(
+          'simple',
+          a."contentText",
+          plainto_tsquery('simple', ${term}),
+          'StartSel=<b>,StopSel=</b>,MaxFragments=1,MaxWords=20,MinWords=5'
+        ) AS snippet
+      FROM "Attachment"   a
+      JOIN "Version"      v ON v.id = a."versionId"
+      JOIN "Revision"     r ON r.id = v."revisionId"
+      JOIN "ObjectEntity" o ON o.id = r."objectId"
+      WHERE a."content_tsv" @@ plainto_tsquery('simple', ${term})
+      LIMIT 500
+    `;
+
+    // Build the snippet map. The first non-null snippet per object wins;
+    // subsequent matches are dropped to keep response payloads small.
+    for (const row of ftsRows) {
+      if (row.snippet && !pdfSnippetById.has(row.object_id)) {
+        pdfSnippetById.set(row.object_id, row.snippet);
+      }
+    }
+
+    // OR-union: trgm-rank order is preserved for trgm-matched ids;
+    // PDF-only matches append after (with their relative DB-row order).
+    const trgmIds = trgmRows.map((r) => r.id);
+    const ftsIds = ftsRows.map((r) => r.object_id);
+    const seen = new Set<string>();
+    const merged: string[] = [];
+    for (const id of trgmIds) {
+      if (!seen.has(id)) {
+        seen.add(id);
+        merged.push(id);
+      }
+    }
+    for (const id of ftsIds) {
+      if (!seen.has(id)) {
+        seen.add(id);
+        merged.push(id);
+      }
+    }
+
+    candidateIds = merged;
     if (candidateIds.length === 0) {
       return ok<ObjectSummary[]>([], { nextCursor: null, hasMore: false });
     }
@@ -312,6 +395,10 @@ export async function GET(req: Request): Promise<NextResponse> {
       masterAttachmentId: masterAttId,
       createdAt: r.createdAt,
       updatedAt: r.updatedAt,
+      // R40 S-1 — null when no `q` was searched OR when the match was on
+      // number/name/description only (trgm path). pdfSnippetById is
+      // populated solely from the attachment-FTS query above.
+      pdfSnippet: pdfSnippetById.get(r.id) ?? null,
     };
   });
 

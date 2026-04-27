@@ -368,3 +368,65 @@ export const KakaoResultSchema = z.object({
 });
 
 export type KakaoResult = z.infer<typeof KakaoResultSchema>;
+
+// ─────────────────────────────────────────────────────────────
+// R40 S-1 — PDF body text extraction queue.
+//
+// Separate BullMQ queue (`pdf-extract`) consumed by
+// `apps/worker/src/pdf-extract-worker.ts`. The main `dwg-conversion`
+// worker (apps/worker/src/index.ts) enqueues here when a ConversionJob
+// reaches DONE and a PDF artifact (`<attachmentId>/preview.pdf`) is
+// available in storage.
+//
+// The worker:
+//   1) Pulls the PDF bytes via storage.get(pdfStorageKey).
+//   2) Runs `pdfjs-dist/legacy/build/pdf.mjs` to extract text content
+//      page-by-page (`getTextContent().items[].str`, joined with `\n\n`
+//      between pages).
+//   3) Writes the extracted plain text to `Attachment.contentText`. The
+//      Postgres GENERATED column `content_tsv` (migration 0014) picks up
+//      the new value automatically — no separate write needed.
+//
+// The /api/v1/objects search route (R40 §2.5) issues a raw
+// `to_tsquery('simple', $1) @@ "Attachment"."content_tsv"` query +
+// `ts_headline(...)` snippet, OR-unioning with the existing pg_trgm
+// hits over number/name/description.
+//
+// Failure policy: BullMQ 3 attempts + exponential backoff. On final
+// failure `contentText` stays NULL — the search query simply won't
+// match those rows. Admin retry is a R41 follow-up.
+//
+// `PDF_EXTRACT_ENABLED=0` short-circuits both the worker bootstrap and
+// the enqueue gate so dev/CI never spin up the pdfjs runtime.
+//
+// License posture: pdfjs-dist is Apache 2.0. No GPL/AGPL transitive
+// deps in the npm tree.
+// ─────────────────────────────────────────────────────────────
+
+export const PDF_EXTRACT_QUEUE_NAME = 'pdf-extract';
+
+export const PdfExtractJobPayloadSchema = z.object({
+  /** Attachment row id whose `contentText` will be populated on success. */
+  attachmentId: z.string(),
+  /**
+   * Storage key for the PDF whose body text should be extracted. Typically
+   * `<attachmentId>/preview.pdf` (master conversion artifact) but the
+   * worker treats the value verbatim — any storage key resolving to a PDF
+   * is fair game (e.g. `<attachmentId>/source.pdf` for direct PDF uploads
+   * once a future round wires that path).
+   */
+  pdfStorageKey: z.string(),
+});
+
+export type PdfExtractJobPayload = z.infer<typeof PdfExtractJobPayloadSchema>;
+
+export const PdfExtractResultSchema = z.object({
+  attachmentId: z.string(),
+  status: z.enum(['DONE', 'SKIPPED', 'FAILED']),
+  /** Number of characters written to Attachment.contentText (pre-trim). */
+  charCount: z.number().int().nonnegative().optional(),
+  errorMessage: z.string().optional(),
+  durationMs: z.number().optional(),
+});
+
+export type PdfExtractResult = z.infer<typeof PdfExtractResultSchema>;
