@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1.7
 #
-# apps/worker — DWG conversion + thumbnail + PDF print BullMQ worker.
+# apps/worker — DWG conversion + thumbnail + PDF print + backup BullMQ worker.
 #
 # R32 X-1.b — multistage alpine build with the runtime deps the worker
 # actually needs:
@@ -14,6 +14,17 @@
 #                                JS library). Alpine and Debian don't
 #                                ship a libredwg-tools package, so we
 #                                pin LIBREDWG_VERSION and build it here.
+#   - postgresql-client         → R33 D-5: provides `pg_dump` for the
+#                                backup queue worker. PostgreSQL BSD-style
+#                                license — safe alongside the MIT/Apache
+#                                npm tree. Invoked only via subprocess
+#                                from apps/worker/src/backup.ts.
+#   - tar + gzip                → R33 D-5: GNU tar + gzip for the file
+#                                storage snapshot worker. BusyBox tar is
+#                                missing some flags we rely on (`--owner`
+#                                etc. would matter for restore parity);
+#                                installing the GNU build keeps behavior
+#                                portable.
 #   - tini                     → PID 1 signal handler
 #
 # ODA File Converter is intentionally NOT installed:
@@ -28,13 +39,24 @@
 #   docker build -f apps/worker/Dockerfile -t drawmgmt/worker:dev .
 #
 # Runtime env:
-#   DATABASE_URL                 postgres connection string
+#   DATABASE_URL                 postgres connection string (used by Prisma
+#                                AND by `pg_dump` for the backup worker —
+#                                must be reachable from the worker host).
 #   REDIS_URL                    redis://redis:6379
-#   FILE_STORAGE_ROOT            shared volume (must match web container)
+#   FILE_STORAGE_ROOT            shared volume (must match web container);
+#                                the FILES backup tar's source root.
 #   ODA_CONVERTER_PATH           OPTIONAL — path inside the container where
 #                                ODAFileConverter has been bind-mounted.
 #                                Falls back to libredwg if absent.
 #   LIBREDWG_DWG2DXF_PATH        OPTIONAL — override the system dwg2dxf
+#   BACKUP_ROOT                  OPTIONAL (default ./.data/backups) —
+#                                directory the backup worker writes archives
+#                                into. Mount a durable volume here in prod.
+#   BACKUP_RETENTION_DAYS        OPTIONAL (default 30) — prune archives
+#                                older than this after each successful run.
+#   BACKUP_CRON_ENABLED          OPTIONAL (default 0) — set to "1" to enroll
+#                                daily POSTGRES + FILES repeatables.
+#   BACKUP_CRON_PATTERN          OPTIONAL (default "0 2 * * *" — 02:00 UTC).
 #
 # License posture:
 #   - LibreDWG is GPL-3+. The runtime image holds the compiled binaries
@@ -147,13 +169,15 @@ RUN pnpm --filter @drawing-mgmt/worker build
 FROM node:${NODE_VERSION}-alpine${ALPINE_VERSION} AS runner
 
 # Runtime system deps:
-#   - openssl        : Prisma engines link against it.
-#   - tini           : PID 1 signal handler.
-#   - libc6-compat   : glibc shim used by sharp's prebuilt + Prisma engines.
+#   - openssl            : Prisma engines link against it.
+#   - tini               : PID 1 signal handler.
+#   - libc6-compat       : glibc shim used by sharp's prebuilt + Prisma engines.
+#   - postgresql-client  : R33 D-5 — provides `pg_dump` for the backup worker.
+#   - tar + gzip         : R33 D-5 — GNU tar + gzip for the files snapshot.
 #
 # sharp 0.33 ships a `linuxmusl` prebuild with libvips bundled, so we
 # don't need the alpine `vips` package at runtime.
-RUN apk add --no-cache libc6-compat openssl tini \
+RUN apk add --no-cache libc6-compat openssl tini postgresql-client tar gzip \
  && addgroup --system --gid 1001 nodejs \
  && adduser  --system --uid 1001 --ingroup nodejs worker
 
