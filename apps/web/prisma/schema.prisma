@@ -393,6 +393,15 @@ model Attachment {
   // SKIPPED/FAILED). Null until the first scan attempt completes.
   virusScanAt      DateTime?
 
+  // R40 / S-1 — extracted PDF body text for full-text search. Populated by
+  // the `pdf-extract` worker after a successful PDF generation. NULL until
+  // the worker runs (or for non-PDF attachments). The companion column
+  // `content_tsv` (Unsupported tsvector) is a Postgres GENERATED column
+  // declared in migration 0014 — Prisma can't render `tsvector GENERATED
+  // ALWAYS AS (...)` itself, so we keep it out of this schema and let the
+  // raw SQL search query reach into it.
+  contentText      String?
+
   version        Version         @relation(fields: [versionId], references: [id], onDelete: Cascade)
   conversionJobs ConversionJob[]
 

@@ -36,6 +36,7 @@ import { z } from 'zod';
 import { prisma } from '@/lib/prisma';
 import { authConfig } from '@/auth.config';
 import { verifySamlBridgeToken } from '@/lib/saml';
+import { mintMfaBridgeToken, verifyMfaBridgeToken } from '@/lib/mfa-bridge';
 
 const LOCKOUT_THRESHOLD = 5;
 const LOCKOUT_DURATION_MS = 30 * 60 * 1000; // 30 min
@@ -86,6 +87,31 @@ class InvalidSamlBridgeError extends CredentialsSignin {
   code = 'saml_bridge_invalid';
 }
 
+/**
+ * R40 / R39 finish — surfaced when the credentials passed validation but the
+ * account has MFA on (`totpEnabledAt` set). The `code` field carries the
+ * stable client-side token the FE uses to decide "render the 2nd-factor
+ * step", and the `cause.mfaToken` payload carries the bridge token. We
+ * piggyback on next-auth's CredentialsSignin → URL `error` parameter
+ * propagation; the FE login form intercepts this code and redirects to
+ * `/login/mfa?token=...` (see auth.ts integration notes below).
+ *
+ * NOTE: next-auth v5 only exposes `error.code` to the client through the
+ * URL query string, not the message body. To pass the bridge token we have
+ * to encode it INTO the `code` itself. We pick a delimiter that cannot
+ * appear in the base64url body (`:`) and reassemble on the FE.
+ */
+class MfaRequiredError extends CredentialsSignin {
+  code = 'mfa_required';
+  constructor(public readonly mfaToken: string) {
+    super('mfa_required');
+    // Pack the bridge token into the `code` so the FE redirect picks it up.
+    // Format: `mfa_required:<token>`. The colon is safe — base64url tokens
+    // never contain it.
+    this.code = `mfa_required:${mfaToken}`;
+  }
+}
+
 const isKeycloakEnabled = process.env.KEYCLOAK_ENABLED === '1';
 
 /**
@@ -120,13 +146,61 @@ async function authorizeSamlBridge(token: string) {
 }
 
 /**
- * Credentials authorize() with two modes, distinguished by which field is
+ * R40 / R39 finish — verify an MFA bridge token, resolve the User row, and
+ * return the Auth.js User shape. Null/invalid tokens raise
+ * InvalidSamlBridgeError-equivalent (we reuse the same code namespace via
+ * a fresh class so the FE can disambiguate from SAML failures).
+ *
+ * The /api/v1/auth/mfa/verify endpoint mints the *MFA bridge* token only
+ * after the 2nd-factor step succeeds, so by the time we land here the
+ * second factor is already proven. We just resolve the user row and return
+ * the same shape the password path returns.
+ */
+async function authorizeMfaBridge(token: string) {
+  const userId = verifyMfaBridgeToken(token);
+  if (!userId) {
+    throw new InvalidCredentialsError();
+  }
+  const user = await prisma.user.findUnique({ where: { id: userId } });
+  if (!user || user.deletedAt) {
+    throw new InvalidCredentialsError();
+  }
+  // Stamp lastLoginAt + reset lockout counters now that the full 2-step
+  // flow has completed. (We deliberately did NOT do this on the
+  // password-step authorize; that path raised MfaRequiredError instead of
+  // returning a user, so it never bumped lastLoginAt.)
+  await prisma.user.update({
+    where: { id: user.id },
+    data: {
+      failedLoginCount: 0,
+      lockedUntil: null,
+      lastLoginAt: new Date(),
+    },
+  });
+  return {
+    id: user.id,
+    username: user.username,
+    name: user.fullName,
+    email: user.email ?? undefined,
+    role: user.role,
+    securityLevel: user.securityLevel,
+    organizationId: user.organizationId,
+  };
+}
+
+/**
+ * Credentials authorize() with three modes, distinguished by which field is
  * populated:
  *   - `{ username, password }` → standard bcrypt login (default path).
+ *     If `totpEnabledAt` is set on the row, throws `MfaRequiredError` with
+ *     a 5-min bridge token instead of returning a user — the FE then drives
+ *     a /login/mfa POST and re-enters via `mfaBridge`.
  *   - `{ samlBridge: <token> }` → R37 A-2 SAML SSO completion. The ACS
  *     endpoint has already validated the IdP response and provisioned the
  *     User row; the token vouches for that User.id with HMAC + 1-min ttl.
- *     We never touch passwordHash on this path.
+ *   - `{ mfaBridge: <token> }` → R40 MFA 2-step completion. Issued by
+ *     /api/v1/auth/mfa/verify after a TOTP/recovery code matches.
+ * The two bridge paths skip bcrypt entirely.
  */
 const credentialsProvider = Credentials({
   name: 'credentials',
@@ -137,6 +211,9 @@ const credentialsProvider = Credentials({
     // /api/v1/auth/saml/acs. Type "text" keeps the Auth.js client happy
     // (we don't render this on the credentials login form).
     samlBridge: { label: 'samlBridge', type: 'text' },
+    // R40 / R39 finish — MFA 2-step bridge. Populated by /login/mfa after
+    // /api/v1/auth/mfa/verify hands back a fresh bridge token.
+    mfaBridge: { label: 'mfaBridge', type: 'text' },
   },
   async authorize(raw) {
     // R37 / A-2 — SAML bridge mode. Branches first because the bridge token
@@ -144,6 +221,11 @@ const credentialsProvider = Credentials({
     const bridge = (raw as Record<string, unknown> | null)?.samlBridge;
     if (typeof bridge === 'string' && bridge.length > 0) {
       return authorizeSamlBridge(bridge);
+    }
+    // R40 / R39 finish — MFA bridge mode (post-2nd-factor).
+    const mfaBridgeRaw = (raw as Record<string, unknown> | null)?.mfaBridge;
+    if (typeof mfaBridgeRaw === 'string' && mfaBridgeRaw.length > 0) {
+      return authorizeMfaBridge(mfaBridgeRaw);
     }
 
     const parsed = credentialsSchema.safeParse(raw);
@@ -189,6 +271,24 @@ const credentialsProvider = Credentials({
       });
       if (shouldLock) throw new AccountLockedError();
       throw new InvalidCredentialsError();
+    }
+
+    // R40 / R39 finish — MFA gate. If the user has confirmed MFA we must NOT
+    // issue a session yet. Reset the failed-login counter (the 1st factor
+    // succeeded so the lockout pressure should drain) but defer the
+    // lastLoginAt bump to the post-MFA authorize path. Then mint a bridge
+    // token and throw a CredentialsSignin-derived error — the FE translates
+    // the `mfa_required:<token>` error code into a /login/mfa redirect.
+    if (user.totpEnabledAt) {
+      await prisma.user.update({
+        where: { id: user.id },
+        data: {
+          failedLoginCount: 0,
+          lockedUntil: null,
+        },
+      });
+      const mfaToken = mintMfaBridgeToken(user.id);
+      throw new MfaRequiredError(mfaToken);
     }
 
     // Success — reset counters, stamp last login.
