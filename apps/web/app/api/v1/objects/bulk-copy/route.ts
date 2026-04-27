@@ -31,6 +31,7 @@ import {
 import { ok, error, ErrorCode } from '@/lib/api-response';
 import type { ApiErrorCode } from '@/lib/api-errors';
 import { extractRequestMeta, logActivity } from '@/lib/audit';
+import { withApi } from '@/lib/api-helpers';
 
 const MAX_BATCH = 200;
 
@@ -50,7 +51,8 @@ interface FailureRow {
   message: string;
 }
 
-export async function POST(req: Request): Promise<NextResponse> {
+// SEC-1/3 — wrapped at module bottom (`export const POST = withApi(...)`).
+async function handlePost(req: Request): Promise<NextResponse> {
   let user;
   try {
     user = await requireUser();
@@ -226,6 +228,8 @@ export async function POST(req: Request): Promise<NextResponse> {
 
   return ok({ successes, failures });
 }
+
+export const POST = withApi({ rateLimit: 'api' }, handlePost);
 
 function nextFreeNumber(base: string, used: Set<string>): string {
   const candidate = `${base}-COPY`;
