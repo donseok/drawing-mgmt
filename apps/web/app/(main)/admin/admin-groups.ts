@@ -15,6 +15,7 @@ import {
   Plug,
   RefreshCw,
   ScrollText,
+  ShieldAlert,
   ShieldCheck,
   Users,
   Users2,
@@ -104,6 +105,16 @@ export const ADMIN_GROUPS: AdminGroup[] = [
         label: '스토리지',
         description: '저장소 드라이버 / 연결 테스트 / 사용량',
         icon: HardDrive,
+      },
+      // R36 V-INF-3 — virus-scan monitoring. Follows the same operational-
+      // surface pattern as 변환 작업: stats card + 5s polling table + per-row
+      // 재스캔. Placed inside 통합 / 로그 next to 스토리지 because both deal
+      // with operational guardrails on the file-storage path.
+      {
+        href: '/admin/scans',
+        label: '바이러스 스캔',
+        description: 'ClamAV 검사 이력 / 감염 차단 / 재스캔',
+        icon: ShieldAlert,
       },
       { href: '/admin/integrations', label: 'API Key', description: '외부 연계 키 발급/취소', icon: Plug },
       { href: '/admin/audit', label: '감사 로그', description: '시스템 활동 이력', icon: ScrollText },

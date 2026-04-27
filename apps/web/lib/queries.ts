@@ -109,6 +109,11 @@ export const queryKeys = {
     // immediately after a manual probe.
     storage: () => ['admin', 'storage'] as const,
     storageInfo: () => ['admin', 'storage', 'info'] as const,
+    // R36 V-INF-3 — virus-scan history. Polled at 5s while at least one row is
+    // SCANNING (mirrors /admin/conversions). The re-scan mutation invalidates
+    // this same root so stats + table refresh in lockstep.
+    scans: (params: { status?: string; cursor?: string } = {}) =>
+      ['admin', 'scans', params] as const,
   },
 
   search: {
