@@ -64,6 +64,18 @@ export const queryKeys = {
     folders: () => ['admin', 'folders'] as const,
     notices: () => ['admin', 'notices'] as const,
     audit: (params: Record<string, unknown> = {}) => ['admin', 'audit', params] as const,
+    // R28 U-5 — folder permission matrix. Keyed by folderId so a PUT on one
+    // folder doesn't invalidate other folders the admin recently inspected.
+    folderPermissions: (folderId: string) =>
+      ['admin', 'folder-permissions', folderId] as const,
+    // R28 U-5 — picker search. The picker lives in PrincipalPicker; key
+    // includes type+q so React Query caches each typed prefix separately.
+    principals: (params: { type: 'USER' | 'ORG' | 'GROUP'; q: string }) =>
+      ['admin', 'principals', params] as const,
+    // R28 V-INF-4 — conversion job feed. The 5-second polling refetches just
+    // this key; retry mutations invalidate it on settle.
+    conversions: (params: { status?: string; cursor?: string } = {}) =>
+      ['admin', 'conversions', 'jobs', params] as const,
   },
 
   search: {
