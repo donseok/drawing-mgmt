@@ -49,6 +49,13 @@ export const ACTIVITY_LABELS: Record<string, string> = {
   GROUP_UPDATE: '그룹 수정',
   GROUP_DELETE: '그룹 삭제',
   GROUP_MEMBER_UPDATE: '그룹 멤버 변경',
+  // R31 — print/PDF pipeline (P-1) request audit. The actual conversion
+  // outcome is tracked via ConversionJob rows; this row is the user-facing
+  // "I asked for a printout" log entry.
+  PRINT_REQUEST: '인쇄 요청',
+  // R31 — admin retry on a generic ConversionJob (already used by R28's
+  // /api/v1/admin/conversions/jobs/{id}/retry).
+  CONVERSION_RETRY: '변환 재시도',
 };
 
 /**
