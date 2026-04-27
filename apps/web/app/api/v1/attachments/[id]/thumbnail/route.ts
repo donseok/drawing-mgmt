@@ -42,6 +42,8 @@ import {
 import { error, ErrorCode } from '@/lib/api-response';
 import { getStorage } from '@/lib/storage';
 import { StorageNotFoundError } from '@drawing-mgmt/shared/storage';
+// R36 V-INF-3 — INFECTED attachments are blocked from rendering thumbnails.
+import { blockIfInfected } from '@/lib/scan-guard';
 
 export const runtime = 'nodejs';
 
@@ -204,6 +206,11 @@ export async function GET(
   const att = await loadAttachment(ctx.params.id);
   if (!att) return error(ErrorCode.E_NOT_FOUND);
 
+  // R36 V-INF-3 — INFECTED short-circuit. Even admins are blocked here so
+  // the placeholder isn't shown for quarantined files.
+  const blocked = await blockIfInfected(ctx.params.id);
+  if (blocked) return blocked;
+
   if (!isAdmin(user.role)) {
     const fullUser = await prisma.user.findUnique({ where: { id: user.id } });
     if (!fullUser) return error(ErrorCode.E_AUTH);
@@ -263,6 +270,8 @@ export async function HEAD(
   }
   const att = await loadAttachment(ctx.params.id);
   if (!att) return new NextResponse(null, { status: 404 });
+  const blockedHead = await blockIfInfected(ctx.params.id);
+  if (blockedHead) return new NextResponse(null, { status: 403 });
   if (!isAdmin(user.role)) {
     const fullUser = await prisma.user.findUnique({ where: { id: user.id } });
     if (!fullUser) return new NextResponse(null, { status: 401 });

@@ -326,12 +326,26 @@ model Attachment {
   thumbnailPath    String?
   conversionStatus ConversionStatus @default(PENDING)
   createdAt        DateTime         @default(now())
+  // R36 / V-INF-3 — ClamAV scan state. Lifecycle:
+  //   PENDING  → SCANNING → CLEAN | INFECTED | FAILED
+  //   PENDING  → SKIPPED   (CLAMAV_ENABLED=0 or binary missing)
+  // Default PENDING so newly-created attachments visibly enter the scan queue
+  // until the worker picks them up. INFECTED rows are blocked from
+  // download/preview/print/thumbnail by the file-serving routes.
+  virusScanStatus  VirusScanStatus  @default(PENDING)
+  // ClamAV signature name (e.g. "Win.Trojan.Foo-1234"). Populated only when
+  // virusScanStatus === INFECTED.
+  virusScanSig     String?
+  // Wallclock when the worker last finished a scan attempt (CLEAN/INFECTED/
+  // SKIPPED/FAILED). Null until the first scan attempt completes.
+  virusScanAt      DateTime?
 
   version        Version         @relation(fields: [versionId], references: [id], onDelete: Cascade)
   conversionJobs ConversionJob[]
 
   @@index([versionId])
   @@index([conversionStatus])
+  @@index([virusScanStatus])
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -792,5 +806,21 @@ enum BackupKind {
 enum BackupStatus {
   RUNNING
   DONE
+  FAILED
+}
+
+// R36 / V-INF-3 — Attachment ClamAV scan lifecycle.
+//   PENDING  — row created, queued, worker hasn't picked it up.
+//   SCANNING — worker started.
+//   CLEAN    — exit 0, no signature.
+//   INFECTED — exit 1, `virusScanSig` populated. Download/preview blocked.
+//   SKIPPED  — CLAMAV_ENABLED=0 or `clamscan` binary unavailable.
+//   FAILED   — exit 2 / I/O / unexpected error. Admin can retry.
+enum VirusScanStatus {
+  PENDING
+  SCANNING
+  CLEAN
+  INFECTED
+  SKIPPED
   FAILED
 }

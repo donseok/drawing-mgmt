@@ -19,6 +19,8 @@ import { promises as fs, createReadStream } from 'node:fs';
 import path from 'node:path';
 import { Readable } from 'node:stream';
 import { auth } from '@/auth';
+// R36 V-INF-3 — INFECTED attachments must not stream the rendered PDF.
+import { blockIfInfected } from '@/lib/scan-guard';
 
 const STORAGE_ROOT = path.resolve(process.env.FILE_STORAGE_ROOT ?? './.data/files');
 
@@ -33,6 +35,10 @@ export async function GET(
   if (!filePath) {
     return new NextResponse('Bad Request', { status: 400 });
   }
+
+  // R36 V-INF-3 — INFECTED short-circuit before any fs/stream work.
+  const blocked = await blockIfInfected(id);
+  if (blocked) return blocked;
 
   let stat;
   try {
@@ -97,6 +103,8 @@ export async function HEAD(
   await auth().catch(() => null);
   const filePath = resolvePreviewPath(ctx.params.id);
   if (!filePath) return new NextResponse(null, { status: 400 });
+  const blocked = await blockIfInfected(ctx.params.id);
+  if (blocked) return new NextResponse(null, { status: 403 });
   try {
     const stat = await fs.stat(filePath);
     return new NextResponse(null, {

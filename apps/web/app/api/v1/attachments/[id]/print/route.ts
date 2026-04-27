@@ -26,6 +26,8 @@ import { ok, error, ErrorCode } from '@/lib/api-response';
 import { extractRequestMeta, logActivity } from '@/lib/audit';
 import { withApi } from '@/lib/api-helpers';
 import { enqueuePrint } from '@/lib/conversion-queue';
+// R36 V-INF-3 — INFECTED attachments must not be printable.
+import { blockIfInfected } from '@/lib/scan-guard';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -89,6 +91,10 @@ export const POST = withApi<{ params: { id: string } }>(
     });
     const obj = attachment?.version?.revision?.object ?? null;
     if (!attachment || !obj) return error(ErrorCode.E_NOT_FOUND);
+
+    // R36 V-INF-3 — INFECTED short-circuit before permission check.
+    const blocked = await blockIfInfected(attachment.id);
+    if (blocked) return blocked;
 
     // Permission — admin/super_admin bypass the per-folder PRINT bit, since
     // they bypass all FolderPermission rows in canAccess().

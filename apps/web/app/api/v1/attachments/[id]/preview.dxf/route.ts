@@ -13,6 +13,8 @@ import { NextResponse } from 'next/server';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { auth } from '@/auth';
+// R36 V-INF-3 — INFECTED attachments must not stream the converted DXF.
+import { blockIfInfected } from '@/lib/scan-guard';
 
 const STORAGE_ROOT = path.resolve(process.env.FILE_STORAGE_ROOT ?? './.data/files');
 
@@ -27,6 +29,10 @@ export async function GET(
   if (!filePath) {
     return new NextResponse('Bad Request', { status: 400 });
   }
+
+  // R36 V-INF-3 — INFECTED short-circuit before touching the filesystem.
+  const blocked = await blockIfInfected(id);
+  if (blocked) return blocked;
 
   try {
     const buf = await fs.readFile(filePath);
@@ -51,6 +57,8 @@ export async function HEAD(
   const { id } = ctx.params;
   const filePath = resolvePreviewPath(id);
   if (!filePath) return new NextResponse(null, { status: 400 });
+  const blocked = await blockIfInfected(id);
+  if (blocked) return new NextResponse(null, { status: 403 });
   try {
     const stat = await fs.stat(filePath);
     return new NextResponse(null, {

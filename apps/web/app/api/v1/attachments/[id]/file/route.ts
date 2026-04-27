@@ -22,6 +22,10 @@ import path from 'node:path';
 import { auth } from '@/auth';
 import { getStorage } from '@/lib/storage';
 import { StorageNotFoundError } from '@drawing-mgmt/shared/storage';
+// R36 V-INF-3 — block downloads of INFECTED attachments. Other scan states
+// (PENDING/SCANNING/CLEAN/SKIPPED/FAILED) keep serving so the legacy ingest
+// path and admin smoke tests stay functional.
+import { blockIfInfected } from '@/lib/scan-guard';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -44,6 +48,10 @@ export async function GET(
   if (!/^[A-Za-z0-9_\-]+$/.test(id)) {
     return new NextResponse('Bad Request', { status: 400 });
   }
+
+  // R36 V-INF-3 — INFECTED attachments are blocked at the download edge.
+  const blocked = await blockIfInfected(id);
+  if (blocked) return blocked;
 
   const storage = getStorage();
   const sidecar = await readSidecar(storage, id);
@@ -94,6 +102,10 @@ export async function HEAD(
   if (!/^[A-Za-z0-9_\-]+$/.test(id)) {
     return new NextResponse(null, { status: 400 });
   }
+  // R36 V-INF-3 — INFECTED short-circuit. Mirror GET so HEAD probes don't
+  // leak existence/size of a quarantined file.
+  const blocked = await blockIfInfected(id);
+  if (blocked) return new NextResponse(null, { status: 403 });
   const storage = getStorage();
   const sidecar = await readSidecar(storage, id);
   const sourceKey = await resolveSource(storage, id, sidecar);
