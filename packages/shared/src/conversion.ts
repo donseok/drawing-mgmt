@@ -205,3 +205,62 @@ export const MailResultSchema = z.object({
 });
 
 export type MailResult = z.infer<typeof MailResultSchema>;
+
+// ─────────────────────────────────────────────────────────────
+// R36 V-INF-3 — Virus scan queue.
+//
+// Separate BullMQ queue (`virus-scan`) for AV scanning of uploaded
+// attachments. Backend (apps/web) enqueues a job whenever it creates
+// an Attachment row (via objects/[id]/attachments OR uploads/finalize).
+// The worker (apps/worker/src/scan-worker.ts) consumes the job, pulls
+// the file out of storage, and runs ClamAV against it via subprocess
+// (`clamscan`) or — when configured — a direct clamd TCP INSTREAM.
+//
+// Scan outcomes mutate the Attachment row:
+//   PENDING (set at enqueue) → SCANNING (worker entry)
+//     → CLEAN     (exit 0)
+//     OR INFECTED (exit 1)        + virusScanSig
+//     OR SKIPPED  (CLAMAV_ENABLED!=1 — never errors out)
+//     OR FAILED   (subprocess error or unexpected exit code)
+//
+// On INFECTED, the worker also creates Notification rows for the
+// uploader + all admins (`SECURITY_INFECTED_FILE`). Backend's API
+// layer (download/preview/print routes) reads `virusScanStatus` and
+// rejects INFECTED files.
+//
+// License posture: ClamAV is GPL-2.0. Like LibreDWG we treat it as
+// a pure subprocess — no `clamscan` / `node-clamav` JS bindings are
+// added to package.json. The clamd TCP path uses raw net.Socket,
+// also npm-dependency-free.
+// ─────────────────────────────────────────────────────────────
+
+export const VIRUS_SCAN_QUEUE_NAME = 'virus-scan';
+
+export const VirusScanStatusSchema = z.enum([
+  'PENDING',
+  'SCANNING',
+  'CLEAN',
+  'INFECTED',
+  'SKIPPED',
+  'FAILED',
+]);
+
+export type VirusScanStatus = z.infer<typeof VirusScanStatusSchema>;
+
+export const VirusScanJobPayloadSchema = z.object({
+  /** Attachment row id — worker reads storagePath from the row. */
+  attachmentId: z.string(),
+});
+
+export type VirusScanJobPayload = z.infer<typeof VirusScanJobPayloadSchema>;
+
+export const VirusScanResultSchema = z.object({
+  attachmentId: z.string(),
+  status: VirusScanStatusSchema,
+  /** ClamAV signature name when status === 'INFECTED'. */
+  signature: z.string().optional(),
+  errorMessage: z.string().optional(),
+  durationMs: z.number().optional(),
+});
+
+export type VirusScanResult = z.infer<typeof VirusScanResultSchema>;
