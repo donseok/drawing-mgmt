@@ -5,6 +5,7 @@
 // reference and the server crashed when it called `.map()` on it.
 
 import {
+  Archive,
   Building2,
   FolderTree as FolderTreeIcon,
   Hash,
@@ -84,6 +85,15 @@ export const ADMIN_GROUPS: AdminGroup[] = [
         label: '변환 작업',
         description: 'DWG/DXF 변환 큐 모니터링 및 재시도',
         icon: RefreshCw,
+      },
+      // R33 D-5 — backup history. Sits between 변환 작업 and API Key per
+      // designer spec (§B.1) because both 변환 and 백업 are BullMQ-backed
+      // operational surfaces with the same mental model.
+      {
+        href: '/admin/backups',
+        label: '백업',
+        description: 'DB·파일 백업 이력 / 즉시 실행 / 다운로드',
+        icon: Archive,
       },
       { href: '/admin/integrations', label: 'API Key', description: '외부 연계 키 발급/취소', icon: Plug },
       { href: '/admin/audit', label: '감사 로그', description: '시스템 활동 이력', icon: ScrollText },
