@@ -14,7 +14,6 @@
 // Owned by BE (R21).
 
 import { NextResponse } from 'next/server';
-import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import { ObjectState } from '@prisma/client';
@@ -28,6 +27,9 @@ import {
 import { ok, error, ErrorCode } from '@/lib/api-response';
 import { extractRequestMeta, logActivity } from '@/lib/audit';
 import { enqueueConversion } from '@/lib/conversion-queue';
+// R34 V-INF-1 — storage abstraction. Default LOCAL keeps the on-disk layout
+// from R21; STORAGE_DRIVER=s3 switches to MinIO/S3 with no caller change.
+import { getStorage } from '@/lib/storage';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -35,13 +37,6 @@ export const dynamic = 'force-dynamic';
 const MAX_BYTES = Number(
   process.env.ATTACHMENT_MAX_BYTES ?? 200 * 1024 * 1024,
 );
-
-const STORAGE_ROOT = path.isAbsolute(process.env.FILE_STORAGE_ROOT ?? '')
-  ? path.resolve(process.env.FILE_STORAGE_ROOT!)
-  : path.resolve(
-      process.cwd(),
-      process.env.FILE_STORAGE_ROOT ?? './.data/files',
-    );
 
 export async function POST(
   req: Request,
@@ -133,30 +128,32 @@ export async function POST(
   // Attachment id is the storage directory name. Mirrors dev ingest layout
   // so the existing `/api/v1/attachments/[id]/file` reader picks it up.
   const attachmentId = randomUUID();
-  const targetDir = path.join(STORAGE_ROOT, attachmentId);
-  await fs.mkdir(targetDir, { recursive: true });
   const ext = path.extname(file.name).toLowerCase() || '';
   const storedName = ext ? `source${ext}` : 'source';
-  const storedPath = path.join(targetDir, storedName);
+  const sourceKey = `${attachmentId}/${storedName}`;
+  const metaKey = `${attachmentId}/meta.json`;
 
   const buf = Buffer.from(await file.arrayBuffer());
-  await fs.writeFile(storedPath, buf);
   const checksum = createHash('sha256').update(buf).digest('hex');
+  const mimeType = file.type || guessMime(ext);
+
+  // R34 — storage abstraction. LOCAL writes to disk under FILE_STORAGE_ROOT;
+  // S3 puts to the configured bucket with the same key.
+  const storage = getStorage();
+  await storage.put(sourceKey, buf, { contentType: mimeType, size: file.size });
 
   // sidecar so the existing `/api/v1/attachments/[id]/file` route resolves
   // the original filename + mime type without a DB read.
   const sidecar = {
     filename: file.name,
-    mimeType: file.type || guessMime(ext),
+    mimeType,
     size: file.size,
-    storagePath: `${attachmentId}/${storedName}`,
+    storagePath: sourceKey,
   };
-  await fs
-    .writeFile(
-      path.join(targetDir, 'meta.json'),
-      JSON.stringify(sidecar, null, 2),
-      'utf8',
-    )
+  await storage
+    .put(metaKey, Buffer.from(JSON.stringify(sidecar, null, 2), 'utf8'), {
+      contentType: 'application/json',
+    })
     .catch(() => undefined);
 
   const created = await prisma.$transaction(async (tx) => {
@@ -207,8 +204,8 @@ export async function POST(
         id: attachmentId,
         versionId: version.id,
         filename: file.name,
-        storagePath: `${attachmentId}/${storedName}`,
-        mimeType: file.type || guessMime(ext),
+        storagePath: sourceKey,
+        mimeType,
         size: BigInt(file.size),
         isMaster: becomesMaster,
         checksumSha256: checksum,
@@ -233,7 +230,7 @@ export async function POST(
   if (ext === '.dwg') {
     const queueResult = await enqueueConversion({
       attachmentId: created.id,
-      storagePath: `${attachmentId}/${storedName}`,
+      storagePath: sourceKey,
       filename: created.filename,
       mimeType: created.mimeType,
     });

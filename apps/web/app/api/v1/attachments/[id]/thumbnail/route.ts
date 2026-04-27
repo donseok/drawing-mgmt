@@ -4,10 +4,13 @@
  * R29 V-INF-6 — auth-gated PNG thumbnail produced by the conversion worker.
  *
  * Resolution order:
- *   1. Most recent DONE `ConversionJob.thumbnailPath` (the worker writes
- *      this on success). This survives even if the on-disk layout changes.
- *   2. Fall back to `${FILE_STORAGE_ROOT}/<attachmentId>/thumbnail.png` so
- *      we don't break for jobs that ran before the column existed.
+ *   1. Most recent DONE `ConversionJob.thumbnailPath`. R34+ workers write
+ *      a storage key (e.g. `<attachmentId>/thumbnail.png`); pre-R34 rows
+ *      may still hold an absolute filesystem path. We auto-detect: a value
+ *      starting with `/` is treated as a legacy absolute path; otherwise
+ *      it goes through `storage.get()`.
+ *   2. Fall back to the canonical key `<attachmentId>/thumbnail.png` so we
+ *      don't break for jobs that ran before the column existed.
  *   3. Else a placeholder SVG (200) — keeps the search grid `<img>` from
  *      showing broken-image icons. Callers that want a hard 404 (e.g. an
  *      admin "is conversion done?" probe) can pass `?strict=1`.
@@ -21,11 +24,13 @@
  *   - 24h `private, max-age=86400`. Thumbnails are immutable for a given
  *     ConversionJob row; if the worker re-runs (admin retry), a NEW job row
  *     is created so re-issued URLs naturally bypass the user's cache.
+ *
+ * R34 V-INF-1 — fs.* swapped for `getStorage()` with a legacy fallback for
+ * absolute paths still recorded in the DB. Response shape unchanged.
  */
 
 import { NextResponse } from 'next/server';
 import { promises as fs, createReadStream } from 'node:fs';
-import path from 'node:path';
 import { Readable } from 'node:stream';
 import { prisma } from '@/lib/prisma';
 import { requireUser } from '@/lib/auth-helpers';
@@ -35,15 +40,10 @@ import {
   loadFolderPermissions,
 } from '@/lib/permissions';
 import { error, ErrorCode } from '@/lib/api-response';
+import { getStorage } from '@/lib/storage';
+import { StorageNotFoundError } from '@drawing-mgmt/shared/storage';
 
 export const runtime = 'nodejs';
-
-const STORAGE_ROOT = path.isAbsolute(process.env.FILE_STORAGE_ROOT ?? '')
-  ? path.resolve(process.env.FILE_STORAGE_ROOT!)
-  : path.resolve(
-      process.cwd(),
-      process.env.FILE_STORAGE_ROOT ?? './.data/files',
-    );
 
 function isAdmin(role: string): boolean {
   return role === 'SUPER_ADMIN' || role === 'ADMIN';
@@ -93,33 +93,55 @@ async function loadAttachment(id: string): Promise<AttachmentLookup | null> {
   };
 }
 
+interface ResolvedThumbnail {
+  /** Either a storage key (relative) or an absolute filesystem path. */
+  ref: string;
+  kind: 'storage' | 'legacy-fs';
+}
+
 /**
- * Resolve the thumbnail file path for an attachment by consulting the most
- * recent DONE ConversionJob first, then falling back to the canonical
- * on-disk location. Returns null when nothing usable exists.
+ * Resolve the thumbnail file for an attachment.
+ *
+ * R34 transition rules:
+ *   - thumbnailPath that starts with `/` → legacy absolute fs path. Open
+ *     directly via createReadStream + fs.stat (matches pre-R34 behavior).
+ *   - otherwise → storage key. Routes via getStorage() so MinIO/S3 works.
+ *
+ * Returns null when no thumbnail can be served.
  */
-async function resolveThumbnailFile(
+async function resolveThumbnail(
   attachmentId: string,
-): Promise<string | null> {
-  // 1) Prefer the persisted column — the worker writes it on success.
+): Promise<ResolvedThumbnail | null> {
   const job = await prisma.conversionJob.findFirst({
     where: { attachmentId, status: 'DONE', thumbnailPath: { not: null } },
     orderBy: { finishedAt: 'desc' },
     select: { thumbnailPath: true },
   });
+
+  // 1) Persisted column — preferred.
   if (job?.thumbnailPath) {
-    if (await exists(job.thumbnailPath)) return job.thumbnailPath;
+    const recorded = job.thumbnailPath;
+    if (recorded.startsWith('/')) {
+      // Legacy absolute fs path. Confirm it exists before returning.
+      if (await legacyExists(recorded)) {
+        return { ref: recorded, kind: 'legacy-fs' };
+      }
+    } else if (await getStorage().exists(recorded)) {
+      return { ref: recorded, kind: 'storage' };
+    }
   }
 
-  // 2) Legacy fallback — pre-R29 jobs put the file under STORAGE_ROOT but
-  // never recorded the path. Allow only attachment ids that look safe.
+  // 2) Canonical storage key fallback. Allow only attachment ids that look
+  //    safe (the get/list code asserts again, but cheap to short-circuit).
   if (!/^[A-Za-z0-9_\-]+$/.test(attachmentId)) return null;
-  const fallback = path.join(STORAGE_ROOT, attachmentId, 'thumbnail.png');
-  if (await exists(fallback)) return fallback;
+  const fallback = `${attachmentId}/thumbnail.png`;
+  if (await getStorage().exists(fallback)) {
+    return { ref: fallback, kind: 'storage' };
+  }
   return null;
 }
 
-async function exists(p: string): Promise<boolean> {
+async function legacyExists(p: string): Promise<boolean> {
   try {
     await fs.access(p);
     return true;
@@ -138,6 +160,31 @@ function placeholderSvg(id: string): string {
     <text x="128" y="142" font-size="11" font-family="ui-monospace, monospace">${id.slice(0, 16)}</text>
   </g>
 </svg>`;
+}
+
+interface ThumbnailBody {
+  stream: NodeJS.ReadableStream;
+  size: number;
+}
+
+async function openThumbnail(
+  resolved: ResolvedThumbnail,
+): Promise<ThumbnailBody | null> {
+  if (resolved.kind === 'legacy-fs') {
+    try {
+      const stat = await fs.stat(resolved.ref);
+      return { stream: createReadStream(resolved.ref), size: stat.size };
+    } catch {
+      return null;
+    }
+  }
+  try {
+    const got = await getStorage().get(resolved.ref);
+    return { stream: got.stream, size: got.size };
+  } catch (err) {
+    if (err instanceof StorageNotFoundError) return null;
+    throw err;
+  }
 }
 
 export async function GET(
@@ -174,8 +221,9 @@ export async function GET(
   const url = new URL(req.url);
   const strict = url.searchParams.get('strict') === '1';
 
-  const filePath = await resolveThumbnailFile(ctx.params.id);
-  if (!filePath) {
+  const resolved = await resolveThumbnail(ctx.params.id);
+  const body = resolved ? await openThumbnail(resolved) : null;
+  if (!body) {
     if (strict) {
       return new NextResponse('Not Found', { status: 404 });
     }
@@ -188,21 +236,15 @@ export async function GET(
     });
   }
 
-  let stat;
-  try {
-    stat = await fs.stat(filePath);
-  } catch {
-    return new NextResponse('Not Found', { status: 404 });
-  }
-
   // 4) Stream — keeps memory flat regardless of thumbnail size.
-  const nodeStream = createReadStream(filePath);
-  const webStream = Readable.toWeb(nodeStream) as unknown as ReadableStream<Uint8Array>;
+  const webStream = Readable.toWeb(
+    body.stream as InstanceType<typeof Readable>,
+  ) as unknown as ReadableStream<Uint8Array>;
   return new NextResponse(webStream, {
     status: 200,
     headers: {
       'Content-Type': 'image/png',
-      'Content-Length': String(stat.size),
+      'Content-Length': String(body.size),
       'Cache-Control': 'private, max-age=86400',
     },
   });
@@ -231,18 +273,30 @@ export async function HEAD(
     const decision = canAccess(pUser, att, perms, 'VIEW_FOLDER');
     if (!decision.allowed) return new NextResponse(null, { status: 403 });
   }
-  const filePath = await resolveThumbnailFile(ctx.params.id);
-  if (!filePath) return new NextResponse(null, { status: 404 });
-  try {
-    const stat = await fs.stat(filePath);
-    return new NextResponse(null, {
-      status: 200,
-      headers: {
-        'Content-Type': 'image/png',
-        'Content-Length': String(stat.size),
-      },
-    });
-  } catch {
-    return new NextResponse(null, { status: 404 });
+  const resolved = await resolveThumbnail(ctx.params.id);
+  if (!resolved) return new NextResponse(null, { status: 404 });
+
+  if (resolved.kind === 'legacy-fs') {
+    try {
+      const stat = await fs.stat(resolved.ref);
+      return new NextResponse(null, {
+        status: 200,
+        headers: {
+          'Content-Type': 'image/png',
+          'Content-Length': String(stat.size),
+        },
+      });
+    } catch {
+      return new NextResponse(null, { status: 404 });
+    }
   }
+  const stat = await getStorage().stat(resolved.ref);
+  if (!stat) return new NextResponse(null, { status: 404 });
+  return new NextResponse(null, {
+    status: 200,
+    headers: {
+      'Content-Type': 'image/png',
+      'Content-Length': String(stat.size),
+    },
+  });
 }

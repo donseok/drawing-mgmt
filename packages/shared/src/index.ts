@@ -3,3 +3,4 @@ export * from './constants';
 export * from './conversion';
 export * from './chat';
 export * from './permissions';
+export * from './storage';
