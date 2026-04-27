@@ -52,6 +52,20 @@ model User {
   // users keep parity with the old in-app-only behaviour (the global
   // `MAIL_ENABLED=0` env gate still suppresses sends in dev/CI).
   notifyByEmail    Boolean        @default(true)
+  // R38 / N-2 — SMS + KakaoTalk 알림톡 channels.
+  //
+  // `phoneNumber` carries an E.164-ish digit string (the FE/zod regex tolerates
+  // hyphens for KR-style display, "+82-10-..."). Nullable because most users
+  // won't fill it in until they opt into SMS/Kakao push.
+  //
+  // Both `notifyBySms` and `notifyByKakao` default to FALSE — SMS / 알림톡
+  // delivery costs real money via external providers (Twilio, NCP SENS), so
+  // they must be explicitly opted in rather than inheriting the email
+  // default. The global `SMS_ENABLED=0` / `KAKAO_ENABLED=0` env gate still
+  // wins; these columns only matter when the env-level channel is on.
+  phoneNumber      String?
+  notifyBySms      Boolean        @default(false)
+  notifyByKakao    Boolean        @default(false)
 
   organization       Organization?   @relation(fields: [organizationId], references: [id])
   groups             UserGroup[]
@@ -477,14 +491,14 @@ model LobbyReply {
 // CONVERSION JOB
 // ─────────────────────────────────────────────────────────────
 model ConversionJob {
-  id           String           @id @default(cuid())
-  attachmentId String
-  status       ConversionStatus @default(PENDING)
-  attempt      Int              @default(0)
-  errorMessage String?
-  startedAt    DateTime?
-  finishedAt   DateTime?
-  createdAt    DateTime         @default(now())
+  id            String           @id @default(cuid())
+  attachmentId  String
+  status        ConversionStatus @default(PENDING)
+  attempt       Int              @default(0)
+  errorMessage  String?
+  startedAt     DateTime?
+  finishedAt    DateTime?
+  createdAt     DateTime         @default(now())
   // R29 V-INF-6 — persistent paths for the conversion artifacts. The worker
   // already writes preview.dxf and thumbnail.png under
   // ${FILE_STORAGE_ROOT}/<attachmentId>/, but until R29 we never recorded the
