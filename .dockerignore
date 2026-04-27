@@ -1,0 +1,68 @@
+# R32 X-1.aux — root .dockerignore
+# Docker build context 최소화 (web/worker 이미지 공통).
+
+# Node / pnpm
+**/node_modules
+.pnpm-store
+.pnpm-debug.log*
+npm-debug.log*
+yarn-debug.log*
+pnpm-debug.log*
+
+# Next.js / 빌드 산출물
+**/.next
+**/out
+**/dist
+**/build
+**/.turbo
+**/*.tsbuildinfo
+
+# Git / VCS
+.git
+.gitignore
+.gitattributes
+
+# Editor / OS
+.vscode
+.idea
+.DS_Store
+Thumbs.db
+
+# Claude Code 하네스 산출물 (이미지에 포함되면 안 됨)
+.claude
+_workspace
+_workspace_*
+
+# 환경 변수 — 컨테이너에는 env_file/secret으로 주입
+.env
+.env.*
+!.env.example
+
+# 테스트 / 커버리지
+coverage
+.nyc_output
+**/playwright-report
+**/test-results
+apps/web/e2e/.auth
+
+# 로컬 데이터 / 픽스처
+.data
+/data
+fixtures/dwg/*.dwg
+fixtures/pdf/*.pdf
+fixtures/dxf/*.dxf
+
+# 로그
+*.log
+
+# 문서 / 스크린샷 (이미지 사이즈 절약)
+docs
+*.md
+!apps/**/README.md
+/login.png
+/main.png
+.playwright-mcp
+
+# 운영 compose 자체는 빌드 컨텍스트에 필요 없음
+docker-compose.yml
+docker-compose.prod.yml

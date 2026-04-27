@@ -1,0 +1,112 @@
+# R32 X-1.c — drawing-mgmt 운영(production) docker-compose
+#
+# 사용:
+#   1) `.env.production`을 이 파일과 같은 디렉토리에 둔다 (예: DATABASE_URL,
+#      AUTH_SECRET, REDIS_URL, FILE_STORAGE_ROOT, NEXT_PUBLIC_BASE_URL,
+#      ODA_CONVERTER_PATH, LIBREDWG_DWG2DXF_PATH, GS_PATH 등).
+#   2) `docker compose -f docker-compose.prod.yml up -d` 로 기동.
+#   3) web/worker 이미지는 viewer-engineer가 작성한 apps/web/Dockerfile,
+#      apps/worker/Dockerfile 로 빌드된다.
+#
+# 라이선스 메모:
+#   - LibreDWG(GPL)는 worker 이미지 안에서 dwg2dxf subprocess로만 호출.
+#     web 이미지에는 포함되지 않는다 (라이선스 격리 유지).
+#   - ODA File Converter binary는 라이선스가 사용자 환경에 의존하므로
+#     기본은 호스트에서 마운트하는 형태로 둔다 (worker Dockerfile에서 옵션
+#     COPY 가능). 본 compose에서는 환경변수로 path만 받는다.
+#
+# 네트워크:
+#   - 단일 default bridge 네트워크. 외부 노출은 web(3000)만.
+#     postgres / redis 포트는 외부에 publish 하지 않는다.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: drawmgmt-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-drawmgmt}
+      POSTGRES_USER: ${POSTGRES_USER:-drawmgmt}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-drawmgmt}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U ${POSTGRES_USER:-drawmgmt} -d ${POSTGRES_DB:-drawmgmt}",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  redis:
+    image: redis:7-alpine
+    container_name: drawmgmt-redis
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+    container_name: drawmgmt-web
+    restart: unless-stopped
+    env_file:
+      - .env.production
+    environment:
+      NODE_ENV: production
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    ports:
+      - "3000:3000"
+    volumes:
+      - file_storage:/var/lib/drawmgmt/files
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "wget -qO- http://localhost:3000/api/health > /dev/null || exit 1",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  worker:
+    build:
+      context: .
+      dockerfile: apps/worker/Dockerfile
+    container_name: drawmgmt-worker
+    restart: unless-stopped
+    env_file:
+      - .env.production
+    environment:
+      NODE_ENV: production
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - file_storage:/var/lib/drawmgmt/files
+
+volumes:
+  postgres_data:
+    name: drawmgmt_postgres_data
+  redis_data:
+    name: drawmgmt_redis_data
+  file_storage:
+    name: drawmgmt_file_storage
