@@ -100,6 +100,8 @@ interface ObjectTableProps {
   onCheckinRow?: (row: ObjectRow) => void;
   onCancelCheckoutRow?: (row: ObjectRow) => void;
   onReleaseRow?: (row: ObjectRow) => void;
+  /** R31 P-1 — open the PrintDialog for the row's master attachment. */
+  onPrintRow?: (row: ObjectRow) => void;
 }
 
 export function ObjectTable({
@@ -116,6 +118,7 @@ export function ObjectTable({
   onCheckinRow,
   onCancelCheckoutRow,
   onReleaseRow,
+  onPrintRow,
 }: ObjectTableProps) {
   const router = useRouter();
   // Default sort targets a column that actually exists in this table. The
@@ -300,6 +303,7 @@ export function ObjectTable({
               state: row.original.state,
               lockedById: row.original.lockedById ?? null,
               ownerId: row.original.ownerId ?? null,
+              masterAttachmentId: row.original.masterAttachmentId ?? null,
             }}
             me={me}
             meId={meId}
@@ -310,6 +314,7 @@ export function ObjectTable({
             }
             onRelease={onReleaseRow ? () => onReleaseRow(row.original) : undefined}
             onDelete={onDeleteRow ? () => setPendingDelete(row.original) : undefined}
+            onPrint={onPrintRow ? () => onPrintRow(row.original) : undefined}
           />
         ),
         size: 32,
@@ -325,6 +330,7 @@ export function ObjectTable({
       onCheckinRow,
       onCancelCheckoutRow,
       onReleaseRow,
+      onPrintRow,
     ],
   );
 

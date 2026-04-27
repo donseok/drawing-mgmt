@@ -11,6 +11,7 @@ import {
   Send,
   Undo2,
   Trash2,
+  Printer,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import {
@@ -48,6 +49,11 @@ export interface RowMenuRow {
   lockedById?: string | null;
   /** Owner user id — needed by the admin-gated delete rule (R3c-3 #4). */
   ownerId?: string | null;
+  /**
+   * Master attachment id — needed by the R31 P-1 print entry. When null/
+   * undefined the `인쇄` menu item is disabled because there's no PDF target.
+   */
+  masterAttachmentId?: string | null;
 }
 
 /** Subset of /api/v1/me response the menu needs for permission gating. */
@@ -78,6 +84,8 @@ interface RowMenuProps {
   onCancelCheckout?: (row: RowMenuRow) => void;
   onRelease?: (row: RowMenuRow) => void;
   onDelete?: (row: RowMenuRow) => void;
+  /** R31 P-1 — open the print dialog for the row's master attachment. */
+  onPrint?: (row: RowMenuRow) => void;
 }
 
 /**
@@ -100,6 +108,7 @@ export function RowMenu({
   onCancelCheckout,
   onRelease,
   onDelete,
+  onPrint,
 }: RowMenuProps) {
   // `me` is the new shape; `meId` keeps backward compat with R3b call sites.
   const effectiveMeId = me?.id ?? meId;
@@ -153,6 +162,10 @@ export function RowMenu({
   const permissionUnknown = !me || (!row.ownerId && me.role === undefined);
   const canDelete =
     !isInApproval && !!onDelete && (permissionUnknown || isAdmin || isOwner);
+  // R31 P-1 — print requires (a) the parent wired onPrint and (b) the row has
+  // a master attachment to render. Permission (download bit) is enforced by
+  // the BE; we only block the obvious "no master file" case here.
+  const canPrint = !!onPrint && !!row.masterAttachmentId;
 
   return (
     <DropdownMenu>
@@ -175,6 +188,13 @@ export function RowMenu({
         <DropdownMenuItem onSelect={() => handle('다운로드', onDownload)}>
           <Download className="text-fg-muted" />
           다운로드
+        </DropdownMenuItem>
+        <DropdownMenuItem
+          disabled={!canPrint}
+          onSelect={() => handle('인쇄', onPrint)}
+        >
+          <Printer className="text-fg-muted" />
+          인쇄
         </DropdownMenuItem>
         <DropdownMenuItem onSelect={() => handle('복사', onCopy)}>
           <Copy className="text-fg-muted" />

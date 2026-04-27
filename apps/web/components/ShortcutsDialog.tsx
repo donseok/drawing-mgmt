@@ -39,6 +39,7 @@ const GROUPS: Group[] = [
       { keys: ['Enter'], label: '상세 페이지' },
       { keys: ['Space'], label: '미리보기 토글' },
       { keys: ['⌘', 'D'], label: '다운로드' },
+      { keys: ['⌘', 'P'], label: '인쇄 (자료 상세)' },
       { keys: ['⌘', 'E'], label: '편집(체크아웃)' },
       { keys: ['⌘', '⇧', 'A'], label: '결재상신' },
       { keys: ['⌘', '⌫'], label: '폐기' },

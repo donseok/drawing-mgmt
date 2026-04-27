@@ -103,6 +103,14 @@ export const queryKeys = {
   search: {
     palette: (q: string) => ['search', 'palette', q] as const,
   },
+
+  // R31 P-1 — print/PDF conversion job status. Polling lives inside
+  // <PrintDialog>; the key is per-jobId so multiple concurrent dialogs
+  // (e.g. detail page + search row) share the cache.
+  print: {
+    all: () => ['print'] as const,
+    status: (jobId: string) => ['print', 'status', jobId] as const,
+  },
 } as const;
 
 export type QueryKeys = typeof queryKeys;
