@@ -25,6 +25,20 @@
 #                                etc. would matter for restore parity);
 #                                installing the GNU build keeps behavior
 #                                portable.
+#   - clamav (clamscan)         → R36 V-INF-3: GPL-2 antivirus engine,
+#                                invoked only via subprocess from
+#                                apps/worker/src/clamav.ts. We do NOT add
+#                                any JS binding (no `clamscan` / `node-clam`
+#                                npm) so the MIT/Apache npm tree stays
+#                                untouched. Operators who prefer the
+#                                resident daemon (clamd) can run it as a
+#                                sidecar and set CLAMAV_USE_CLAMD=1 +
+#                                CLAMD_HOST/PORT — the adapter speaks raw
+#                                INSTREAM TCP, no extra package needed.
+#                                Signature DB freshness is delegated to a
+#                                separate freshclam process / sidecar
+#                                (next round); CLAMAV_ENABLED=0 keeps
+#                                this image fully usable in dev / CI.
 #   - tini                     → PID 1 signal handler
 #
 # ODA File Converter is intentionally NOT installed:
@@ -174,10 +188,19 @@ FROM node:${NODE_VERSION}-alpine${ALPINE_VERSION} AS runner
 #   - libc6-compat       : glibc shim used by sharp's prebuilt + Prisma engines.
 #   - postgresql-client  : R33 D-5 — provides `pg_dump` for the backup worker.
 #   - tar + gzip         : R33 D-5 — GNU tar + gzip for the files snapshot.
+#   - clamav             : R36 V-INF-3 — provides `clamscan` (and `clamd`)
+#                          binaries. The worker shells out via execa from
+#                          apps/worker/src/clamav.ts — no GPL-licensed
+#                          JS binding ships in node_modules.
+#                          Note: we do NOT bundle the signature database
+#                          here (would bloat the image by ~250MB and go
+#                          stale fast). Operators run `freshclam` either
+#                          on the host or in a sidecar that mounts a
+#                          shared /var/lib/clamav volume.
 #
 # sharp 0.33 ships a `linuxmusl` prebuild with libvips bundled, so we
 # don't need the alpine `vips` package at runtime.
-RUN apk add --no-cache libc6-compat openssl tini postgresql-client tar gzip \
+RUN apk add --no-cache libc6-compat openssl tini postgresql-client tar gzip clamav \
  && addgroup --system --gid 1001 nodejs \
  && adduser  --system --uid 1001 --ingroup nodejs worker
 

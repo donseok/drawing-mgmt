@@ -38,6 +38,7 @@ import { generateThumbnail } from './thumbnail.js';
 import { generatePdfFromDxf } from './pdf.js';
 import { startBackupWorker } from './backup-worker.js';
 import { startMailWorker } from './mail-worker.js';
+import { startScanWorker } from './scan-worker.js';
 import { getStorage, type Storage } from './storage.js';
 
 const log = pino({
@@ -623,12 +624,26 @@ const backupWorkerHandle = startBackupWorker({ connection, prisma, log });
 
 const mailWorkerHandle = startMailWorker({ connection, log });
 
+// ─────────────────────────────────────────────────────────────────────────
+// R36 V-INF-3 — virus-scan queue worker.
+//
+// Runs ClamAV against each newly-uploaded Attachment via subprocess
+// (`clamscan` CLI) or clamd TCP INSTREAM (when CLAMAV_USE_CLAMD=1).
+// The worker stays bootable even when CLAMAV_ENABLED!='1' — in that
+// mode every job resolves to SKIPPED so attachments don't sit in
+// PENDING forever. ClamAV is GPL-2; we never import a JS binding,
+// only spawn the binary or open a raw TCP socket. See ./clamav.ts.
+// ─────────────────────────────────────────────────────────────────────────
+
+const scanWorkerHandle = startScanWorker({ connection, prisma, log });
+
 const shutdown = async (sig: string) => {
   log.info({ sig }, 'worker shutting down');
   await Promise.all([
     worker.close(),
     pdfPrintWorker.close(),
     backupWorkerHandle.close(),
+    scanWorkerHandle.close(),
     // mail worker is optional (disabled when MAIL_ENABLED!='1').
     mailWorkerHandle ? mailWorkerHandle.close() : Promise.resolve(),
   ]);
@@ -645,12 +660,14 @@ log.info(
       CONVERSION_QUEUE_NAME,
       PDF_PRINT_QUEUE_NAME,
       'backup',
+      'virus-scan',
       ...(mailWorkerHandle ? ['mail'] : []),
     ],
     redis: REDIS_URL,
     oda: ODA_CONVERTER_PATH,
     libredwg: LIBREDWG_BIN,
     mailEnabled: process.env.MAIL_ENABLED === '1',
+    clamavEnabled: process.env.CLAMAV_ENABLED === '1',
   },
   'worker started',
 );
