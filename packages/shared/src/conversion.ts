@@ -146,3 +146,62 @@ export const BackupResultSchema = z.object({
 });
 
 export type BackupResult = z.infer<typeof BackupResultSchema>;
+
+// ─────────────────────────────────────────────────────────────
+// R35 N-1 — Mail queue.
+//
+// Separate BullMQ queue (`mail`) for outbound email notifications. Backend
+// (apps/web) enqueues a job whenever it creates a Notification row for a
+// user whose `notifyByEmail` is true and `MAIL_ENABLED=1`. The worker
+// (apps/worker/src/mail-worker.ts) consumes the job and runs nodemailer
+// SMTP send.
+//
+// Design notes:
+//   - Notification row creation lives on the web side (R29). The worker is
+//     pure side-effect — it does NOT mutate the row. Successful sends are
+//     logged; failures are retried by BullMQ (3 attempts + exp backoff).
+//   - `notificationId` is optional so this queue can also be used for
+//     transactional, non-notification emails later (e.g. password reset)
+//     without schema changes.
+//   - `text` is required (plain-text body). `html` is optional — when both
+//     are present the SMTP server lets the recipient pick.
+//   - `MAIL_ENABLED=0` short-circuits both the enqueue side (web) and the
+//     worker bootstrap (worker doesn't start the consumer), so the queue
+//     stays empty in dev / CI.
+//
+// License posture: nodemailer is MIT (web/lib/mail.ts and the worker's own
+// transport sit on the same library; no GPL transitive deps).
+// ─────────────────────────────────────────────────────────────
+
+export const MAIL_QUEUE_NAME = 'mail';
+
+export const MailJobPayloadSchema = z.object({
+  /**
+   * Optional Notification row id this email corresponds to. Set when the
+   * email is a notification fan-out from R29's `enqueueNotification`. Left
+   * undefined for ad-hoc transactional sends (password reset, invite, …).
+   */
+  notificationId: z.string().optional(),
+  /** Recipient email address. Validated as RFC 5322-ish at the edge. */
+  to: z.string().email(),
+  /** Subject line (UTF-8). */
+  subject: z.string().min(1),
+  /** Plain-text body. Required even when `html` is present (a11y/fallback). */
+  text: z.string(),
+  /** Optional HTML body. */
+  html: z.string().optional(),
+});
+
+export type MailJobPayload = z.infer<typeof MailJobPayloadSchema>;
+
+export const MailResultSchema = z.object({
+  notificationId: z.string().optional(),
+  to: z.string(),
+  status: z.enum(['SENT', 'SKIPPED', 'FAILED']),
+  /** Underlying SMTP message id when available. */
+  messageId: z.string().optional(),
+  errorMessage: z.string().optional(),
+  durationMs: z.number().optional(),
+});
+
+export type MailResult = z.infer<typeof MailResultSchema>;

@@ -37,6 +37,7 @@ import { dwgToDxfLibre, LibreDwgUnavailableError } from './libredwg.js';
 import { generateThumbnail } from './thumbnail.js';
 import { generatePdfFromDxf } from './pdf.js';
 import { startBackupWorker } from './backup-worker.js';
+import { startMailWorker } from './mail-worker.js';
 import { getStorage, type Storage } from './storage.js';
 
 const log = pino({
@@ -611,12 +612,25 @@ pdfPrintWorker.on('failed', (job, err) => {
 
 const backupWorkerHandle = startBackupWorker({ connection, prisma, log });
 
+// ─────────────────────────────────────────────────────────────────────────
+// R35 N-1 — mail queue worker.
+//
+// Consumes outbound notification emails enqueued by web's
+// `enqueueNotification`. Returns `null` (skipped) when MAIL_ENABLED!='1' —
+// matches the behavior on the web side so dev/CI never spin up an SMTP
+// connection. Implementation isolated in ./mail-worker.ts.
+// ─────────────────────────────────────────────────────────────────────────
+
+const mailWorkerHandle = startMailWorker({ connection, log });
+
 const shutdown = async (sig: string) => {
   log.info({ sig }, 'worker shutting down');
   await Promise.all([
     worker.close(),
     pdfPrintWorker.close(),
     backupWorkerHandle.close(),
+    // mail worker is optional (disabled when MAIL_ENABLED!='1').
+    mailWorkerHandle ? mailWorkerHandle.close() : Promise.resolve(),
   ]);
   await prisma.$disconnect().catch(() => undefined);
   await connection.quit();
@@ -627,10 +641,16 @@ process.on('SIGTERM', () => shutdown('SIGTERM'));
 
 log.info(
   {
-    queues: [CONVERSION_QUEUE_NAME, PDF_PRINT_QUEUE_NAME, 'backup'],
+    queues: [
+      CONVERSION_QUEUE_NAME,
+      PDF_PRINT_QUEUE_NAME,
+      'backup',
+      ...(mailWorkerHandle ? ['mail'] : []),
+    ],
     redis: REDIS_URL,
     oda: ODA_CONVERTER_PATH,
     libredwg: LIBREDWG_BIN,
+    mailEnabled: process.env.MAIL_ENABLED === '1',
   },
   'worker started',
 );
