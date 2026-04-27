@@ -41,6 +41,12 @@ model User {
   // login (signIn callback in auth.ts). Independent of `username`/`email` so
   // an SSO user keeps the same row even if HR rewrites their handle.
   keycloakSub      String?        @unique
+  // R35 / N-1 — per-user notification channel preferences. Today only the
+  // email channel is toggleable (the in-app feed always receives), but this
+  // generalizes cleanly to push/SMS columns later. Default true so existing
+  // users keep parity with the old in-app-only behaviour (the global
+  // `MAIL_ENABLED=0` env gate still suppresses sends in dev/CI).
+  notifyByEmail    Boolean        @default(true)
 
   organization       Organization?   @relation(fields: [organizationId], references: [id])
   groups             UserGroup[]
