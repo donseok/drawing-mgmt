@@ -28,6 +28,14 @@ interface MeResponse {
    * `true` here too so a missing field (e.g. mid-deploy) still renders.
    */
   notifyByEmail?: boolean;
+  /**
+   * R38 N-2 — SMS / Kakao channel toggles. Both are gated by `phoneNumber`
+   * existing on the server side. Optional so a mid-deploy /me response that
+   * predates the migration still renders (defaults to false / null).
+   */
+  notifyBySms?: boolean;
+  notifyByKakao?: boolean;
+  phoneNumber?: string | null;
   organization: { id: string; name: string; parentId: string | null } | null;
   groups: { id: string; name: string }[];
 }
@@ -111,6 +119,9 @@ export default function SettingsPage() {
           <TabsContent value="notifications">
             <NotificationsSection
               notifyByEmail={me.notifyByEmail ?? true}
+              notifyBySms={me.notifyBySms ?? false}
+              notifyByKakao={me.notifyByKakao ?? false}
+              phoneNumber={me.phoneNumber ?? null}
               hasEmail={!!me.email}
             />
           </TabsContent>
