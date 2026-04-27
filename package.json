@@ -16,7 +16,8 @@
     "worker:dev": "pnpm --filter @drawing-mgmt/worker dev",
     "docker:up": "docker compose up -d",
     "docker:down": "docker compose down",
-    "test:e2e": "pnpm -F web test:e2e"
+    "test:e2e": "pnpm -F web test:e2e",
+    "test:integration": "pnpm -F web test:integration"
   },
   "devDependencies": {
     "typescript": "^5.5.0"

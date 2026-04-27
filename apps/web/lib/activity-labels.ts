@@ -60,6 +60,8 @@ export const ACTIVITY_LABELS: Record<string, string> = {
   BACKUP_RUN: '백업 실행',
   // R33 / D-5 — admin downloaded a completed backup artifact.
   BACKUP_DOWNLOAD: '백업 다운로드',
+  // R36 / V-INF-3 — admin re-enqueued an INFECTED/FAILED virus scan.
+  VIRUS_SCAN_RETRY: '바이러스 재스캔',
 };
 
 /**

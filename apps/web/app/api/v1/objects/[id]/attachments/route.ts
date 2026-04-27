@@ -27,6 +27,11 @@ import {
 import { ok, error, ErrorCode } from '@/lib/api-response';
 import { extractRequestMeta, logActivity } from '@/lib/audit';
 import { enqueueConversion } from '@/lib/conversion-queue';
+// R36 V-INF-3 — best-effort ClamAV scan enqueue alongside the DWG conversion
+// enqueue below. A queue/Redis hiccup must not invalidate the upload; the
+// Attachment row's `virusScanStatus` defaults to PENDING so the admin can
+// retry from /admin/scans even if the initial push silently dropped.
+import { enqueueVirusScan } from '@/lib/scan-queue';
 // R34 V-INF-1 — storage abstraction. Default LOCAL keeps the on-disk layout
 // from R21; STORAGE_DRIVER=s3 switches to MinIO/S3 with no caller change.
 import { getStorage } from '@/lib/storage';
@@ -245,6 +250,23 @@ export async function POST(
     }
   }
 
+  // R36 V-INF-3 — auto-enqueue ClamAV scan for every attachment regardless
+  // of extension. Best-effort: a queue hiccup leaves the row PENDING and the
+  // admin can re-run via /admin/scans/{id}/rescan.
+  const scanResult = await enqueueVirusScan({
+    attachmentId: created.id,
+    storagePath: sourceKey,
+    filename: created.filename,
+    size: file.size,
+  });
+  if (!scanResult.ok) {
+    // eslint-disable-next-line no-console
+    console.error(
+      '[attachments] virus scan enqueue failed',
+      { attachmentId: created.id, error: scanResult.error },
+    );
+  }
+
   const meta = extractRequestMeta(req);
   await logActivity({
     userId: user.id,
@@ -257,6 +279,7 @@ export async function POST(
       filename: created.filename,
       isMaster: created.isMaster,
       bytes: file.size,
+      virusScanEnqueued: scanResult.ok,
       ...(ext === '.dwg'
         ? { conversionEnqueued, conversionJobId: conversionJobId ?? null }
         : {}),

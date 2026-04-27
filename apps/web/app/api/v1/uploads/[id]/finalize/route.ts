@@ -33,6 +33,9 @@ import { ok, error, ErrorCode } from '@/lib/api-response';
 import { extractRequestMeta, logActivity } from '@/lib/audit';
 import { withApi } from '@/lib/api-helpers';
 import { enqueueConversion } from '@/lib/conversion-queue';
+// R36 V-INF-3 — best-effort ClamAV scan enqueue. Mirrors the R21 single-shot
+// flow so finalize uploads receive the same scan treatment.
+import { enqueueVirusScan } from '@/lib/scan-queue';
 import {
   deleteUpload,
   readUploadBuffer,
@@ -366,6 +369,22 @@ export const POST = withApi<{ params: { id: string } }>(
       }
     }
 
+    // R36 V-INF-3 — auto-enqueue ClamAV scan for the new attachment.
+    // Mirrors the R21 single-shot upload flow.
+    const scanResult = await enqueueVirusScan({
+      attachmentId: created.id,
+      storagePath: sourceKey,
+      filename: created.filename,
+      size: totalBytes,
+    });
+    if (!scanResult.ok) {
+      // eslint-disable-next-line no-console
+      console.error(
+        '[uploads/finalize] virus scan enqueue failed',
+        { attachmentId: created.id, error: scanResult.error },
+      );
+    }
+
     const meta = extractRequestMeta(req);
     await logActivity({
       userId: user.id,
@@ -379,6 +398,7 @@ export const POST = withApi<{ params: { id: string } }>(
         isMaster: created.isMaster,
         bytes: totalBytes,
         viaUpload: upload.id,
+        virusScanEnqueued: scanResult.ok,
         ...(ext === '.dwg'
           ? { conversionEnqueued, conversionJobId: conversionJobId ?? null }
           : {}),
