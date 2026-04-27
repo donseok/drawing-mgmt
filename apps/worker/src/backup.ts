@@ -25,8 +25,11 @@
  */
 
 import { execa } from 'execa';
-import { promises as fs } from 'node:fs';
+import { createWriteStream, promises as fs } from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
+import { randomUUID } from 'node:crypto';
+import type { Storage } from './storage.js';
 
 export const POSTGRES_PREFIX = 'postgres-';
 export const POSTGRES_SUFFIX = '.dump.gz';
@@ -121,8 +124,21 @@ export async function runPostgresBackup(
 }
 
 export interface FilesBackupOptions {
-  /** The file-storage tree to archive. */
-  srcDir: string;
+  /**
+   * Legacy local source directory. Used only when `storage` is omitted —
+   * R34 callers should pass `storage` instead so the archive works against
+   * S3 / MinIO too.
+   */
+  srcDir?: string;
+  /**
+   * R34 V-INF-1 — storage abstraction. When provided, we list every object
+   * via `storage.list`, stream each into a staging directory, then tar that
+   * directory. This works identically for LocalStorage (where staging is a
+   * trivial copy) and S3Storage. The staging step is intentional for this
+   * round — a true streaming tar over the storage interface is slated for
+   * the next round (`tar-stream` or native `aws s3 sync`).
+   */
+  storage?: Storage;
   /** Directory the .tar.gz lands in. Created if missing. */
   outDir: string;
   /** Hard timeout in ms (default 60 minutes). */
@@ -131,19 +147,33 @@ export interface FilesBackupOptions {
   now?: Date;
   /** Override the tar binary path. */
   binPath?: string;
+  /** Optional logger for slow-iter visibility (object count progress). */
+  log?: (msg: string, meta?: Record<string, unknown>) => void;
 }
 
 /**
- * `tar -czf` the file storage tree into a single .tar.gz under outDir.
+ * Archive every storage object into a single `.tar.gz` under `outDir`.
  *
- * We use `tar -C dirname(src) basename(src)` so the archive contains a single
- * top-level entry equal to the directory's basename — restoring is just
- * `tar -xzf <archive> -C <restore-root>` and you get the same structure
- * back. Symlinks are preserved (default tar behavior); we do NOT dereference
- * to avoid duplicating large preview/dxf trees that may be hard-linked.
+ * Two-phase implementation (R34 V-INF-1):
+ *   1. **List + stage.** `storage.list('')` walks every object (paginated).
+ *      Each object is streamed into a per-job staging directory under
+ *      `os.tmpdir()`. The directory tree mirrors the storage key layout, so
+ *      restoring is just `tar -xzf <archive> -C <FILE_STORAGE_ROOT>`.
+ *   2. **tar -czf.** We run system `tar` against the staging directory. We
+ *      preserve the legacy archive shape — single top-level entry named
+ *      after the staging basename — so the existing restore docs still
+ *      apply.
  *
- * If `srcDir` doesn't exist the worker treats the backup as a successful
- * empty archive (so freshly-deployed environments don't spam FAILED rows).
+ * Backward compat with R33: callers that still pass `opts.srcDir` (no
+ * `opts.storage`) keep the old direct-disk path — relevant for tests and
+ * any pre-R34 integration that hasn't been migrated.
+ *
+ * The staging directory is removed in `finally`, so a partial archive on
+ * failure leaves only the (also-cleaned) `outPath`.
+ *
+ * If storage is empty / srcDir is missing, we write an empty tar.gz so
+ * callers still get a valid artifact path + size and freshly-deployed
+ * environments don't spam FAILED rows.
  */
 export async function runFileStorageBackup(
   opts: FilesBackupOptions,
@@ -156,27 +186,49 @@ export async function runFileStorageBackup(
   const binPath = opts.binPath ?? 'tar';
   const timeoutMs = opts.timeoutMs ?? 60 * 60_000;
 
-  const absSrc = path.resolve(opts.srcDir);
-  const parent = path.dirname(absSrc);
-  const base = path.basename(absSrc);
+  // Branch: prefer the storage path when available; fall back to the legacy
+  // srcDir behavior otherwise. Both end with the same `tar -czf` invocation
+  // so the final archive shape is identical.
+  let stageDir: string;
+  let stageParent: string;
+  let stageBase: string;
+  let stageOwnedByUs = false;
 
-  // If the source dir is missing, write an empty tar.gz so callers still get
-  // a valid artifact path + size. `tar` errors on a missing target; we do the
-  // mkdir so the archive structure is consistent across deployments.
-  let srcExists = true;
-  try {
-    await fs.access(absSrc);
-  } catch {
-    srcExists = false;
-  }
-  if (!srcExists) {
-    await fs.mkdir(absSrc, { recursive: true });
+  if (opts.storage) {
+    // R34 path: stage every storage object into a fresh tmp dir.
+    const tempRoot = path.join(os.tmpdir(), `dm-files-backup-${randomUUID()}`);
+    stageBase = 'files';
+    stageParent = tempRoot;
+    stageDir = path.join(tempRoot, stageBase);
+    stageOwnedByUs = true;
+    await fs.mkdir(stageDir, { recursive: true });
+    await stageStorageToDir(opts.storage, stageDir, opts.log);
+  } else if (opts.srcDir) {
+    // Legacy path: archive a real directory directly (R33 behavior).
+    const absSrc = path.resolve(opts.srcDir);
+    stageParent = path.dirname(absSrc);
+    stageBase = path.basename(absSrc);
+    stageDir = absSrc;
+
+    let srcExists = true;
+    try {
+      await fs.access(absSrc);
+    } catch {
+      srcExists = false;
+    }
+    if (!srcExists) {
+      await fs.mkdir(absSrc, { recursive: true });
+    }
+  } else {
+    throw new Error(
+      'runFileStorageBackup: must provide either `storage` or `srcDir`',
+    );
   }
 
   try {
     await execa(
       binPath,
-      ['-czf', outPath, '-C', parent, base],
+      ['-czf', outPath, '-C', stageParent, stageBase],
       {
         timeout: timeoutMs,
         stdio: ['ignore', 'pipe', 'pipe'],
@@ -186,10 +238,63 @@ export async function runFileStorageBackup(
     await fs.rm(outPath, { force: true }).catch(() => undefined);
     const errMsg = err instanceof Error ? err.message : String(err);
     throw new Error(`tar failed: ${errMsg}`);
+  } finally {
+    if (stageOwnedByUs) {
+      await fs.rm(stageParent, { recursive: true, force: true }).catch(() => undefined);
+    }
   }
 
   const stat = await fs.stat(outPath);
   return { storagePath: outPath, sizeBytes: stat.size };
+}
+
+/**
+ * Stream every storage object (paginated via `list`) into `destDir`, mirroring
+ * the storage key as a relative file path. Each object is written via
+ * `storage.get(...).stream`; we do NOT buffer the whole object in memory so
+ * very large attachments don't OOM the worker.
+ *
+ * Errors on individual `get` are not swallowed — a backup that's missing
+ * objects is worse than a failed backup. If an object disappears between
+ * `list` and `get` (race with delete) we treat it as a transient failure and
+ * surface it through the caller's retry path.
+ */
+async function stageStorageToDir(
+  storage: Storage,
+  destDir: string,
+  log?: (msg: string, meta?: Record<string, unknown>) => void,
+): Promise<void> {
+  let cursor: string | undefined;
+  let copied = 0;
+  // 1000 = a typical S3 ListObjectsV2 max page; LocalStorage honors this too.
+  const PAGE = 1000;
+  for (;;) {
+    const page = await storage.list('', { limit: PAGE, cursor });
+    for (const obj of page.items) {
+      // Refuse keys that try to escape the dest dir. The storage drivers
+      // already validate keys at put-time, but defense-in-depth is cheap.
+      if (obj.key.startsWith('/') || obj.key.includes('..')) {
+        throw new Error(`backup: refusing unsafe key ${JSON.stringify(obj.key)}`);
+      }
+      const target = path.join(destDir, obj.key);
+      await fs.mkdir(path.dirname(target), { recursive: true });
+      const { stream } = await storage.get(obj.key);
+      await new Promise<void>((resolve, reject) => {
+        const ws = createWriteStream(target);
+        stream.pipe(ws);
+        ws.on('finish', () => resolve());
+        ws.on('error', reject);
+        stream.on('error', reject);
+      });
+      copied += 1;
+      if (copied % 200 === 0) {
+        log?.('files-backup progress', { copied });
+      }
+    }
+    if (!page.nextCursor) break;
+    cursor = page.nextCursor;
+  }
+  log?.('files-backup staging complete', { copied });
 }
 
 /**

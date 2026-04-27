@@ -11,6 +11,7 @@
     "convert": "tsx src/cli.ts"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.696.0",
     "@drawing-mgmt/shared": "workspace:*",
     "@prisma/client": "^5.22.0",
     "bullmq": "^5.21.0",
