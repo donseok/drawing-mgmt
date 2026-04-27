@@ -89,3 +89,60 @@ export const PdfPrintResultSchema = z.object({
 });
 
 export type PdfPrintResult = z.infer<typeof PdfPrintResultSchema>;
+
+// ─────────────────────────────────────────────────────────────
+// R33 D-5 — Backup queue.
+//
+// Separate BullMQ queue (`backup`) for periodic / on-demand DR snapshots.
+// Two job kinds:
+//
+//   - POSTGRES : `pg_dump --format=custom --compress=9` of $DATABASE_URL into a
+//                gzipped archive under `<BACKUP_ROOT>/postgres-<ts>.dump.gz`.
+//   - FILES    : `tar -czf` of $FILE_STORAGE_ROOT into
+//                `<BACKUP_ROOT>/files-<ts>.tar.gz`.
+//
+// Backend (apps/web) is responsible for the `Backup` row schema, the admin
+// REST endpoints, and the per-job retention policy. The worker only:
+//   1) reads the `Backup` row by id,
+//   2) marks it RUNNING,
+//   3) runs the appropriate subprocess (pg_dump / tar),
+//   4) writes back DONE/FAILED + storagePath + sizeBytes,
+//   5) (DONE only) prunes archives older than `retentionDays` from
+//      `<BACKUP_ROOT>` for the matching kind prefix.
+//
+// GPL posture: pg_dump (PostgreSQL BSD-style), tar/gzip (GNU/standard Unix
+// shipped with the base image) — no GPL transitive deps in the npm tree.
+// ─────────────────────────────────────────────────────────────
+
+export const BACKUP_QUEUE_NAME = 'backup';
+
+export const BackupKindSchema = z.enum(['POSTGRES', 'FILES']);
+export type BackupKind = z.infer<typeof BackupKindSchema>;
+
+export const BackupJobPayloadSchema = z.object({
+  /** Backup row id — used to update RUNNING/DONE/FAILED status. */
+  backupId: z.string(),
+  kind: BackupKindSchema,
+  /**
+   * Override the worker's BACKUP_RETENTION_DAYS for this specific job. Useful
+   * for one-shot backups operators want to keep longer than the default
+   * rolling window. Worker still honors a non-negative number; <= 0 disables
+   * pruning for this job.
+   */
+  retentionDaysOverride: z.number().int().optional(),
+});
+
+export type BackupJobPayload = z.infer<typeof BackupJobPayloadSchema>;
+
+export const BackupResultSchema = z.object({
+  backupId: z.string(),
+  kind: BackupKindSchema,
+  status: z.enum(['DONE', 'FAILED']),
+  storagePath: z.string().optional(),
+  sizeBytes: z.number().int().nonnegative().optional(),
+  prunedCount: z.number().int().nonnegative().optional(),
+  errorMessage: z.string().optional(),
+  durationMs: z.number().optional(),
+});
+
+export type BackupResult = z.infer<typeof BackupResultSchema>;

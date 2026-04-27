@@ -34,6 +34,7 @@ import { dwgToDxf } from './oda.js';
 import { dwgToDxfLibre, LibreDwgUnavailableError } from './libredwg.js';
 import { generateThumbnail } from './thumbnail.js';
 import { generatePdfFromDxf } from './pdf.js';
+import { startBackupWorker } from './backup-worker.js';
 
 const log = pino({
   level: process.env.LOG_LEVEL ?? 'info',
@@ -480,9 +481,23 @@ pdfPrintWorker.on('failed', (job, err) => {
   );
 });
 
+// ─────────────────────────────────────────────────────────────────────────
+// R33 D-5 — backup queue worker.
+//
+// Handles POSTGRES (pg_dump) + FILES (tar) snapshot jobs and self-schedules
+// daily repeatables when BACKUP_CRON_ENABLED=1. Implementation isolated in
+// ./backup-worker.ts to keep this file's concerns to wiring + shutdown.
+// ─────────────────────────────────────────────────────────────────────────
+
+const backupWorkerHandle = startBackupWorker({ connection, prisma, log });
+
 const shutdown = async (sig: string) => {
   log.info({ sig }, 'worker shutting down');
-  await Promise.all([worker.close(), pdfPrintWorker.close()]);
+  await Promise.all([
+    worker.close(),
+    pdfPrintWorker.close(),
+    backupWorkerHandle.close(),
+  ]);
   await prisma.$disconnect().catch(() => undefined);
   await connection.quit();
   process.exit(0);
@@ -492,7 +507,7 @@ process.on('SIGTERM', () => shutdown('SIGTERM'));
 
 log.info(
   {
-    queues: [CONVERSION_QUEUE_NAME, PDF_PRINT_QUEUE_NAME],
+    queues: [CONVERSION_QUEUE_NAME, PDF_PRINT_QUEUE_NAME, 'backup'],
     redis: REDIS_URL,
     oda: ODA_CONVERTER_PATH,
     libredwg: LIBREDWG_BIN,
