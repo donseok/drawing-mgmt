@@ -8,6 +8,7 @@ import {
   Archive,
   Building2,
   FolderTree as FolderTreeIcon,
+  HardDrive,
   Hash,
   Layers,
   Megaphone,
@@ -94,6 +95,15 @@ export const ADMIN_GROUPS: AdminGroup[] = [
         label: '백업',
         description: 'DB·파일 백업 이력 / 즉시 실행 / 다운로드',
         icon: Archive,
+      },
+      // R34 V-INF-1 — storage driver inspection (LOCAL/S3) + connection test.
+      // Sits next to 백업 because both deal with the file-storage surface
+      // (백업 reads from storage; this page configures the driver itself).
+      {
+        href: '/admin/storage',
+        label: '스토리지',
+        description: '저장소 드라이버 / 연결 테스트 / 사용량',
+        icon: HardDrive,
       },
       { href: '/admin/integrations', label: 'API Key', description: '외부 연계 키 발급/취소', icon: Plug },
       { href: '/admin/audit', label: '감사 로그', description: '시스템 활동 이력', icon: ScrollText },
