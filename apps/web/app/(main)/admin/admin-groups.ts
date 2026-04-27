@@ -11,7 +11,9 @@ import {
   Layers,
   Megaphone,
   Plug,
+  RefreshCw,
   ScrollText,
+  ShieldCheck,
   Users,
   Users2,
 } from 'lucide-react';
@@ -43,8 +45,18 @@ export const ADMIN_GROUPS: AdminGroup[] = [
       {
         href: '/admin/folders',
         label: '폴더 트리',
-        description: '폴더 구조 및 권한 매트릭스',
+        description: '폴더 구조 및 정렬 관리',
         icon: FolderTreeIcon,
+      },
+      // R28 — folder-permission matrix lives next to the folder-tree menu so
+      // both "폴더 모양 편집" and "권한 비트 편집" are one click away. They are
+      // separate routes because the tree edits names/sort/parent while the
+      // matrix edits 8 boolean bits per principal — different mental model.
+      {
+        href: '/admin/folder-permissions',
+        label: '권한 매트릭스',
+        description: '폴더별 사용자/조직/그룹 권한 비트 편집',
+        icon: ShieldCheck,
       },
     ],
   },
@@ -64,6 +76,15 @@ export const ADMIN_GROUPS: AdminGroup[] = [
   {
     title: '통합 / 로그',
     items: [
+      // R28 — variant of the conversion queue surface. PROCESSING/PENDING/FAILED
+      // counts feed BullMQ ops; this menu is the entry point for retry +
+      // diagnostic message inspection.
+      {
+        href: '/admin/conversions',
+        label: '변환 작업',
+        description: 'DWG/DXF 변환 큐 모니터링 및 재시도',
+        icon: RefreshCw,
+      },
       { href: '/admin/integrations', label: 'API Key', description: '외부 연계 키 발급/취소', icon: Plug },
       { href: '/admin/audit', label: '감사 로그', description: '시스템 활동 이력', icon: ScrollText },
     ],
