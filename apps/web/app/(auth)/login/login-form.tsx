@@ -23,6 +23,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 
 import { KeycloakLoginButton } from './keycloak-button';
+import { SamlLoginButton } from './saml-button';
 
 const formSchema = z.object({
   username: z.string().min(1, '아이디를 입력하세요.'),
@@ -105,17 +106,31 @@ export function LoginForm({
   // `KEYCLOAK_ENABLED` gates the actual provider in `auth.ts`; this client
   // mirror prevents users from clicking a button that would land on a
   // configuration error.
-  const ssoEnabled = process.env.NEXT_PUBLIC_KEYCLOAK_ENABLED === '1';
+  // R37 A-2 — SAML provider gated independently. Either, both, or neither
+  // SSO provider may be enabled; the divider/credentials form behavior keys
+  // off `anySsoEnabled` so a SAML-only deployment still shows "또는".
+  const keycloakEnabled = process.env.NEXT_PUBLIC_KEYCLOAK_ENABLED === '1';
+  const samlEnabled = process.env.NEXT_PUBLIC_SAML_ENABLED === '1';
+  const anySsoEnabled = keycloakEnabled || samlEnabled;
+  const ssoEnabled = anySsoEnabled; // legacy alias kept for the form below.
 
   return (
     <div className="space-y-4">
-      {ssoEnabled ? (
+      {anySsoEnabled ? (
         <>
-          <div className="app-panel p-6">
-            <KeycloakLoginButton
-              callbackUrl={callbackUrl}
-              disabled={locked || submitting}
-            />
+          <div className="app-panel space-y-2 p-6">
+            {keycloakEnabled ? (
+              <KeycloakLoginButton
+                callbackUrl={callbackUrl}
+                disabled={locked || submitting}
+              />
+            ) : null}
+            {samlEnabled ? (
+              <SamlLoginButton
+                callbackUrl={callbackUrl}
+                disabled={locked || submitting}
+              />
+            ) : null}
           </div>
           <div
             className="flex items-center gap-3 px-2"

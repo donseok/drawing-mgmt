@@ -218,31 +218,34 @@ function PinRow({
           'opacity-0 group-hover:opacity-100 focus-within:opacity-100',
         )}
       >
+        {/* R37 AC-1: icon-only reorder/remove buttons had only :hover state.
+            Add focus-visible rings so keyboard users can see the active row
+            action. The wrapper above already exposes them on focus-within. */}
         <button
           type="button"
           aria-label="위로"
           disabled={isFirst}
           onClick={onMoveUp}
-          className="inline-flex h-7 w-7 items-center justify-center rounded text-fg-subtle hover:bg-bg-muted hover:text-fg disabled:cursor-not-allowed disabled:opacity-30"
+          className="inline-flex h-7 w-7 items-center justify-center rounded text-fg-subtle hover:bg-bg-muted hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-30"
         >
-          <ArrowUp className="h-3.5 w-3.5" />
+          <ArrowUp className="h-3.5 w-3.5" aria-hidden="true" />
         </button>
         <button
           type="button"
           aria-label="아래로"
           disabled={isLast}
           onClick={onMoveDown}
-          className="inline-flex h-7 w-7 items-center justify-center rounded text-fg-subtle hover:bg-bg-muted hover:text-fg disabled:cursor-not-allowed disabled:opacity-30"
+          className="inline-flex h-7 w-7 items-center justify-center rounded text-fg-subtle hover:bg-bg-muted hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-30"
         >
-          <ArrowDown className="h-3.5 w-3.5" />
+          <ArrowDown className="h-3.5 w-3.5" aria-hidden="true" />
         </button>
         <button
           type="button"
           aria-label="핀 해제"
           onClick={() => onRemove(pin.pinId)}
-          className="inline-flex h-7 w-7 items-center justify-center rounded text-fg-subtle hover:bg-bg-muted hover:text-fg"
+          className="inline-flex h-7 w-7 items-center justify-center rounded text-fg-subtle hover:bg-bg-muted hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         >
-          <X className="h-3.5 w-3.5" />
+          <X className="h-3.5 w-3.5" aria-hidden="true" />
         </button>
       </div>
     </div>

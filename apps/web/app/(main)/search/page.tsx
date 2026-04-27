@@ -255,12 +255,15 @@ const MemoSubSidebar = React.memo(function MemoSubSidebar({
               }
               className={cn(
                 'group flex h-8 w-full items-center gap-2 rounded-md px-2 text-sm transition-colors',
+                // R37 AC-1: align with the saved-views button below which
+                // already had a focus ring; this row was inconsistent.
+                'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
                 p.id === selectedId
                   ? 'bg-bg text-fg shadow-sm ring-1 ring-border'
                   : 'text-fg-muted hover:bg-bg-muted hover:text-fg',
               )}
             >
-              <Star className="h-3.5 w-3.5 fill-current text-amber-500" />
+              <Star className="h-3.5 w-3.5 fill-current text-amber-500" aria-hidden="true" />
               <span className="flex-1 truncate text-left">{p.name}</span>
               <span className="font-mono text-[10px] text-fg-subtle">{p.folderCode}</span>
             </button>
