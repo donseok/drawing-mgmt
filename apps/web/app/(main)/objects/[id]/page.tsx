@@ -21,6 +21,7 @@ import {
   CheckCircle2,
   Clock,
   Lock,
+  Printer,
   Star,
   Undo2,
   UploadCloud,
@@ -34,6 +35,7 @@ import { DrawingPlaceholder } from '@/components/DrawingPlaceholder';
 import { ConfirmDialog } from '@/components/ConfirmDialog';
 import { AttachmentUploadDialog } from '@/components/object-list/AttachmentUploadDialog';
 import { EditObjectDialog } from '@/components/object-list/EditObjectDialog';
+import { PrintDialog } from '@/components/print/PrintDialog';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -143,6 +145,10 @@ interface ObjectVM {
   modifiedAt: string;
   masterFile: string | null;
   masterAttachmentId: string | null;
+  /** Raw bytes of the master attachment — needed by R31 PrintDialog header. */
+  masterFileSize: number | null;
+  /** MIME of the master attachment — feeds FileTypeIcon. */
+  masterFileMime: string | null;
   lockedBy: { id: string; name: string } | null;
   attributes: Array<{ label: string; value: string }>;
   attachments: Array<{ id: string; name: string; size: string; master: boolean }>;
@@ -283,6 +289,8 @@ function adaptObjectDetail(dto: ObjectDetailDTO): ObjectVM {
     modifiedAt: formatDate(dto.updatedAt),
     masterFile: masterAttachment?.filename ?? null,
     masterAttachmentId: masterAttachment?.id ?? null,
+    masterFileSize: masterAttachment ? Number(masterAttachment.size) : null,
+    masterFileMime: masterAttachment?.mimeType ?? null,
     lockedBy: dto.lockedBy
       ? {
           id: dto.lockedBy.id,
@@ -586,6 +594,32 @@ export default function ObjectDetailPage() {
   const [confirmCancelOpen, setConfirmCancelOpen] = React.useState(false);
   // R23 — edit dialog state. Wired to the action-bar 수정 button (BUG-06).
   const [editOpen, setEditOpen] = React.useState(false);
+  // R31 P-1 — print dialog state. Opens from the action bar 인쇄 button, the
+  // header dropdown, and the ⌘P / Ctrl+P keyboard shortcut.
+  const [printOpen, setPrintOpen] = React.useState(false);
+
+  // ⌘P / Ctrl+P intercept (design_spec §A.6). Only active on this detail
+  // page; the search page deliberately leaves the browser default alone
+  // (multi-select print is Phase 2). We bail when no master attachment is
+  // available so the shortcut never opens an unusable dialog.
+  const masterAttachmentIdForPrint = obj?.masterAttachmentId ?? null;
+  React.useEffect(() => {
+    if (!masterAttachmentIdForPrint) return;
+    const onKey = (e: KeyboardEvent) => {
+      const isPrintCombo =
+        (e.key === 'p' || e.key === 'P') && (e.metaKey || e.ctrlKey);
+      if (!isPrintCombo) return;
+      // Don't fight a focused input — the user might be hitting ⌘P inside a
+      // separate text field that also wants the chord. We still take it for
+      // body-level focus which is the common case.
+      const tag = (e.target as HTMLElement | null)?.tagName?.toLowerCase();
+      if (tag === 'input' || tag === 'textarea') return;
+      e.preventDefault();
+      setPrintOpen(true);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [masterAttachmentIdForPrint]);
 
   // R7 — pin state for the current object. We piggy-back on the global pins
   // list (already cached when the home tile or sidebar fetched it) so the
@@ -710,6 +744,20 @@ export default function ObjectDetailPage() {
               <Download className="text-fg-muted" />
               다운로드
             </DropdownMenuItem>
+            <DropdownMenuItem
+              disabled={!obj.masterAttachmentId}
+              onSelect={(e) => {
+                if (!obj.masterAttachmentId) {
+                  e.preventDefault();
+                  toast('인쇄할 마스터 파일이 없습니다.');
+                  return;
+                }
+                setPrintOpen(true);
+              }}
+            >
+              <Printer className="text-fg-muted" />
+              인쇄
+            </DropdownMenuItem>
             <DropdownMenuItem onSelect={() => toast('공유 링크 복사 (준비 중)')}>
               <Share2 className="text-fg-muted" />
               공유
@@ -785,6 +833,18 @@ export default function ObjectDetailPage() {
               a.remove();
             }}
           />
+          {/* R31 P-1 — design_spec §A.1 entry point #1. download visibility
+              gates print (PM-DECISION-1). disabled when no master file. */}
+          <ActionButton
+            icon={<Printer className="h-3.5 w-3.5" />}
+            label="인쇄"
+            visible={vis.download}
+            disabled={!obj.masterAttachmentId}
+            onClick={() => {
+              if (!obj.masterAttachmentId) return;
+              setPrintOpen(true);
+            }}
+          />
           <ActionButton icon={<Share2 className="h-3.5 w-3.5" />} label="공유" visible />
           {/* R7 — 즐겨찾기 토글. 이미 핀된 자료라면 채워진 별로 표시. */}
           <ActionButton
@@ -854,6 +914,23 @@ export default function ObjectDetailPage() {
           securityLevel: obj.securityLevel,
         }}
       />
+
+      {/* R31 P-1 — print dialog. Only mount when we have a master attachment
+          to print; the action bar / dropdown / ⌘P entry points all guard on
+          `obj.masterAttachmentId` before flipping `printOpen`, but we keep
+          the conditional render as a belt-and-suspenders against stale
+          state. */}
+      {obj.masterAttachmentId && obj.masterFile ? (
+        <PrintDialog
+          open={printOpen}
+          onOpenChange={setPrintOpen}
+          attachmentId={obj.masterAttachmentId}
+          filename={obj.masterFile}
+          fileSize={obj.masterFileSize ?? undefined}
+          fileMime={obj.masterFileMime ?? undefined}
+          contextLabel={`R${obj.revision} v${obj.version}`}
+        />
+      ) : null}
 
       {/* Tabs */}
       <div className="sticky top-0 z-10 border-b border-border bg-bg px-6">

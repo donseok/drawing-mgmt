@@ -21,6 +21,7 @@ import { SubSidebar } from '@/components/layout/SubSidebar';
 import { FolderTree } from '@/components/folder-tree/FolderTree';
 import type { FolderNode } from '@/components/folder-tree/types';
 import { ObjectTable, type ObjectRow, type ObjectState } from '@/components/object-list/ObjectTable';
+import { PrintDialog } from '@/components/print/PrintDialog';
 import {
   ObjectTableToolbar,
   type FilterFormValue,
@@ -810,6 +811,18 @@ export default function SearchPage() {
   const handleReleaseRow = React.useCallback((row: ObjectRow) => {
     setReleaseTarget(row);
   }, []);
+
+  // R31 P-1 — row 인쇄 (design_spec §A.1 entry point #2). The row's
+  // masterAttachmentId is required; RowMenu disables the item when it's
+  // missing, but we double-check here before opening the dialog.
+  const [printTarget, setPrintTarget] = React.useState<ObjectRow | null>(null);
+  const handlePrintRow = React.useCallback((row: ObjectRow) => {
+    if (!row.masterAttachmentId) {
+      toast('인쇄할 마스터 파일이 없습니다.');
+      return;
+    }
+    setPrintTarget(row);
+  }, []);
   const handleReleaseSubmit = React.useCallback(
     async (payload: {
       title: string;
@@ -1288,6 +1301,7 @@ export default function SearchPage() {
               onCancelCheckoutRow={handleCancelCheckoutRow}
               onReleaseRow={handleReleaseRow}
               onDeleteRow={handleDeleteRow}
+              onPrintRow={handlePrintRow}
             />
             {filtered.length > 0 && (
               <div className="flex items-center justify-center border-t border-border bg-bg-subtle py-3">
@@ -1393,6 +1407,20 @@ export default function SearchPage() {
         variant="destructive"
         onConfirm={handleConfirmCancelCheckout}
       />
+
+      {/* R31 P-1 — row print dialog. Mount conditionally so the polling /
+          state machine inside <PrintDialog> resets between rows. */}
+      {printTarget && printTarget.masterAttachmentId ? (
+        <PrintDialog
+          open
+          onOpenChange={(open) => {
+            if (!open) setPrintTarget(null);
+          }}
+          attachmentId={printTarget.masterAttachmentId}
+          filename={printTarget.number}
+          contextLabel={`R${printTarget.revision} v${printTarget.version}`}
+        />
+      ) : null}
     </div>
   );
 }

@@ -436,3 +436,12 @@
     box-shadow: 0 12px 32px hsl(0 0% 0% / 0.12);
   }
 }
+
+/* R31 — indeterminate progress bar slide animation. Used by
+ * <Progress value={undefined}> when the BE doesn't report a percentage
+ * (e.g. PrintJob status without `progress` field — api_contract §3.3 TBD-T1). */
+@keyframes progress-indeterminate {
+  0%   { transform: translateX(-100%); }
+  50%  { transform: translateX(150%); }
+  100% { transform: translateX(300%); }
+}
