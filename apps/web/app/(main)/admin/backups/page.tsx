@@ -10,15 +10,23 @@ import {
 import {
   AlertCircle,
   Archive,
+  ClipboardCopy,
   Download,
+  Info,
   Loader2,
   Play,
+  RefreshCw,
   RotateCw,
 } from 'lucide-react';
 import { toast } from 'sonner';
 
 import { AdminSidebar } from '@/app/(main)/admin/AdminSidebar';
 import { Button } from '@/components/ui/button';
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from '@/components/ui/popover';
 import {
   Select,
   SelectContent,
@@ -210,6 +218,17 @@ export default function BackupsPage(): JSX.Element {
     return [...page0, ...pages.flat()];
   }, [listQuery.data, pages]);
 
+  // Per-kind RUNNING set so the BackupRunDialog can disable a kind that is
+  // already in flight (BE serializes at concurrency=1 and would 409 anyway).
+  const runningKinds = React.useMemo<ReadonlySet<BackupKind>>(() => {
+    const set = new Set<BackupKind>();
+    for (const r of allRows) {
+      if (r.status === 'RUNNING') set.add(r.kind);
+      if (set.size === 2) break;
+    }
+    return set;
+  }, [allRows]);
+
   // ── Run mutation ────────────────────────────────────────────────────────
   const runMutation = useMutation<BackupRunResponse, ApiError, { kind: BackupKind }>({
     mutationFn: ({ kind }) =>
@@ -281,18 +300,34 @@ export default function BackupsPage(): JSX.Element {
             <div className="app-kicker">Admin Console</div>
             <h1 className="mt-1 text-2xl font-semibold text-fg">백업</h1>
             <p className="mt-1 text-sm text-fg-muted">
-              Postgres 데이터베이스 및 파일 저장소 백업 이력입니다. 30일이 지난 백업은 자동
-              삭제됩니다.
+              매일 02:00에 자동 실행됩니다. 30일 후 자동 삭제됩니다.
             </p>
           </div>
-          <Button
-            onClick={() => setRunDialogOpen(true)}
-            disabled={runMutation.isPending}
-            className="shrink-0"
-          >
-            <Play className="h-4 w-4" aria-hidden="true" />
-            지금 실행
-          </Button>
+          <div className="flex shrink-0 items-center gap-2">
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => void listQuery.refetch()}
+              disabled={listQuery.isFetching}
+              aria-label="새로고침"
+              title="새로고침"
+            >
+              <RefreshCw
+                className={cn(
+                  'h-4 w-4',
+                  listQuery.isFetching && 'animate-spin',
+                )}
+                aria-hidden="true"
+              />
+            </Button>
+            <Button
+              onClick={() => setRunDialogOpen(true)}
+              disabled={runMutation.isPending}
+            >
+              <Play className="h-4 w-4" aria-hidden="true" />
+              지금 실행
+            </Button>
+          </div>
         </div>
 
         {/* Filter bar */}
@@ -356,7 +391,7 @@ export default function BackupsPage(): JSX.Element {
               <EmptyState
                 icon={Archive}
                 title="백업 이력이 없습니다"
-                description='상단 "지금 실행"으로 첫 백업을 만들 수 있습니다.'
+                description='매일 02:00에 자동 실행됩니다. 또는 우측 상단 "지금 실행"을 눌러 수동으로 실행할 수 있습니다. 백업은 30일 후 자동 삭제됩니다.'
               />
             </div>
           ) : (
@@ -424,8 +459,70 @@ export default function BackupsPage(): JSX.Element {
         onOpenChange={setRunDialogOpen}
         onConfirm={handleConfirmRun}
         pending={runMutation.isPending}
+        runningKinds={runningKinds}
       />
     </div>
+  );
+}
+
+// ── ErrorPopover ──────────────────────────────────────────────────────────
+// FAILED row's errorMessage cell. Designer spec §B.9: clicking the trigger
+// opens a popover with the full message + a copy button. Long messages
+// (>2000 chars) are truncated head+tail with `(중략)` so the popover doesn't
+// blow out the layout.
+
+function truncateError(msg: string): string {
+  if (msg.length <= 2000) return msg;
+  return `${msg.slice(0, 1500)}\n…(중략)…\n${msg.slice(-500)}`;
+}
+
+interface ErrorPopoverProps {
+  message: string;
+}
+
+function ErrorPopover({ message }: ErrorPopoverProps): JSX.Element {
+  const display = React.useMemo(() => truncateError(message), [message]);
+
+  const handleCopy = React.useCallback(async () => {
+    try {
+      await navigator.clipboard.writeText(message);
+      toast.success('클립보드에 복사되었습니다.');
+    } catch {
+      toast.error('복사에 실패했습니다.');
+    }
+  }, [message]);
+
+  return (
+    <Popover>
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          className={cn(
+            'inline-flex items-center gap-1 rounded-sm text-left text-xs text-rose-700 hover:underline dark:text-rose-400',
+            'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+          )}
+          aria-label="오류 메시지 자세히 보기"
+        >
+          <Info className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+          <span className="max-w-[280px] truncate">오류 확인</span>
+        </button>
+      </PopoverTrigger>
+      <PopoverContent
+        className="max-w-sm space-y-2 p-3"
+        align="start"
+        side="bottom"
+      >
+        <pre className="max-h-60 overflow-auto whitespace-pre-wrap break-words rounded-md border border-rose-200 bg-rose-50/60 p-2 text-[11px] font-mono leading-relaxed text-rose-800 dark:border-rose-900/60 dark:bg-rose-950/40 dark:text-rose-300">
+          {display}
+        </pre>
+        <div className="flex justify-end">
+          <Button size="sm" variant="outline" onClick={() => void handleCopy()}>
+            <ClipboardCopy className="h-3.5 w-3.5" aria-hidden="true" />
+            복사
+          </Button>
+        </div>
+      </PopoverContent>
+    </Popover>
   );
 }
 
@@ -471,12 +568,7 @@ function BackupRow({ row, onDownload }: BackupRowProps): JSX.Element {
       </td>
       <td className="px-3 py-2 align-middle">
         {row.errorMessage ? (
-          <span
-            className="block max-w-[420px] truncate text-xs text-rose-700 dark:text-rose-400"
-            title={row.errorMessage}
-          >
-            {row.errorMessage}
-          </span>
+          <ErrorPopover message={row.errorMessage} />
         ) : (
           <span className="text-xs text-fg-subtle">—</span>
         )}
