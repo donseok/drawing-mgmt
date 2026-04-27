@@ -26,6 +26,7 @@ import {
 } from '@drawing-mgmt/shared/conversion';
 import { dwgToDxf } from './oda.js';
 import { dwgToDxfLibre, LibreDwgUnavailableError } from './libredwg.js';
+import { generateThumbnail } from './thumbnail.js';
 
 const log = pino({
   level: process.env.LOG_LEVEL ?? 'info',
@@ -135,6 +136,7 @@ async function processJob(job: Job<ConversionJobPayload>): Promise<ConversionRes
     });
 
   let runResult: ConversionRunResult | undefined;
+  let thumbnailOutPath: string | undefined;
   try {
     const sourcePath = path.resolve(payload.storagePath);
     await fs.access(sourcePath);
@@ -146,6 +148,29 @@ async function processJob(job: Job<ConversionJobPayload>): Promise<ConversionRes
       runResult = await convertDwgToDxf(sourcePath, outDir);
     } else {
       runResult = { fallbackUsed: 'oda' };
+    }
+
+    // R29 V-INF-6 — thumbnail. Failure here is NOT a job failure: the DXF/PDF
+    // conversion already succeeded, the thumbnail is best-effort. We only set
+    // `thumbnailOutPath` when the file truly lands so the row update below
+    // can leave the column NULL on skip.
+    if (payload.outputs.includes('thumbnail')) {
+      const candidate = path.join(outDir, 'thumbnail.png');
+      const dxfInput =
+        runResult?.dxfOutPath ?? (await tryFindExisting(path.join(outDir, 'preview.dxf')));
+      const pdfInput = await tryFindExisting(path.join(outDir, 'preview.pdf'));
+      const thumb = await generateThumbnail(
+        { dxfPath: dxfInput, pdfPath: pdfInput },
+        candidate,
+      );
+      if (thumb.success) {
+        thumbnailOutPath = candidate;
+      } else {
+        log.info(
+          { jobId: payload.jobId, reason: thumb.reason },
+          'thumbnail skipped',
+        );
+      }
     }
   } catch (err) {
     const errMessage = err instanceof Error ? err.message : String(err);
@@ -191,6 +216,12 @@ async function processJob(job: Job<ConversionJobPayload>): Promise<ConversionRes
         status: ConversionStatus.DONE,
         finishedAt,
         errorMessage: null,
+        // R29 V-INF-6 — persist artifact paths so downstream readers (admin
+        // UI, thumbnail streaming endpoint) can resolve them without
+        // re-deriving the storage layout. Both columns are nullable; we
+        // only set what we actually produced.
+        dxfPath: runResult?.dxfOutPath ?? null,
+        thumbnailPath: thumbnailOutPath ?? null,
       },
     })
     .catch((e) => {
@@ -202,6 +233,7 @@ async function processJob(job: Job<ConversionJobPayload>): Promise<ConversionRes
     attachmentId: payload.attachmentId,
     status: 'DONE',
     dxfPath: runResult?.dxfOutPath,
+    thumbnailPath: thumbnailOutPath,
     durationMs: Date.now() - startedAt,
   };
   log.info(
@@ -209,6 +241,21 @@ async function processJob(job: Job<ConversionJobPayload>): Promise<ConversionRes
     'conversion done',
   );
   return result;
+}
+
+/**
+ * Return `path` if the file exists, else `undefined`. Used to feed the
+ * thumbnail generator with whatever artifacts happen to be on disk (the
+ * DXF we just produced, plus any pre-existing preview.pdf from a future
+ * pipeline). Never throws.
+ */
+async function tryFindExisting(p: string): Promise<string | undefined> {
+  try {
+    await fs.access(p);
+    return p;
+  } catch {
+    return undefined;
+  }
 }
 
 const worker = new Worker<ConversionJobPayload, ConversionResult>(
