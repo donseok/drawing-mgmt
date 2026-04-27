@@ -87,3 +87,50 @@ export const RateLimitConfig = {
   /** TRD §8.1: 100 API calls / minute per user. */
   API: { limit: 100, windowSec: 60 },
 } as const;
+
+/**
+ * Extract the best-effort client IP from a Request — mirrors the rule used
+ * by `extractRequestMeta` in lib/audit. Used as a rate-limit key when no
+ * authenticated user is available.
+ */
+function clientIp(req: Request): string {
+  const xff = req.headers.get('x-forwarded-for');
+  if (xff) {
+    const first = xff.split(',')[0]?.trim();
+    if (first) return first;
+  }
+  const real = req.headers.get('x-real-ip');
+  if (real) return real;
+  return 'unknown';
+}
+
+export interface RateLimitForRequestOpts {
+  /**
+   * Logical scope of the limit — keeps `chat:` counts and `api:` counts in
+   * separate buckets so a route that already had a chat-specific bucket
+   * doesn't double-count when wrapped by `withApi` later.
+   */
+  scope?: string;
+  /** Override the bucket size. Defaults to RateLimitConfig.API. */
+  config?: { limit: number; windowSec: number };
+  /** Authenticated user id — preferred bucket key when present. */
+  userId?: string | null;
+}
+
+/**
+ * Helper: pick the right bucket for a request and call `rateLimit`.
+ * Authenticated users get `${scope}:user:${userId}`; unauthenticated requests
+ * fall back to `${scope}:ip:${ip}` (mostly defensive — most v1 routes also
+ * call `requireUser`, so the ip bucket only protects login/health/etc.).
+ */
+export function rateLimitForRequest(
+  req: Request,
+  opts: RateLimitForRequestOpts = {},
+): RateLimitResult {
+  const scope = opts.scope ?? 'api';
+  const config = opts.config ?? RateLimitConfig.API;
+  const subject = opts.userId
+    ? `user:${opts.userId}`
+    : `ip:${clientIp(req)}`;
+  return rateLimit({ key: `${scope}:${subject}`, ...config });
+}

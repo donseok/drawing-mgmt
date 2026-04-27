@@ -44,6 +44,7 @@ import { ok, error, ErrorCode } from '@/lib/api-response';
 import type { ApiErrorCode } from '@/lib/api-errors';
 import { canTransition } from '@/lib/state-machine';
 import { extractRequestMeta, logActivity } from '@/lib/audit';
+import { withApi } from '@/lib/api-helpers';
 
 const MAX_BATCH = 50;
 
@@ -71,7 +72,8 @@ interface FailureRow {
   message: string;
 }
 
-export async function POST(req: Request): Promise<NextResponse> {
+// SEC-1/3 — wrapped at module bottom (`export const POST = withApi(...)`).
+async function handlePost(req: Request): Promise<NextResponse> {
   let user;
   try {
     user = await requireUser();
@@ -293,3 +295,5 @@ class BulkRowError extends Error {
     this.name = 'BulkRowError';
   }
 }
+
+export const POST = withApi({ rateLimit: 'api' }, handlePost);

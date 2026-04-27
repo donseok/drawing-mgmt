@@ -13,6 +13,7 @@ import { NextResponse } from 'next/server';
 import { z } from 'zod';
 import { requireUser } from '@/lib/auth-helpers';
 import { ok, error, ErrorCode } from '@/lib/api-response';
+import { withApi } from '@/lib/api-helpers';
 
 const bodySchema = z.object({
   message: z.string().min(1).max(4000),
@@ -21,7 +22,9 @@ const bodySchema = z.object({
 const CANNED_RESPONSE =
   'AI 챗봇 백엔드는 곧 연결됩니다. 현재는 기본 안내만 가능합니다.';
 
-export async function POST(req: Request): Promise<NextResponse> {
+// SEC-1/3 — wrapped below. We use a separate `chat` rate-limit scope so
+// chat usage doesn't burn the user's general API quota (and vice versa).
+async function handlePost(req: Request): Promise<NextResponse> {
   let user;
   try {
     user = await requireUser();
@@ -45,3 +48,5 @@ export async function POST(req: Request): Promise<NextResponse> {
 
   return ok({ response: CANNED_RESPONSE });
 }
+
+export const POST = withApi({ rateLimit: 'chat' }, handlePost);
