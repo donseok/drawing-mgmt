@@ -98,6 +98,11 @@ export const queryKeys = {
     // this key; retry mutations invalidate it on settle.
     conversions: (params: { status?: string; cursor?: string } = {}) =>
       ['admin', 'conversions', 'jobs', params] as const,
+    // R33 D-5 — backup history. Polled (5s) only when at least one row is
+    // RUNNING. `kind` is an optional filter (POSTGRES/FILES); `cursor` is the
+    // server-issued opaque pagination token.
+    backups: (params: { kind?: string; cursor?: string } = {}) =>
+      ['admin', 'backups', params] as const,
   },
 
   search: {

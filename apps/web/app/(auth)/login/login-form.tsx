@@ -5,6 +5,10 @@
 // - react-hook-form + zod for validation.
 // - Calls Auth.js v5 signIn('credentials', ...) and reads structured errors.
 // - On `account_locked`, shows a 30-minute countdown banner.
+// - R33 A-1: when `NEXT_PUBLIC_KEYCLOAK_ENABLED === '1'`, renders an extra
+//   "사내 SSO 로그인" button that hops to the Keycloak provider via
+//   `signIn('keycloak', { callbackUrl })`. The Credentials form remains so
+//   dev/fallback access still works.
 // - Uses shadcn/ui Input + Button (assumed under @/components/ui).
 
 import { useEffect, useMemo, useState } from 'react';
@@ -13,6 +17,7 @@ import { signIn } from 'next-auth/react';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
+import { Building2 } from 'lucide-react';
 
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -94,12 +99,59 @@ export function LoginForm({
 
   const locked = errorCode === 'account_locked' && remainingSec > 0;
 
+  // R33 A-1 — SSO is opt-in via build-time env. We read the public flag here so
+  // the button only renders in environments where Keycloak is wired up.
+  // Server-side `KEYCLOAK_ENABLED` gates the actual provider in `auth.ts`; the
+  // client mirror prevents a confusing "redirected to default error" on click.
+  const ssoEnabled = process.env.NEXT_PUBLIC_KEYCLOAK_ENABLED === '1';
+  const [ssoSubmitting, setSsoSubmitting] = useState(false);
+
+  async function onSsoSignIn() {
+    setSsoSubmitting(true);
+    try {
+      // `redirect: true` (default) lets next-auth handle the OIDC bounce. We
+      // still pass callbackUrl so the user lands on the page they originally
+      // requested (e.g. deep-linked /admin/users).
+      await signIn('keycloak', {
+        callbackUrl: callbackUrl ?? '/',
+      });
+    } catch {
+      setErrorCode('unknown');
+      setSsoSubmitting(false);
+    }
+  }
+
   return (
     <form
       onSubmit={handleSubmit(onSubmit)}
       className="app-panel space-y-4 p-6"
       noValidate
     >
+      {ssoEnabled ? (
+        <div className="space-y-2">
+          <Button
+            type="button"
+            className="w-full"
+            disabled={locked || submitting || ssoSubmitting}
+            onClick={onSsoSignIn}
+          >
+            <Building2 className="h-4 w-4" aria-hidden="true" />
+            {ssoSubmitting ? '이동 중…' : '사내 SSO 로그인'}
+          </Button>
+          <p className="text-center text-xs text-fg-muted">
+            동국씨엠 사내 계정으로 로그인합니다.
+          </p>
+          <div className="relative my-2">
+            <div className="absolute inset-0 flex items-center" aria-hidden="true">
+              <span className="w-full border-t border-border" />
+            </div>
+            <div className="relative flex justify-center text-[11px] uppercase">
+              <span className="bg-bg-panel px-2 text-fg-subtle">또는 ID/PW로 로그인</span>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
       <div className="space-y-2">
         <label
           htmlFor="username"

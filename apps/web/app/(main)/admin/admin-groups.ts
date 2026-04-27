@@ -5,6 +5,7 @@
 // reference and the server crashed when it called `.map()` on it.
 
 import {
+  Archive,
   Building2,
   FolderTree as FolderTreeIcon,
   Hash,
@@ -87,6 +88,15 @@ export const ADMIN_GROUPS: AdminGroup[] = [
       },
       { href: '/admin/integrations', label: 'API Key', description: '외부 연계 키 발급/취소', icon: Plug },
       { href: '/admin/audit', label: '감사 로그', description: '시스템 활동 이력', icon: ScrollText },
+      // R33 D-5 — backup history surface. Lives next to audit log because the
+      // mental model is the same: append-only system events that admins
+      // occasionally drill into. RUN action sits inside the page itself.
+      {
+        href: '/admin/backups',
+        label: '백업',
+        description: 'Postgres·파일 저장소 백업 이력 / 즉시 실행',
+        icon: Archive,
+      },
     ],
   },
 ];
