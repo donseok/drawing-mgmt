@@ -56,6 +56,10 @@ export const ACTIVITY_LABELS: Record<string, string> = {
   // R31 — admin retry on a generic ConversionJob (already used by R28's
   // /api/v1/admin/conversions/jobs/{id}/retry).
   CONVERSION_RETRY: '변환 재시도',
+  // R33 / D-5 — admin manually triggered a backup run.
+  BACKUP_RUN: '백업 실행',
+  // R33 / D-5 — admin downloaded a completed backup artifact.
+  BACKUP_DOWNLOAD: '백업 다운로드',
 };
 
 /**
