@@ -1,6 +1,7 @@
 'use client';
 
 import * as React from 'react';
+import Link from 'next/link';
 import { BellOff, Check } from 'lucide-react';
 
 import { ScrollArea } from '@/components/ui/scroll-area';
@@ -232,6 +233,18 @@ export function NotificationPanelBody({
           )}
         </ScrollArea>
       )}
+
+      {/* R35 N-1 — footer hint guiding users to the email channel toggle. */}
+      <footer className="border-t border-border bg-bg-subtle px-3 py-2 text-[11px] text-fg-subtle">
+        메일도 받으시려면{' '}
+        <Link
+          href="/settings"
+          className="text-brand hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded px-0.5"
+        >
+          환경설정
+        </Link>
+        에서 활성화하세요.
+      </footer>
     </div>
   );
 }
