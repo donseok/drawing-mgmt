@@ -66,6 +66,40 @@ model User {
   phoneNumber      String?
   notifyBySms      Boolean        @default(false)
   notifyByKakao    Boolean        @default(false)
+  // R39 / A-3 — TOTP MFA enrollment.
+  //
+  // `totpSecret` holds the base32-encoded TOTP secret. Populated at /enroll
+  // (before confirmation) so the user can scan the QR; cleared at /disable.
+  // Should be encrypted at rest in production (KMS / column-level crypto);
+  // for now stored plaintext — env-driven encryption will land in a follow-up.
+  //
+  // `totpEnabledAt` is the source of truth for "MFA is on for this user".
+  // Null while still in the enroll-but-not-confirmed window. The login flow
+  // (auth.ts Credentials) checks this column to decide whether to require
+  // a 2nd-factor step.
+  totpSecret           String?
+  totpEnabledAt        DateTime?
+  // 1-time-use bcrypt hashes of the user's recovery codes. Surfaced once at
+  // /confirm; consumed (removed from the array) on /verify when the user
+  // opts into recovery instead of TOTP. Empty array when MFA is disabled.
+  recoveryCodesHash    String[]      @default([])
+
+  // R39 / A-4 — password lifecycle.
+  //
+  // `passwordChangedAt` drives the 90-day expiry redirect (middleware reads
+  // it). Default `now()` on schema-level default so existing rows treated as
+  // "just changed" — the migration explicitly backfills existing rows to
+  // `now()` (rather than NULL or epoch) so R38 deployments don't immediately
+  // boot every user to /change-password.
+  //
+  // `passwordPrev1Hash` / `passwordPrev2Hash` keep the most recent two
+  // historical bcrypt hashes for re-use detection. Null until the user has
+  // changed their password at least once. Two slots is the minimum viable
+  // policy ("don't reuse any of the last 3 passwords"); deeper history can
+  // migrate to a separate table later without breaking this contract.
+  passwordChangedAt    DateTime      @default(now())
+  passwordPrev1Hash    String?
+  passwordPrev2Hash    String?
 
   organization       Organization?   @relation(fields: [organizationId], references: [id])
   groups             UserGroup[]
