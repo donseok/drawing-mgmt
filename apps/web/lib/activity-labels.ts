@@ -41,6 +41,14 @@ export const ACTIVITY_LABELS: Record<string, string> = {
   APPROVAL_APPROVE: '결재 승인됨',
   APPROVAL_REJECT: '결재 반려됨',
   LOBBY_REPLY: '협의 답변',
+  // R30 — admin CRUD on organizations + groups (U-3, U-4).
+  ORG_CREATE: '조직 생성',
+  ORG_UPDATE: '조직 수정',
+  ORG_DELETE: '조직 삭제',
+  GROUP_CREATE: '그룹 생성',
+  GROUP_UPDATE: '그룹 수정',
+  GROUP_DELETE: '그룹 삭제',
+  GROUP_MEMBER_UPDATE: '그룹 멤버 변경',
 };
 
 /**
