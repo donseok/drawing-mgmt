@@ -276,6 +276,9 @@ importers:
       sharp:
         specifier: ^0.33.5
         version: 0.33.5
+      twilio:
+        specifier: ^6.0.0
+        version: 6.0.0
       zod:
         specifier: ^3.23.8
         version: 3.25.76
@@ -4378,6 +4381,10 @@ packages:
   twilio@5.13.1:
     resolution: {integrity: sha512-sT+PkhptF4Mf7t8eXFFvPQx4w5VHnBIPXbltGPMFRe+R2GxfRdMuFbuNA/cEm0aQR6LFQOn33+fhClg+TjRVqQ==}
     engines: {node: '>=14.0'}
+
+  twilio@6.0.0:
+    resolution: {integrity: sha512-MAie5DJ3KLpcKlDaYtNzsKMQXcCi+YHWKvZjuSpm27vJAO/l8PanJA0LkkJ03sbh+Kwe5NeL0Q2+y6IjNUYeUA==}
+    engines: {node: '>=20.0.0'}
 
   type-check@0.4.0:
     resolution: {integrity: sha512-XleUoc9uwGXqjWwXaUTZAmzMcFZ5858QA2vvx1Ur5xIcixXIP+8LnFDgRplU30us6teqdlskFfu+ae4K79Ooew==}
@@ -9240,6 +9247,19 @@ snapshots:
       fsevents: 2.3.3
 
   twilio@5.13.1:
+    dependencies:
+      axios: 1.15.2
+      dayjs: 1.11.20
+      https-proxy-agent: 5.0.1
+      jsonwebtoken: 9.0.3
+      qs: 6.15.1
+      scmp: 2.1.0
+      xmlbuilder: 13.0.2
+    transitivePeerDependencies:
+      - debug
+      - supports-color
+
+  twilio@6.0.0:
     dependencies:
       axios: 1.15.2
       dayjs: 1.11.20

@@ -260,3 +260,111 @@ export const VirusScanResultSchema = z.object({
 });
 
 export type VirusScanResult = z.infer<typeof VirusScanResultSchema>;
+
+// ─────────────────────────────────────────────────────────────
+// R38 N-2 — SMS queue.
+//
+// Mirrors R35's mail queue exactly. Backend (apps/web) enqueues a job
+// from `enqueueNotification` (extended in R38) for any user whose
+// `notifyBySms=true` AND has a non-empty `phoneNumber` AND
+// `SMS_ENABLED=1`. The worker (apps/worker/src/sms-worker.ts) consumes
+// and runs the configured driver (Twilio Apache 2.0 SDK or generic HTTP).
+//
+// Why fan-out at enqueue time (vs a single notification queue with
+// per-channel switches): keeps the BullMQ retry policy independent —
+// SMTP failures shouldn't stall SMS, and vice versa. The price is one
+// extra queue + worker, paid once per channel.
+//
+// License posture: twilio is Apache 2.0; generic HTTP uses the Node 22
+// global `fetch`. No GPL/AGPL transitive deps in the npm tree.
+// ─────────────────────────────────────────────────────────────
+
+export const SMS_QUEUE_NAME = 'sms';
+
+export const SmsJobPayloadSchema = z.object({
+  /**
+   * Optional Notification row id this SMS corresponds to. Set when the
+   * send is a notification fan-out from R29's `enqueueNotification`.
+   * Left undefined for ad-hoc transactional sends (e.g. 2FA later).
+   */
+  notificationId: z.string().optional(),
+  /**
+   * Recipient phone number in E.164-ish format (`^\+?[0-9-]{8,20}$`).
+   * The web layer trims/validates at enqueue time so the worker can
+   * pass it straight through to Twilio / the generic HTTP endpoint.
+   */
+  to: z.string().min(1),
+  /**
+   * SMS body. Plain text only; carriers strip rich content. We let the
+   * caller worry about 70 / 160 / 1600 char segmentation — the worker
+   * just forwards.
+   */
+  text: z.string().min(1),
+});
+
+export type SmsJobPayload = z.infer<typeof SmsJobPayloadSchema>;
+
+export const SmsResultSchema = z.object({
+  notificationId: z.string().optional(),
+  to: z.string(),
+  status: z.enum(['SENT', 'SKIPPED', 'FAILED']),
+  /** Underlying provider message id (Twilio SID, generic provider id). */
+  providerId: z.string().optional(),
+  errorMessage: z.string().optional(),
+  durationMs: z.number().optional(),
+});
+
+export type SmsResult = z.infer<typeof SmsResultSchema>;
+
+// ─────────────────────────────────────────────────────────────
+// R38 N-2 — KakaoTalk Bizmessage (알림톡) queue.
+//
+// Korean carrier-grade transactional messaging via pre-approved
+// templates. Backend enqueues from `enqueueNotification` when the
+// target user's `notifyByKakao=true` AND `phoneNumber` is set AND
+// `KAKAO_ENABLED=1`.
+//
+// Unlike SMS we send by `templateCode` + `variables` (the actual
+// rendered text is server-side at the provider). The worker driver
+// is intentionally stub-friendly for this round — see
+// `apps/worker/src/kakao.ts` — because templates require provider
+// pre-registration which dev/CI can't do.
+//
+// License posture: no SDK — driver uses Node 22 global `fetch`
+// against the configured KAKAO_API_ENDPOINT.
+// ─────────────────────────────────────────────────────────────
+
+export const KAKAO_QUEUE_NAME = 'kakao';
+
+export const KakaoJobPayloadSchema = z.object({
+  /** Optional Notification row id (R29 fan-out). */
+  notificationId: z.string().optional(),
+  /** Recipient phone number, same format rules as SmsJobPayload.to. */
+  to: z.string().min(1),
+  /**
+   * Pre-approved KakaoTalk Bizmessage template code. Required even in
+   * stub mode so the payload shape stays stable and the eventual real
+   * provider call needs no schema change.
+   */
+  templateCode: z.string().min(1),
+  /**
+   * Template variables substituted server-side by the provider. We
+   * pass through verbatim (string→string map); numeric/boolean values
+   * should be stringified by the caller.
+   */
+  variables: z.record(z.string(), z.string()).default({}),
+});
+
+export type KakaoJobPayload = z.infer<typeof KakaoJobPayloadSchema>;
+
+export const KakaoResultSchema = z.object({
+  notificationId: z.string().optional(),
+  to: z.string(),
+  status: z.enum(['SENT', 'SKIPPED', 'FAILED']),
+  /** Provider-side message id when available. */
+  providerId: z.string().optional(),
+  errorMessage: z.string().optional(),
+  durationMs: z.number().optional(),
+});
+
+export type KakaoResult = z.infer<typeof KakaoResultSchema>;

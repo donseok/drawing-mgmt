@@ -39,6 +39,8 @@ import { generatePdfFromDxf } from './pdf.js';
 import { startBackupWorker } from './backup-worker.js';
 import { startMailWorker } from './mail-worker.js';
 import { startScanWorker } from './scan-worker.js';
+import { startSmsWorker } from './sms-worker.js';
+import { startKakaoWorker } from './kakao-worker.js';
 import { getStorage, type Storage } from './storage.js';
 
 const log = pino({
@@ -637,6 +639,24 @@ const mailWorkerHandle = startMailWorker({ connection, log });
 
 const scanWorkerHandle = startScanWorker({ connection, prisma, log });
 
+// ─────────────────────────────────────────────────────────────────────────
+// R38 N-2 — SMS + KakaoTalk Bizmessage queue workers.
+//
+// Mirror of the R35 mail worker pattern. Each channel runs in its own
+// BullMQ worker so a provider outage on one channel doesn't stall retries
+// on the other. Both return `null` when their respective ENABLED env is
+// off (matches the web-side enqueue gate so the queues stay empty in
+// dev/CI). Implementations: ./sms-worker.ts + ./kakao-worker.ts.
+//
+// License posture (audited):
+//   - twilio: Apache 2.0 (loaded lazily; only imported when SMS_DRIVER=twilio).
+//   - kakao driver: no SDK at all — uses Node 22 global fetch.
+//   - GPL/AGPL JS deps: 0.
+// ─────────────────────────────────────────────────────────────────────────
+
+const smsWorkerHandle = startSmsWorker({ connection, log });
+const kakaoWorkerHandle = startKakaoWorker({ connection, log });
+
 const shutdown = async (sig: string) => {
   log.info({ sig }, 'worker shutting down');
   await Promise.all([
@@ -644,8 +664,10 @@ const shutdown = async (sig: string) => {
     pdfPrintWorker.close(),
     backupWorkerHandle.close(),
     scanWorkerHandle.close(),
-    // mail worker is optional (disabled when MAIL_ENABLED!='1').
+    // Optional channel workers — disabled when their ENABLED env is off.
     mailWorkerHandle ? mailWorkerHandle.close() : Promise.resolve(),
+    smsWorkerHandle ? smsWorkerHandle.close() : Promise.resolve(),
+    kakaoWorkerHandle ? kakaoWorkerHandle.close() : Promise.resolve(),
   ]);
   await prisma.$disconnect().catch(() => undefined);
   await connection.quit();
@@ -662,12 +684,16 @@ log.info(
       'backup',
       'virus-scan',
       ...(mailWorkerHandle ? ['mail'] : []),
+      ...(smsWorkerHandle ? ['sms'] : []),
+      ...(kakaoWorkerHandle ? ['kakao'] : []),
     ],
     redis: REDIS_URL,
     oda: ODA_CONVERTER_PATH,
     libredwg: LIBREDWG_BIN,
     mailEnabled: process.env.MAIL_ENABLED === '1',
     clamavEnabled: process.env.CLAMAV_ENABLED === '1',
+    smsEnabled: process.env.SMS_ENABLED === '1',
+    kakaoEnabled: process.env.KAKAO_ENABLED === '1',
   },
   'worker started',
 );
