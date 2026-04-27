@@ -17,9 +17,16 @@ export default function GlobalError({
   }, [error]);
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-bg px-4">
+    <div
+      className="flex min-h-screen items-center justify-center bg-bg px-4"
+      role="alert"
+      aria-live="assertive"
+    >
       <div className="flex w-full max-w-md flex-col items-center gap-4 text-center">
-        <div className="flex h-14 w-14 items-center justify-center rounded-full bg-rose-500/10 text-rose-500">
+        <div
+          className="flex h-14 w-14 items-center justify-center rounded-full bg-rose-500/10 text-rose-500"
+          aria-hidden="true"
+        >
           <AlertTriangle className="h-7 w-7" />
         </div>
         <h1 className="text-2xl font-bold text-fg">오류가 발생했습니다</h1>
@@ -34,19 +41,21 @@ export default function GlobalError({
         )}
 
         <div className="mt-2 flex gap-2">
+          {/* R37 AC-1: keyboard-only users need a visible focus ring on the
+              global error boundary. Both controls had only :hover styles. */}
           <button
             type="button"
             onClick={reset}
-            className="inline-flex h-9 items-center gap-1.5 rounded-md bg-brand px-3 text-sm font-medium text-brand-foreground hover:opacity-90"
+            className="inline-flex h-9 items-center gap-1.5 rounded-md bg-brand px-3 text-sm font-medium text-brand-foreground hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-bg"
           >
-            <RotateCcw className="h-4 w-4" />
+            <RotateCcw className="h-4 w-4" aria-hidden="true" />
             다시 시도
           </button>
           <a
             href="mailto:admin@example.com"
-            className="inline-flex h-9 items-center gap-1.5 rounded-md border border-border bg-bg px-3 text-sm hover:bg-bg-muted"
+            className="inline-flex h-9 items-center gap-1.5 rounded-md border border-border bg-bg px-3 text-sm hover:bg-bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-bg"
           >
-            <Mail className="h-4 w-4" />
+            <Mail className="h-4 w-4" aria-hidden="true" />
             관리자 문의
           </a>
         </div>

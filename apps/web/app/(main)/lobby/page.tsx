@@ -101,8 +101,12 @@ export default function LobbyPage() {
                 <button
                   type="button"
                   onClick={() => setBox(b.key)}
+                  aria-pressed={active}
                   className={cn(
                     'flex h-8 w-full items-center gap-2 rounded-md px-2 text-sm transition-colors',
+                    // R37 AC-1: keyboard nav between sidebar tabs needs a
+                    // visible ring; ring-1 is the active *style*, not focus.
+                    'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
                     active ? 'bg-bg text-fg shadow-sm ring-1 ring-border' : 'text-fg-muted hover:bg-bg-muted hover:text-fg',
                   )}
                 >

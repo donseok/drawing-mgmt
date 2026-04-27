@@ -400,21 +400,23 @@ export default function ApprovalPage() {
           <div className="flex flex-wrap items-center gap-2 border-t border-border bg-brand/5 px-4 py-2 text-sm">
             <span className="font-medium text-fg">선택된 항목 1건</span>
             <span className="mx-2 text-border-strong">|</span>
+            {/* R37 AC-1: ad-hoc native buttons (vs Button component) needed
+                explicit focus-visible rings to keep keyboard nav visible. */}
             <button
               type="button"
               onClick={handleApprove}
               disabled={actionMutation.isPending}
-              className="inline-flex h-7 items-center gap-1 rounded bg-success/10 px-2 text-success hover:bg-success/20 disabled:opacity-60"
+              className="inline-flex h-7 items-center gap-1 rounded bg-success/10 px-2 text-success hover:bg-success/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-bg disabled:opacity-60"
             >
-              <CheckCircle2 className="h-3.5 w-3.5" /> 승인
+              <CheckCircle2 className="h-3.5 w-3.5" aria-hidden="true" /> 승인
             </button>
             <button
               type="button"
               onClick={handleRejectOpen}
               disabled={actionMutation.isPending}
-              className="inline-flex h-7 items-center gap-1 rounded bg-danger/10 px-2 text-danger hover:bg-danger/20 disabled:opacity-60"
+              className="inline-flex h-7 items-center gap-1 rounded bg-danger/10 px-2 text-danger hover:bg-danger/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-bg disabled:opacity-60"
             >
-              <XCircle className="h-3.5 w-3.5" /> 반려
+              <XCircle className="h-3.5 w-3.5" aria-hidden="true" /> 반려
             </button>
           </div>
         ) : null}
@@ -427,9 +429,9 @@ export default function ApprovalPage() {
               type="button"
               onClick={handleRecall}
               disabled={actionMutation.isPending}
-              className="inline-flex h-7 items-center gap-1 rounded border border-border px-2 hover:bg-bg-muted disabled:opacity-60"
+              className="inline-flex h-7 items-center gap-1 rounded border border-border px-2 hover:bg-bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-bg disabled:opacity-60"
             >
-              <Archive className="h-3.5 w-3.5" /> 회수
+              <Archive className="h-3.5 w-3.5" aria-hidden="true" /> 회수
             </button>
           </div>
         ) : null}
@@ -557,18 +559,18 @@ export default function ApprovalPage() {
                   type="button"
                   onClick={handleApprove}
                   disabled={actionMutation.isPending}
-                  className="inline-flex h-9 items-center justify-center gap-1 rounded-md bg-success px-3 text-sm font-semibold text-white hover:bg-success/90 disabled:opacity-60"
+                  className="inline-flex h-9 items-center justify-center gap-1 rounded-md bg-success px-3 text-sm font-semibold text-white hover:bg-success/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-bg disabled:opacity-60"
                 >
-                  <CheckCircle2 className="h-4 w-4" />
+                  <CheckCircle2 className="h-4 w-4" aria-hidden="true" />
                   승인
                 </button>
                 <button
                   type="button"
                   onClick={handleRejectOpen}
                   disabled={actionMutation.isPending}
-                  className="inline-flex h-9 items-center justify-center gap-1 rounded-md bg-danger px-3 text-sm font-semibold text-white hover:bg-danger/90 disabled:opacity-60"
+                  className="inline-flex h-9 items-center justify-center gap-1 rounded-md bg-danger px-3 text-sm font-semibold text-white hover:bg-danger/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-bg disabled:opacity-60"
                 >
-                  <XCircle className="h-4 w-4" />
+                  <XCircle className="h-4 w-4" aria-hidden="true" />
                   반려
                 </button>
               </div>

@@ -43,13 +43,16 @@ export function ViewerSidebar({ meta, onSelectPage }: ViewerSidebarProps) {
     >
       <div className="flex h-9 items-center justify-between border-b border-border px-2">
         <Tabs current={tab} onChange={setTab} mode={mode} />
+        {/* R37 AC-1: keyboard nav across viewer toolbar/sidebar needs visible
+            focus. The viewer is one of the highest-traffic screens for non-
+            mouse users (operators on tablets / shared workstations). */}
         <button
           type="button"
           onClick={() => setOpen(false)}
           aria-label="사이드바 닫기"
-          className="rounded p-1 text-fg-muted hover:bg-bg-muted"
+          className="rounded p-1 text-fg-muted hover:bg-bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         >
-          <X className="h-4 w-4" />
+          <X className="h-4 w-4" aria-hidden="true" />
         </button>
       </div>
       <div className="flex-1 overflow-y-auto">
@@ -90,6 +93,7 @@ function Tabs({
             onClick={() => onChange(t.id)}
             className={cn(
               'inline-flex h-7 items-center rounded px-2 text-xs font-medium transition-colors',
+              'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
               current === t.id
                 ? 'bg-bg text-fg shadow-sm'
                 : 'text-fg-muted hover:bg-bg-muted hover:text-fg',
@@ -156,12 +160,13 @@ function LayersTab() {
               type="button"
               onClick={() => toggleLayer(l.name)}
               aria-label={`${l.displayName} 레이어 토글`}
-              className="rounded p-1 hover:bg-bg-muted"
+              aria-pressed={l.visible}
+              className="rounded p-1 hover:bg-bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             >
               {l.visible ? (
-                <Eye className="h-4 w-4 text-brand" />
+                <Eye className="h-4 w-4 text-brand" aria-hidden="true" />
               ) : (
-                <EyeOff className="h-4 w-4 text-fg-muted" />
+                <EyeOff className="h-4 w-4 text-fg-muted" aria-hidden="true" />
               )}
             </button>
             <span
@@ -209,8 +214,11 @@ function PagesTab({ onSelect }: { onSelect?: (n: number) => void }) {
                 setPage(p);
                 onSelect?.(p);
               }}
+              aria-label={`${p} 페이지`}
+              aria-current={p === page ? 'page' : undefined}
               className={cn(
                 'flex h-24 w-full flex-col items-center justify-center rounded border bg-white text-xs text-fg-muted transition-colors hover:border-brand',
+                'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1',
                 p === page
                   ? 'border-brand ring-2 ring-brand/30'
                   : 'border-border',
@@ -299,9 +307,9 @@ function MeasurementsTab() {
               type="button"
               onClick={() => removeMeasurement(m.id)}
               aria-label="측정 삭제"
-              className="shrink-0 rounded p-1 text-fg-muted hover:bg-bg-muted hover:text-danger"
+              className="shrink-0 rounded p-1 text-fg-muted hover:bg-bg-muted hover:text-danger focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             >
-              <Trash2 className="h-3.5 w-3.5" />
+              <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
             </button>
           </li>
         ))}
