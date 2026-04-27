@@ -39,7 +39,7 @@ const TOTP_DEFAULTS = {
   algorithm: 'SHA1' as const,
   digits: 6 as const,
   period: 30 as const,
-} satisfies Pick<OTPAuth.TOTPOptions, 'algorithm' | 'digits' | 'period'>;
+};
 
 /** Generate a cryptographically random base32 TOTP secret (160 bits). */
 export function generateSecret(): string {
