@@ -10,6 +10,7 @@
 //
 // Owned by viewer-engineer (R28 V-INF-4).
 
+import { Prisma } from '@prisma/client';
 import { Queue, type JobsOptions } from 'bullmq';
 import IORedis, { type Redis } from 'ioredis';
 import {
@@ -19,6 +20,15 @@ import {
 import { prisma } from '@/lib/prisma';
 
 const REDIS_URL = process.env.REDIS_URL ?? 'redis://localhost:6379';
+
+/**
+ * Dedicated BullMQ queue for the P-1 print/PDF pipeline. Reusing the
+ * ConversionJob row (with `metadata.kind='PRINT'`) gives us the same admin
+ * monitoring + retry surface, but a separate queue keeps PRINT requests from
+ * starving regular DWG conversions and lets the worker scale them
+ * independently.
+ */
+export const PRINT_QUEUE_NAME = 'pdf-print';
 
 /** BullMQ retry policy mirrored on the worker side (apps/worker/src/index.ts). */
 export const CONVERSION_JOB_OPTIONS: JobsOptions = {
@@ -32,6 +42,7 @@ export const CONVERSION_JOB_OPTIONS: JobsOptions = {
 };
 
 let queueSingleton: Queue<ConversionJobPayload> | null = null;
+let printQueueSingleton: Queue<PrintJobPayload> | null = null;
 let connectionSingleton: Redis | null = null;
 
 function getConnection(): Redis {
@@ -53,6 +64,28 @@ export function getConversionQueue(): Queue<ConversionJobPayload> {
     });
   }
   return queueSingleton;
+}
+
+export interface PrintJobPayload {
+  /** ConversionJob row id — reused as the BullMQ jobId. */
+  jobId: string;
+  attachmentId: string;
+  storagePath: string;
+  filename: string;
+  mimeType: string;
+  /** Plot style — `mono` forces black/white, `color-a3` keeps ACI colors. */
+  ctb: 'mono' | 'color-a3';
+  pageSize: 'A4' | 'A3';
+}
+
+export function getPrintQueue(): Queue<PrintJobPayload> {
+  if (!printQueueSingleton) {
+    printQueueSingleton = new Queue<PrintJobPayload>(PRINT_QUEUE_NAME, {
+      connection: getConnection(),
+      defaultJobOptions: CONVERSION_JOB_OPTIONS,
+    });
+  }
+  return printQueueSingleton;
 }
 
 export interface EnqueueConversionInput {
@@ -147,4 +180,139 @@ export async function requeueConversion(
     /* ignore — old job may already be reaped */
   }
   await queue.add('convert', payload, { jobId: jobRowId });
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// PRINT pipeline (P-1)
+// ─────────────────────────────────────────────────────────────────────────
+//
+// PRINT reuses the ConversionJob table so the admin retry/list UI works
+// out of the box — the only differences are:
+//   - the BullMQ queue (PRINT_QUEUE_NAME — separate to avoid head-of-line
+//     blocking with regular DWG conversions),
+//   - the row's `metadata` field carries `{ kind: 'PRINT', ctb, pageSize }`
+//     so the worker + status endpoint can branch.
+//
+// On enqueue we look up the latest DONE PRINT job for the same attachment
+// + (ctb, pageSize) tuple — if a usable PDF already exists we return
+// `{ status: 'CACHED' }` instead of pushing a new job. This keeps repeat
+// "print" clicks from spamming the worker.
+
+export interface EnqueuePrintInput {
+  attachmentId: string;
+  storagePath: string;
+  filename: string;
+  mimeType: string;
+  ctb: 'mono' | 'color-a3';
+  pageSize: 'A4' | 'A3';
+}
+
+export type EnqueuePrintResult =
+  | { ok: true; status: 'CACHED'; jobId: string; pdfPath: string }
+  | { ok: true; status: 'QUEUED'; jobId: string }
+  | { ok: false; error: string; jobId?: string };
+
+interface PrintMetadata {
+  kind: 'PRINT';
+  ctb: 'mono' | 'color-a3';
+  pageSize: 'A4' | 'A3';
+}
+
+/**
+ * Look up an already-DONE PRINT job for the same `(attachmentId, ctb,
+ * pageSize)` tuple. Returns `null` when no cached row exists or the
+ * stored pdf is missing (let the caller re-enqueue).
+ */
+async function findCachedPrint(
+  attachmentId: string,
+  ctb: 'mono' | 'color-a3',
+  pageSize: 'A4' | 'A3',
+): Promise<{ jobId: string; pdfPath: string } | null> {
+  const candidate = await prisma.conversionJob.findFirst({
+    where: {
+      attachmentId,
+      status: 'DONE',
+      pdfPath: { not: null },
+      // Match metadata.kind=PRINT + ctb + pageSize using JSONB path equality.
+      AND: [
+        { metadata: { path: ['kind'], equals: 'PRINT' } },
+        { metadata: { path: ['ctb'], equals: ctb } },
+        { metadata: { path: ['pageSize'], equals: pageSize } },
+      ],
+    },
+    orderBy: { finishedAt: 'desc' },
+    select: { id: true, pdfPath: true },
+  });
+  if (!candidate?.pdfPath) return null;
+  return { jobId: candidate.id, pdfPath: candidate.pdfPath };
+}
+
+export async function enqueuePrint(
+  input: EnqueuePrintInput,
+): Promise<EnqueuePrintResult> {
+  // 1) Cache check — skip the queue if we already produced this PDF.
+  const cached = await findCachedPrint(
+    input.attachmentId,
+    input.ctb,
+    input.pageSize,
+  ).catch(() => null);
+  if (cached) {
+    return {
+      ok: true,
+      status: 'CACHED',
+      jobId: cached.jobId,
+      pdfPath: cached.pdfPath,
+    };
+  }
+
+  // 2) Otherwise insert a fresh ConversionJob row with PRINT metadata
+  //    and push to the dedicated `pdf-print` queue.
+  let jobRowId: string | undefined;
+  try {
+    const metadata: PrintMetadata = {
+      kind: 'PRINT',
+      ctb: input.ctb,
+      pageSize: input.pageSize,
+    };
+    const row = await prisma.conversionJob.create({
+      data: {
+        attachmentId: input.attachmentId,
+        status: 'PENDING',
+        attempt: 0,
+        metadata: metadata as unknown as Prisma.InputJsonValue,
+      },
+      select: { id: true },
+    });
+    jobRowId = row.id;
+
+    const payload: PrintJobPayload = {
+      jobId: row.id,
+      attachmentId: input.attachmentId,
+      storagePath: input.storagePath,
+      filename: input.filename,
+      mimeType: input.mimeType,
+      ctb: input.ctb,
+      pageSize: input.pageSize,
+    };
+
+    const queue = getPrintQueue();
+    await queue.add('print', payload, { jobId: row.id });
+
+    return { ok: true, status: 'QUEUED', jobId: row.id };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    if (jobRowId) {
+      try {
+        await prisma.conversionJob.update({
+          where: { id: jobRowId },
+          data: { status: 'FAILED', errorMessage: `enqueue failed: ${message}` },
+        });
+      } catch {
+        /* ignore */
+      }
+    }
+    // eslint-disable-next-line no-console
+    console.error('[conversion-queue] print enqueue failed', err);
+    return { ok: false, error: message, jobId: jobRowId };
+  }
 }

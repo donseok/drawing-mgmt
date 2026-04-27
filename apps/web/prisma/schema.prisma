@@ -54,6 +54,11 @@ model User {
   // ActivityLog-derived synthesis so the bell badge and panel can show
   // genuine read/unread state.
   notifications      Notification[]
+  // R31 / V-INF-2 — chunked uploads owned by this user. Cascade-delete so
+  // wiping a user clears their dangling upload sessions (the on-disk temp
+  // file is cleaned up by the cleanup worker / cancel endpoint, but a row
+  // without an owner would just leak).
+  uploads            Upload[]
 
   @@index([organizationId])
   @@index([role])
@@ -460,6 +465,14 @@ model ConversionJob {
   // generation failed) just leaves the field unset.
   dxfPath       String?
   thumbnailPath String?
+  // R31 / P-1 — print pipeline reuses ConversionJob. `pdfPath` is the
+  // resulting PDF on disk (typically `${FILE_STORAGE_ROOT}/<attachmentId>/preview.pdf`)
+  // and `metadata` carries `{ kind: 'PRINT', ctb, pageSize }` so the worker
+  // and status endpoint can distinguish PRINT requests from regular DWG
+  // conversion jobs without a separate table. Both fields are nullable:
+  // legacy DWG conversion jobs leave them unset.
+  pdfPath       String?
+  metadata      Json?
 
   attachment Attachment @relation(fields: [attachmentId], references: [id], onDelete: Cascade)
 
@@ -581,6 +594,34 @@ model ManualChunk {
 }
 
 // ─────────────────────────────────────────────────────────────
+// UPLOAD (청크 업로드 세션) — R31 V-INF-2
+// ─────────────────────────────────────────────────────────────
+// Tracks an in-progress chunked upload. The on-disk temp file lives at
+// `<UPLOAD_TMP_ROOT>/<id>.bin`. Once `uploadedBytes == totalBytes` and the
+// finalize endpoint runs, the file is moved into the regular attachment
+// storage layout and the row transitions to COMPLETED. Stale rows (PENDING
+// past `expiresAt`) are reaped by a background sweep.
+model Upload {
+  id            String       @id @default(cuid())
+  userId        String
+  filename      String
+  mimeType      String
+  totalBytes    BigInt
+  uploadedBytes BigInt       @default(0)
+  storagePath   String
+  status        UploadStatus @default(PENDING)
+  errorMessage  String?
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @updatedAt
+  expiresAt     DateTime
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, status])
+  @@index([expiresAt])
+}
+
+// ─────────────────────────────────────────────────────────────
 // API KEY (외부 연계)
 // ─────────────────────────────────────────────────────────────
 model ApiKey {
@@ -691,4 +732,18 @@ enum ChatRole {
 enum ChatMode {
   RAG
   RULE
+}
+
+// R31 / V-INF-2 — chunked upload session lifecycle.
+//   PENDING     — row created, no chunks yet.
+//   IN_PROGRESS — at least one chunk written, totalBytes not yet reached.
+//   COMPLETED   — finalize() ran successfully (Attachment created).
+//   FAILED      — explicit cancel by the owner OR finalize aborted.
+//   EXPIRED     — past expiresAt without finalize; cleaned by background sweep.
+enum UploadStatus {
+  PENDING
+  IN_PROGRESS
+  COMPLETED
+  FAILED
+  EXPIRED
 }
