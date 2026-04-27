@@ -45,6 +45,7 @@ import {
   runFileStorageBackup,
   runPostgresBackup,
 } from './backup.js';
+import { getStorage } from './storage.js';
 
 // ─── env ────────────────────────────────────────────────────────────────────
 
@@ -52,9 +53,6 @@ const BACKUP_ROOT = path.resolve(process.env.BACKUP_ROOT ?? './.data/backups');
 const BACKUP_RETENTION_DAYS = Number(process.env.BACKUP_RETENTION_DAYS ?? 30);
 const BACKUP_CRON_ENABLED = process.env.BACKUP_CRON_ENABLED === '1';
 const BACKUP_CRON_PATTERN = process.env.BACKUP_CRON_PATTERN ?? '0 2 * * *';
-const FILE_STORAGE_ROOT = path.resolve(
-  process.env.FILE_STORAGE_ROOT ?? './.data/files',
-);
 
 // ─── Backup row Prisma surface (loose-typed) ────────────────────────────────
 //
@@ -159,12 +157,16 @@ export async function processBackupJob(
     });
 
   try {
+    // FILES backup goes through the storage abstraction (R34 V-INF-1) so it
+    // archives both Local and S3 driver layouts uniformly. The worker's
+    // storage singleton is shared with the conversion pipeline.
     const artifact =
       payload.kind === 'POSTGRES'
         ? await runPostgresBackup({ outDir: BACKUP_ROOT })
         : await runFileStorageBackup({
-            srcDir: FILE_STORAGE_ROOT,
+            storage: getStorage(),
             outDir: BACKUP_ROOT,
+            log: (msg, meta) => log.info({ ...meta, backupId }, msg),
           });
 
     const days = payload.retentionDaysOverride ?? BACKUP_RETENTION_DAYS;

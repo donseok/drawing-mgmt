@@ -231,6 +231,9 @@ importers:
 
   apps/worker:
     dependencies:
+      '@aws-sdk/client-s3':
+        specifier: ^3.696.0
+        version: 3.1037.0
       '@drawing-mgmt/shared':
         specifier: workspace:*
         version: link:../../packages/shared
