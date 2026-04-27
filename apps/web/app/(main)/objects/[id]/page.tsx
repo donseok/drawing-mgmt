@@ -46,6 +46,16 @@ import {
 import { queryKeys } from '@/lib/queries';
 import { api, ApiError } from '@/lib/api-client';
 import { activityLabel } from '@/lib/activity-labels';
+import {
+  AttachmentScanBadge,
+  type AttachmentScanStatus,
+} from '@/components/scan/AttachmentScanBadge';
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from '@/components/ui/tooltip';
 
 // ─────────────────────────────────────────────────────────────────────────
 // Detail DTO — shape returned by GET /api/v1/objects/:id (route.ts
@@ -59,6 +69,14 @@ interface AttachmentDTO {
   size: string; // BigInt → string
   mimeType: string;
   isMaster: boolean;
+  // R36 V-INF-3 — virus-scan lifecycle. `virusScanStatus` is required (BE
+  // defaults to PENDING per migration 0010); the signature/timestamp are
+  // populated only after the worker reports back. We model them as optional
+  // so the FE keeps rendering during the rollout window when older rows in
+  // cache haven't been re-fetched yet.
+  virusScanStatus?: AttachmentScanStatus;
+  virusScanSig?: string | null;
+  virusScanAt?: string | null;
 }
 
 interface VersionDTO {
@@ -151,7 +169,17 @@ interface ObjectVM {
   masterFileMime: string | null;
   lockedBy: { id: string; name: string } | null;
   attributes: Array<{ label: string; value: string }>;
-  attachments: Array<{ id: string; name: string; size: string; master: boolean }>;
+  attachments: Array<{
+    id: string;
+    name: string;
+    size: string;
+    master: boolean;
+    // R36 — derived scan status. Defaults to PENDING when the BE response
+    // hasn't bubbled the field through yet (migration not yet applied or
+    // legacy cached payload).
+    scanStatus: AttachmentScanStatus;
+    scanSignature: string | null;
+  }>;
   history: Array<{
     revision: string;
     registrant: string;
@@ -306,6 +334,10 @@ function adaptObjectDetail(dto: ObjectDetailDTO): ObjectVM {
       name: a.filename,
       size: formatBytes(Number(a.size)),
       master: a.isMaster,
+      // R36 — fall back to PENDING when the field is missing so the badge
+      // still renders something neutral instead of throwing on undefined.
+      scanStatus: (a.virusScanStatus ?? 'PENDING') as AttachmentScanStatus,
+      scanSignature: a.virusScanSig ?? null,
     })),
     history,
     links: [
@@ -1141,12 +1173,19 @@ function InfoTab({ obj }: { obj: ObjectVM }) {
               const ext = a.name.split('.').pop()?.toLowerCase();
               const viewable = ext === 'dwg' || ext === 'dxf' || ext === 'pdf';
               const nameClass = 'font-mono text-[12px] text-fg';
+              // R36 — INFECTED attachments are blocked at the BE layer
+              // (api_contract.md §3.4). Mirror that here so the user gets a
+              // disabled affordance + tooltip instead of clicking and seeing
+              // an E_FORBIDDEN toast. The viewer link is also gated because
+              // its preview pipe streams from the same /file route.
+              const isInfected = a.scanStatus === 'INFECTED';
               return (
                 <li
                   key={a.id}
                   className={cn(
                     'flex items-center gap-3 px-4 py-2.5 text-sm',
                     i !== obj.attachments.length - 1 && 'border-b border-border',
+                    isInfected && 'bg-rose-50/50 dark:bg-rose-950/20',
                   )}
                 >
                   {a.master ? (
@@ -1156,7 +1195,7 @@ function InfoTab({ obj }: { obj: ObjectVM }) {
                   ) : (
                     <FileText className="h-4 w-4 text-fg-muted" />
                   )}
-                  {viewable ? (
+                  {viewable && !isInfected ? (
                     <Link
                       href={`/viewer/${a.id}`}
                       className={cn(nameClass, 'hover:underline')}
@@ -1164,17 +1203,48 @@ function InfoTab({ obj }: { obj: ObjectVM }) {
                       {a.name}
                     </Link>
                   ) : (
-                    <span className={nameClass}>{a.name}</span>
+                    <span
+                      className={cn(
+                        nameClass,
+                        isInfected && 'line-through decoration-rose-500/60',
+                      )}
+                    >
+                      {a.name}
+                    </span>
                   )}
+                  <AttachmentScanBadge
+                    status={a.scanStatus}
+                    signature={a.scanSignature}
+                    size="sm"
+                  />
                   <span className="ml-auto font-mono text-xs text-fg-muted">{a.size}</span>
-                  <a
-                    href={`/api/v1/attachments/${a.id}/file?download=1`}
-                    download={a.name}
-                    aria-label="다운로드"
-                    className="app-icon-button inline-flex h-7 w-7 items-center justify-center rounded text-fg-muted hover:bg-bg-muted hover:text-fg"
-                  >
-                    <Download className="h-3.5 w-3.5" />
-                  </a>
+                  {isInfected ? (
+                    <TooltipProvider>
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <span
+                            aria-disabled="true"
+                            aria-label="감염된 파일은 다운로드할 수 없습니다"
+                            className="inline-flex h-7 w-7 cursor-not-allowed items-center justify-center rounded text-fg-subtle opacity-50"
+                          >
+                            <Download className="h-3.5 w-3.5" />
+                          </span>
+                        </TooltipTrigger>
+                        <TooltipContent>
+                          바이러스 감염 — 다운로드 차단
+                        </TooltipContent>
+                      </Tooltip>
+                    </TooltipProvider>
+                  ) : (
+                    <a
+                      href={`/api/v1/attachments/${a.id}/file?download=1`}
+                      download={a.name}
+                      aria-label="다운로드"
+                      className="app-icon-button inline-flex h-7 w-7 items-center justify-center rounded text-fg-muted hover:bg-bg-muted hover:text-fg"
+                    >
+                      <Download className="h-3.5 w-3.5" />
+                    </a>
+                  )}
                   {canMutateAttachment ? (
                     <DropdownMenu>
                       <DropdownMenuTrigger asChild>
