@@ -30,6 +30,17 @@ export const ACTIVITY_LABELS: Record<string, string> = {
   REJECT: '결재 반려',
   APPROVAL_DEFER: '결재 미루기',
   APPROVAL_RECALL: '결재 회수',
+  // R29 — admin actions on users (U-2).
+  USER_CREATE: '사용자 생성',
+  USER_UPDATE: '사용자 수정',
+  USER_DELETE: '사용자 삭제',
+  USER_UNLOCK: '계정 잠금 해제',
+  USER_PASSWORD_RESET: '비밀번호 초기화',
+  // R29 — derived notification types that don't have a 1:1 ActivityLog row.
+  APPROVAL_REQUEST: '결재 요청',
+  APPROVAL_APPROVE: '결재 승인됨',
+  APPROVAL_REJECT: '결재 반려됨',
+  LOBBY_REPLY: '협의 답변',
 };
 
 /**

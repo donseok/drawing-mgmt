@@ -12,6 +12,7 @@ import { prisma } from '@/lib/prisma';
 import { requireUser } from '@/lib/auth-helpers';
 import { ok, error, ErrorCode } from '@/lib/api-response';
 import { extractRequestMeta, logActivity } from '@/lib/audit';
+import { enqueueNotification } from '@/lib/notifications';
 
 const bodySchema = z.object({
   comment: z.string().min(1).max(2000),
@@ -81,6 +82,23 @@ export async function POST(
       where: { id: approval.revision.object.id },
       data: { state: ObjectState.CHECKED_IN, lockedById: null },
     });
+
+    // R29 / N-1 — notify the requester of the rejection. Comment is short
+    // enough to inline as the body; full comment is available on the step.
+    if (approval.requesterId !== user.id) {
+      await enqueueNotification(tx, {
+        userId: approval.requesterId,
+        type: 'APPROVAL_REJECT',
+        title: '결재가 반려되었습니다',
+        body: `${approval.revision.object.number} — ${approval.title}`,
+        objectId: approval.revision.object.id,
+        metadata: {
+          approvalId: approval.id,
+          rejecterId: user.id,
+          comment: parsed.data.comment,
+        },
+      });
+    }
   });
 
   const meta = extractRequestMeta(req);

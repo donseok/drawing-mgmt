@@ -22,6 +22,7 @@ import {
 import { ok, error, ErrorCode } from '@/lib/api-response';
 import { canTransition } from '@/lib/state-machine';
 import { extractRequestMeta, logActivity } from '@/lib/audit';
+import { enqueueNotification } from '@/lib/notifications';
 
 const releaseSchema = z.object({
   title: z.string().min(1).max(200),
@@ -74,6 +75,8 @@ export async function POST(
     where: { id: params.id },
     select: {
       id: true,
+      number: true,
+      name: true,
       folderId: true,
       ownerId: true,
       securityLevel: true,
@@ -151,6 +154,25 @@ export async function POST(
       where: { id: obj.id },
       data: { state: ObjectState.IN_APPROVAL },
     });
+
+    // R29 / N-1 — notify the first approver that they have a pending
+    // request. Order is 1-based and pre-validated, so sorted[0] is always
+    // present here. Skip if the first approver is the requester (defensive
+    // — the FE shouldn't allow this but the API doesn't enforce it).
+    const firstApproverId = sorted[0]!.userId;
+    if (firstApproverId !== user.id) {
+      await enqueueNotification(tx, {
+        userId: firstApproverId,
+        type: 'APPROVAL_REQUEST',
+        title: '결재 요청이 도착했습니다',
+        body: `${obj.number} — ${dto.title}`,
+        objectId: obj.id,
+        metadata: {
+          approvalId: approval.id,
+          requesterId: user.id,
+        },
+      });
+    }
 
     return { approval, object: updated };
   }).catch((err) => {

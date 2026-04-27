@@ -1,14 +1,11 @@
 // POST /api/v1/notifications/:id/read
 //
-// Mark a notification as read. The product does not yet have a Notification
-// table, and the schema is read-only for this PR (no migrations), so we
-// implement this as a no-op success — the FE optimistically updates its
-// cache, and that's good enough until a real table ships.
+// Mark a notification as read for the current user (R29 / N-1).
 //
-// We still validate that the underlying ActivityLog row exists and belongs to
-// the current user so we don't lie to the FE about success on bogus IDs.
+// Owner-only — admins do NOT bypass; "read" is a per-user signal. Already-
+// read rows are a no-op (we keep the original readAt to preserve audit).
 //
-// Owned by BE-2.
+// Owned by BE-2 — see `_workspace/api_contract.md` §3.2.
 
 import { NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
@@ -27,12 +24,22 @@ export async function POST(
     throw err;
   }
 
-  const log = await prisma.activityLog.findUnique({
+  const notification = await prisma.notification.findUnique({
     where: { id: params.id },
-    select: { id: true, userId: true },
+    select: { id: true, userId: true, readAt: true },
   });
-  if (!log) return error(ErrorCode.E_NOT_FOUND);
-  if (log.userId !== user.id) return error(ErrorCode.E_FORBIDDEN);
+  if (!notification) return error(ErrorCode.E_NOT_FOUND);
+  if (notification.userId !== user.id) return error(ErrorCode.E_FORBIDDEN);
 
-  return ok({ id: params.id, read: true });
+  if (notification.readAt) {
+    return ok({ id: notification.id, readAt: notification.readAt });
+  }
+
+  const updated = await prisma.notification.update({
+    where: { id: notification.id },
+    data: { readAt: new Date() },
+    select: { id: true, readAt: true },
+  });
+
+  return ok(updated);
 }
