@@ -1,8 +1,17 @@
 // React Query keys factory. Centralizes query key construction so cache
 // invalidation stays consistent across components.
 
+// R39 — `me` is callable (`queryKeys.me()` → `['me']`) and also exposes a
+// nested `mfa()` factory (`queryKeys.me.mfa()` → `['me','mfa']`). The hybrid
+// shape is built via `Object.assign` because R28+ callers already depend on
+// the bare `me()` form across many files; folding into an object would be a
+// drive-by churn.
+const meKey = Object.assign(() => ['me'] as const, {
+  mfa: () => ['me', 'mfa'] as const,
+});
+
 export const queryKeys = {
-  me: () => ['me'] as const,
+  me: meKey,
 
   folders: {
     all: () => ['folders'] as const,
@@ -60,6 +69,11 @@ export const queryKeys = {
   },
 
   admin: {
+    // R39 SEC-4 — npm-audit summary surface. Single key (no params) because
+    // the BE caches the audit result for ~15min and admin only triggers a
+    // re-run via a dedicated POST mutation. The "지금 검사" button invalidates
+    // this same key on settle so the panel refreshes once the new run lands.
+    securityAudit: () => ['admin', 'security', 'audit'] as const,
     // R29 U-2 — admin/users list & detail. List is `useInfiniteQuery` keyed
     // by `q` (cursor lives in pageParam). Detail is by id for future single-
     // user pages; both invalidate together off the `users` root.
