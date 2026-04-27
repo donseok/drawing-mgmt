@@ -381,7 +381,7 @@ function buildHatchMesh(
     return { object: mesh, disposables: [{ geometry: geom, material: mat }] };
   }
 
-  // ── R25 pattern hatch ────────────────────────────────────────────────────
+  // ── R25 pattern hatch · R30 accurate polygon clipping ──────────────────
   const angles = anglesForPattern(hatch.patternName);
   const baseAngle = hatch.patternAngle ?? 0;
   const scale = hatch.patternScale && hatch.patternScale > 0 ? hatch.patternScale : 1;
@@ -389,7 +389,7 @@ function buildHatchMesh(
   const isDots = (hatch.patternName ?? '').toUpperCase() === 'DOTS';
 
   // Build the outline first (always present) so the boundary stays visible
-  // even if the in-polygon clip filters out every fill segment.
+  // even if the clip filters out every fill segment.
   const outlinePositions: number[] = [];
   for (const loop of hatch.loops) {
     for (let li = 0; li < loop.length - 1; li++) {
@@ -402,8 +402,7 @@ function buildHatchMesh(
     outlinePositions.push(last.x, last.y, 0, first.x, first.y, 0);
   }
 
-  // Bounding box from the outer loop — pattern lines sweep across this AABB,
-  // segments outside the boundary are filtered out by ray-cast point-in-poly.
+  // Bounding box from the outer loop — pattern lines sweep across this AABB.
   let minX = Infinity;
   let minY = Infinity;
   let maxX = -Infinity;
@@ -414,7 +413,8 @@ function buildHatchMesh(
     if (p.x > maxX) maxX = p.x;
     if (p.y > maxY) maxY = p.y;
   }
-  // Add a small margin so the line that grazes a vertex still gets covered.
+  // Tiny margin so a line that grazes a vertex still gets a chance to be
+  // clipped (makes the line span guaranteed to extend past the polygon).
   const margin = spacing;
   minX -= margin; minY -= margin; maxX += margin; maxY += margin;
   const bboxDiag = Math.hypot(maxX - minX, maxY - minY);
@@ -422,72 +422,57 @@ function buildHatchMesh(
   const cy = (minY + maxY) / 2;
 
   const fillPositions: number[] = [];
-  // For DOTS we draw very short dashes (one fifth of spacing) at the angle
-  // sample points so the rendered pattern resembles a dot grid.
-  const dashLen = isDots ? Math.max(0.05, spacing * 0.2) : 0;
 
-  for (const angDeg of angles) {
-    const angle = ((angDeg + baseAngle) * Math.PI) / 180;
-    const cos = Math.cos(angle);
-    const sin = Math.sin(angle);
-    // For each line at offset `t` from the bbox centre along the perpendicular
-    // direction, the line equation in world space is parametric:
-    //   p(s) = centre + perp * t + dir * s,  s ∈ [-bboxDiag, +bboxDiag]
-    // We sweep `t` in `spacing` steps from -diag/2 - margin to +diag/2 + margin.
-    const halfRange = bboxDiag / 2 + spacing;
-    for (let t = -halfRange; t <= halfRange; t += spacing) {
-      // Line endpoints across the bbox.
-      const ax = cx - sin * t - cos * bboxDiag;
-      const ay = cy + cos * t - sin * bboxDiag;
-      const bx = cx - sin * t + cos * bboxDiag;
-      const by = cy + cos * t + sin * bboxDiag;
-
-      if (isDots) {
-        // Sample points along the line at `spacing` intervals; at each sample
-        // emit a tiny dash centred on the sample if the sample is inside the
-        // boundary. This gives a recognisable dot grid without per-pixel work.
-        const segLen = Math.hypot(bx - ax, by - ay);
-        const step = spacing;
-        for (let s = step / 2; s <= segLen; s += step) {
-          const px = ax + ((bx - ax) * s) / segLen;
-          const py = ay + ((by - ay) * s) / segLen;
-          if (!pointInHatch(px, py, hatch.loops)) continue;
-          // Tiny horizontal dash so the dot is visible even at thin line widths.
-          fillPositions.push(
-            px - dashLen / 2, py, 0,
-            px + dashLen / 2, py, 0,
-          );
+  if (isDots) {
+    // ── DOTS: lattice grid sampling, point-in-polygon, exact boundary ──
+    // Dots that fall inside the hatch area are emitted as tiny axis-aligned
+    // dashes. Dash length stays under `spacing/2` so the dash itself can't
+    // straddle the boundary even at the worst case (dash centre exactly on
+    // an edge). We also clip the dash against the polygon as an additional
+    // safety so a dot near a thin neck never bleeds out.
+    const dashLen = Math.max(0.05, spacing * 0.2);
+    const halfDash = dashLen / 2;
+    const startX = Math.floor(minX / spacing) * spacing;
+    const startY = Math.floor(minY / spacing) * spacing;
+    for (let py = startY; py <= maxY; py += spacing) {
+      for (let px = startX; px <= maxX; px += spacing) {
+        if (!pointInHatch(px, py, hatch.loops)) continue;
+        // Clip the candidate dash so even if `pointInHatch` is true but the
+        // dash extent crosses a hole/outer edge, only the in-polygon part
+        // survives. For typical drawings this is a no-op (dash << spacing).
+        const segs = clipSegmentToHatch(
+          px - halfDash, py,
+          px + halfDash, py,
+          hatch.loops,
+        );
+        for (const s of segs) {
+          fillPositions.push(s.ax, s.ay, 0, s.bx, s.by, 0);
         }
-      } else {
-        // Standard cross-hatch: walk along the line in `spacing/2` steps,
-        // grouping consecutive in-polygon samples into output segments. This
-        // is cheaper than full segment-vs-polygon clipping and accurate enough
-        // for engineering plots.
-        const samples = Math.max(8, Math.ceil((bboxDiag * 2) / (spacing / 2)));
-        let runStart: { x: number; y: number } | null = null;
-        let lastSample: { x: number; y: number } | null = null;
-        for (let i = 0; i <= samples; i++) {
-          const u = i / samples;
-          const px = ax + (bx - ax) * u;
-          const py = ay + (by - ay) * u;
-          const inside = pointInHatch(px, py, hatch.loops);
-          if (inside) {
-            if (runStart === null) runStart = { x: px, y: py };
-            lastSample = { x: px, y: py };
-          } else if (runStart && lastSample) {
-            fillPositions.push(
-              runStart.x, runStart.y, 0,
-              lastSample.x, lastSample.y, 0,
-            );
-            runStart = null;
-            lastSample = null;
-          }
-        }
-        if (runStart && lastSample) {
-          fillPositions.push(
-            runStart.x, runStart.y, 0,
-            lastSample.x, lastSample.y, 0,
-          );
+      }
+    }
+  } else {
+    // ── ANSI31 / ANSI32 / unknown: line-set crosshatch with exact clip ──
+    // For each pattern angle we sweep a family of parallel lines through the
+    // bbox centre and clip each line precisely against the polygon (outer
+    // boundary AND its holes) using analytic edge intersection + midpoint
+    // inside-test. The result is leak-free at the boundary regardless of
+    // sampling density.
+    for (const angDeg of angles) {
+      const angle = ((angDeg + baseAngle) * Math.PI) / 180;
+      const cos = Math.cos(angle);
+      const sin = Math.sin(angle);
+      // Sweep `t` (perpendicular offset from centre) in `spacing` steps.
+      // Range of `t` covers the whole bbox so every line that could touch
+      // the polygon gets a chance.
+      const halfRange = bboxDiag / 2 + spacing;
+      for (let t = -halfRange; t <= halfRange; t += spacing) {
+        const ax = cx - sin * t - cos * bboxDiag;
+        const ay = cy + cos * t - sin * bboxDiag;
+        const bx = cx - sin * t + cos * bboxDiag;
+        const by = cy + cos * t + sin * bboxDiag;
+        const segs = clipSegmentToHatch(ax, ay, bx, by, hatch.loops);
+        for (const s of segs) {
+          fillPositions.push(s.ax, s.ay, 0, s.bx, s.by, 0);
         }
       }
     }
@@ -585,6 +570,117 @@ function pointInRing(px: number, py: number, ring: { x: number; y: number }[]): 
     if (intersect) inside = !inside;
   }
   return inside;
+}
+
+/**
+ * R30 V-1 — exact line-segment clipping against a HATCH boundary.
+ *
+ * The hatch area is `outer ∧ ¬holes` (HATCH semantics: first loop = outer,
+ * subsequent loops = holes). To clip a segment we collect the parameters
+ * `t ∈ [0, 1]` at which the segment crosses any ring edge, sort them, then
+ * walk adjacent intervals and emit those whose midpoint is inside the hatch
+ * area. This is exact at the boundary because every entry/exit transition
+ * lands on a real intersection — no sampling noise.
+ *
+ * Returns an array of in-polygon sub-segments. The function is exported so
+ * the dot-grid path (and any future feature) can reuse the same primitive.
+ *
+ * Edge cases handled:
+ *  - segment fully inside  → returns the whole segment
+ *  - segment fully outside → returns []
+ *  - segment endpoints on an edge → t=0 or t=1 are added explicitly so the
+ *    inside/outside classification still works on the bounding intervals
+ *  - parallel/colinear edges (denominator ≈ 0) are skipped: their
+ *    contribution to in/out parity is degenerate and the classification
+ *    by midpoint sampling still yields correct in/out for any non-degenerate
+ *    sub-interval.
+ */
+export function clipSegmentToHatch(
+  ax: number,
+  ay: number,
+  bx: number,
+  by: number,
+  loops: { x: number; y: number }[][],
+): Array<{ ax: number; ay: number; bx: number; by: number }> {
+  if (loops.length === 0) return [];
+
+  const dx = bx - ax;
+  const dy = by - ay;
+  if (dx === 0 && dy === 0) return [];
+
+  // Collect t-values where the segment intersects any ring edge.
+  const ts: number[] = [0, 1];
+  const EPS = 1e-9;
+  for (const ring of loops) {
+    const n = ring.length;
+    if (n < 2) continue;
+    for (let i = 0, j = n - 1; i < n; j = i++) {
+      const p = ring[j]!;
+      const q = ring[i]!;
+      const ex = q.x - p.x;
+      const ey = q.y - p.y;
+      // Solve  a + t·d = p + u·e  for t, u.
+      // | dx  -ex | |t|   | px - ax |
+      // | dy  -ey | |u| = | py - ay |
+      const denom = dx * (-ey) - dy * (-ex); // = dy*ex - dx*ey
+      if (Math.abs(denom) < EPS) continue; // parallel — skip (parity stable)
+      const rhsx = p.x - ax;
+      const rhsy = p.y - ay;
+      const t = (rhsx * -ey - rhsy * -ex) / denom;
+      const u = (dx * rhsy - dy * rhsx) / denom;
+      if (t < -EPS || t > 1 + EPS) continue;
+      if (u < -EPS || u > 1 + EPS) continue;
+      // Clamp to the segment range so endpoints exactly hit boundaries.
+      ts.push(Math.max(0, Math.min(1, t)));
+    }
+  }
+
+  // Sort + dedupe.
+  ts.sort((a, b) => a - b);
+  const merged: number[] = [ts[0]!];
+  for (let i = 1; i < ts.length; i++) {
+    if (ts[i]! - merged[merged.length - 1]! > EPS) merged.push(ts[i]!);
+  }
+  if (merged.length < 2) return [];
+
+  const out: Array<{ ax: number; ay: number; bx: number; by: number }> = [];
+  for (let i = 0; i < merged.length - 1; i++) {
+    const t0 = merged[i]!;
+    const t1 = merged[i + 1]!;
+    if (t1 - t0 < EPS) continue;
+    // Midpoint inside-test decides whether this sub-interval lies inside
+    // the hatch area. Cheap: one ray-cast per ring.
+    const tm = (t0 + t1) / 2;
+    const mx = ax + dx * tm;
+    const my = ay + dy * tm;
+    if (!pointInHatch(mx, my, loops)) continue;
+    out.push({
+      ax: ax + dx * t0,
+      ay: ay + dy * t0,
+      bx: ax + dx * t1,
+      by: ay + dy * t1,
+    });
+  }
+
+  // Coalesce adjacent sub-segments (same direction, shared endpoint) to keep
+  // the output BufferGeometry compact. Two segments are mergeable when the
+  // tail of the previous matches the head of the next within EPS.
+  if (out.length < 2) return out;
+  const coalesced: Array<{ ax: number; ay: number; bx: number; by: number }> = [out[0]!];
+  for (let i = 1; i < out.length; i++) {
+    const prev = coalesced[coalesced.length - 1]!;
+    const cur = out[i]!;
+    if (
+      Math.abs(prev.bx - cur.ax) < EPS &&
+      Math.abs(prev.by - cur.ay) < EPS
+    ) {
+      prev.bx = cur.bx;
+      prev.by = cur.by;
+    } else {
+      coalesced.push(cur);
+    }
+  }
+  return coalesced;
 }
 
 /**
