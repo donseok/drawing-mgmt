@@ -103,6 +103,12 @@ export const queryKeys = {
     // server-issued opaque pagination token.
     backups: (params: { kind?: string; cursor?: string } = {}) =>
       ['admin', 'backups', params] as const,
+    // R34 V-INF-1 — storage driver info + stats. Polled at 1 minute (low
+    // urgency — driver/config rarely change, stats are aggregate). The
+    // connection-test mutation invalidates this same key so the panel refreshes
+    // immediately after a manual probe.
+    storage: () => ['admin', 'storage'] as const,
+    storageInfo: () => ['admin', 'storage', 'info'] as const,
   },
 
   search: {
