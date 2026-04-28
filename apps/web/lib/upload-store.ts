@@ -18,8 +18,9 @@
 //   - S3 doesn't support byte-level append; emulating it would require
 //     either multipart upload sessions per chunk (costly small parts) or
 //     re-uploading the whole object on every PATCH.
-//   - Chunked uploads are short-lived (1 day TTL) and bounded (2 GB cap),
-//     so local disk is the right scratch space.
+//   - Chunked uploads are short-lived (1 day TTL) and bounded (200 MB cap;
+//     R49 / FIND-011 — was 2 GB, narrowed to TRD §6's 200 MB), so local
+//     disk is the right scratch space.
 //   - On finalize (POST .../finalize) we hand the assembled buffer to
 //     `getStorage().put(...)` — that's where the driver boundary actually
 //     matters.
@@ -44,8 +45,20 @@ const UPLOAD_TMP_ROOT = path.isAbsolute(process.env.UPLOAD_TMP_ROOT ?? '')
 /** 5 MB — recommended chunk size returned by `POST /api/v1/uploads`. */
 export const RECOMMENDED_CHUNK_SIZE = 5_000_000;
 
-/** Hard ceiling for a single upload session. Mirrors the 2 GB cap in §5. */
-export const MAX_UPLOAD_BYTES = 2 * 1024 * 1024 * 1024;
+/**
+ * Hard ceiling for a single upload session.
+ *
+ * R49 / FIND-011 — TRD §6 specifies a 200 MB cap; the prior 2 GiB constant
+ * was an oversight that allowed gigabyte uploads to consume disk + worker
+ * time before being rejected downstream. Configurable via
+ * `ATTACHMENT_MAX_BYTES` so deployments can tune up/down without a code
+ * change; the multipart route at `/api/v1/objects/[id]/attachments` reads
+ * the same env var to keep both ingest paths in lockstep.
+ */
+export const MAX_UPLOAD_BYTES = parseInt(
+  process.env.ATTACHMENT_MAX_BYTES ?? String(200 * 1024 * 1024),
+  10,
+);
 
 /** Hard ceiling for one chunk to avoid a single PATCH OOMing the server. */
 export const MAX_CHUNK_BYTES = 32 * 1024 * 1024;
@@ -205,8 +218,9 @@ export async function deleteUpload(id: string): Promise<void> {
 // Read the upload's temp file as a Buffer. Used by finalize() to
 // produce the SHA-256 + write into the attachment storage. Note:
 // for very large uploads this loads the whole file into memory;
-// since MAX_UPLOAD_BYTES is 2 GB the caller should consider
-// streaming if/when needed.
+// the default cap is 200 MB (R49 / FIND-011) which fits comfortably,
+// but if `ATTACHMENT_MAX_BYTES` is raised significantly the caller
+// should consider streaming.
 // ─────────────────────────────────────────────────────────────
 export async function readUploadBuffer(id: string): Promise<Buffer> {
   return fs.readFile(uploadStoragePath(id));

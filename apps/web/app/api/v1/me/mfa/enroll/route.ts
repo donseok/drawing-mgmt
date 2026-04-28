@@ -23,6 +23,8 @@ import {
   generateQrDataUrl,
   generateSecret,
 } from '@/lib/totp';
+// R49 / FIND-008 — TOTP secrets are stored AES-256-GCM-encrypted at rest.
+import { encryptSecret } from '@/lib/crypto';
 
 export const POST = withApi({ rateLimit: 'api' }, async () => {
   let session;
@@ -58,8 +60,13 @@ export const POST = withApi({ rateLimit: 'api' }, async () => {
     where: { id: session.id },
     // Reset enroll state: stash secret, clear confirmation + recovery codes
     // (they'd be valid for the *previous* secret otherwise).
+    //
+    // R49 / FIND-008 — column stores the AES-256-GCM ciphertext envelope
+    // (`v1:<iv>:<tag>:<cipher>`). The plaintext base32 is still returned
+    // in the response body so the user can scan/paste into their app —
+    // but it is never persisted in plaintext.
     data: {
-      totpSecret: secret,
+      totpSecret: encryptSecret(secret),
       totpEnabledAt: null,
       recoveryCodesHash: [],
     },

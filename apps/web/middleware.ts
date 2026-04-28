@@ -109,6 +109,18 @@ function applySecurityHeaders(res: NextResponse): NextResponse {
   for (const [k, v] of Object.entries(SECURITY_HEADERS)) {
     res.headers.set(k, v);
   }
+  // R49 / FIND-021 — Strict-Transport-Security. Only emit in production:
+  // a localhost dev server is plain http and HSTS would force the browser
+  // into https for the whole `localhost` host (and subdomains) for a year.
+  // 1y max-age + includeSubDomains is the OWASP-recommended baseline; we
+  // intentionally leave `preload` off until the deploy domain is confirmed
+  // and pre-loaded into the HSTS preload list (separate operational step).
+  if (process.env.NODE_ENV === 'production') {
+    res.headers.set(
+      'Strict-Transport-Security',
+      'max-age=31536000; includeSubDomains',
+    );
+  }
   return res;
 }
 
