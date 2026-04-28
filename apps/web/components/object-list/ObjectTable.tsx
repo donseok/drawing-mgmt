@@ -67,6 +67,13 @@ export interface ObjectRow {
    * <PdfSnippetLine>으로 렌더된다.
    */
   pdfSnippet?: string | null;
+  /**
+   * R42 D — 검색 결과 행이 어느 매치 소스에서 왔는지. q 파라미터가 없는
+   * 일반 list에선 항상 null. q 있을 때 'meta'(자료번호/이름/설명),
+   * 'pdf'(본문), 'both'. 자료명 cell의 PdfSnippetLine 위에 작은 chip으로
+   * 노출 — pdfSnippet이 비어 있어도 본문 매치라는 사실을 분리해 알 수 있다.
+   */
+  matchSource?: 'meta' | 'pdf' | 'both' | null;
 }
 
 interface ObjectTableProps {
@@ -223,6 +230,7 @@ export function ObjectTable({
             <span className="block truncate font-medium text-fg">
               {highlight(row.original.name, searchTerm)}
             </span>
+            <MatchSourceChip source={row.original.matchSource ?? null} />
             {row.original.pdfSnippet ? (
               <PdfSnippetLine snippet={row.original.pdfSnippet} />
             ) : null}
@@ -493,6 +501,31 @@ function highlight(text: string, term?: string) {
       </mark>
       {text.slice(idx + term.length)}
     </>
+  );
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// MatchSourceChip — R42 D
+// `matchSource === 'pdf' | 'both'`일 때만 자료명 cell 아래에 작은 chip을
+// 노출. 'meta'는 기존 자료번호/이름 hit이라 별도 라벨이 의미 없음(미표시).
+// chip은 pdfSnippet이 비어 있어도(ts_headline이 짧은 매칭에서 빈값을 줄 때)
+// "본문에서 매치됐다"는 사실을 분리해 보여줄 수 있게 한다 — contract §4.
+// ──────────────────────────────────────────────────────────────────────────
+
+function MatchSourceChip({
+  source,
+}: {
+  source: 'meta' | 'pdf' | 'both' | null;
+}): JSX.Element | null {
+  if (source !== 'pdf' && source !== 'both') return null;
+  const label = source === 'pdf' ? '본문' : '본문+메타';
+  return (
+    <span
+      className="mt-0.5 mr-1 inline-flex items-center rounded-full border border-warning/25 bg-warning/10 px-1.5 py-0 text-[10px] font-medium leading-4 text-warning"
+      aria-label={`매치 위치: ${label}`}
+    >
+      {label}
+    </span>
   );
 }
 

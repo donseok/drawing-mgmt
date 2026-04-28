@@ -16,6 +16,7 @@
  */
 
 import * as React from 'react';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   AlertCircle,
@@ -118,14 +119,57 @@ function formatTimestamp(iso: string | null): string {
     .padStart(2, '0')}:${d.getMinutes().toString().padStart(2, '0')}`;
 }
 
+// ── URL sync helpers (R42 B) ─────────────────────────────────────────────
+
+const VALID_STATUSES = new Set<PdfExtractStatus>(STATUS_ORDER);
+
+/**
+ * Parse `?status=` query param into a valid `PdfExtractStatus`. Anything else
+ * (missing, empty, unknown casing) collapses to `'ALL'`. Per contract §3.3
+ * invalid values are silently ignored — we don't bounce the URL, we just stay
+ * idle so refresh-with-typo behaves sanely.
+ */
+function parseStatusParam(raw: string | null): 'ALL' | PdfExtractStatus {
+  if (!raw) return 'ALL';
+  const upper = raw.toUpperCase() as PdfExtractStatus;
+  return VALID_STATUSES.has(upper) ? upper : 'ALL';
+}
+
 // ── Page ─────────────────────────────────────────────────────────────────
 
 export default function PdfExtractsPage(): JSX.Element {
   const queryClient = useQueryClient();
+  const router = useRouter();
+  const searchParams = useSearchParams();
 
+  // R42 B — mount-time hydrate from `?status=`. Subsequent state changes
+  // re-write the URL via `router.replace` (push would polute history on
+  // every card toggle).
   const [statusFilter, setStatusFilter] = React.useState<'ALL' | PdfExtractStatus>(
-    'ALL',
+    () => parseStatusParam(searchParams?.get('status') ?? null),
   );
+
+  // Mirror state → URL. We use `replace` (not `push`) so card toggles don't
+  // grow the history stack. The pattern (URLSearchParams.toString) matches
+  // search/page.tsx:597.
+  React.useEffect(() => {
+    const sp = new URLSearchParams(searchParams?.toString() ?? '');
+    if (statusFilter === 'ALL') {
+      sp.delete('status');
+    } else {
+      sp.set('status', statusFilter);
+    }
+    const qs = sp.toString();
+    const next = qs ? `/admin/pdf-extracts?${qs}` : '/admin/pdf-extracts';
+    // Only replace when the canonical URL actually differs — avoids tight
+    // re-render loops if some other effect re-renders the page without
+    // changing the filter.
+    const cur = `${window.location.pathname}${window.location.search}`;
+    if (cur !== next) {
+      router.replace(next);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [statusFilter]);
   // Client-side substring search across object number, filename, error msg.
   // The BE doesn't accept `q`, so we filter the loaded buffer.
   const [textQuery, setTextQuery] = React.useState('');

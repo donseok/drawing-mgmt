@@ -26,6 +26,7 @@
  */
 
 import * as React from 'react';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { CheckCircle2, Loader2, RefreshCw } from 'lucide-react';
 import { toast } from 'sonner';
 
@@ -49,7 +50,27 @@ interface VulnerabilityCounts {
   low: number;
 }
 
+// R42 C — `?severity=` URL sync. Only the four pnpm-audit severities are
+// valid; anything else collapses to `null` (no filter). We don't normalize
+// case — the canonical form we emit is lowercase, and an inbound mismatch
+// is treated as garbage and ignored.
+const VALID_SEVERITIES = new Set<VulnerabilitySeverity>([
+  'critical',
+  'high',
+  'moderate',
+  'low',
+]);
+
+function parseSeverityParam(raw: string | null): VulnerabilitySeverity | null {
+  if (!raw) return null;
+  const lower = raw.toLowerCase() as VulnerabilitySeverity;
+  return VALID_SEVERITIES.has(lower) ? lower : null;
+}
+
 export default function AdminSecurityPage(): JSX.Element {
+  const router = useRouter();
+  const searchParams = useSearchParams();
+
   const auditQuery = useAdminSecurityAudit();
   const runMutation = useRunSecurityAudit();
 
@@ -57,12 +78,33 @@ export default function AdminSecurityPage(): JSX.Element {
   // user gets a confirmation flicker even when the count didn't change.
   const [justCompletedAt, setJustCompletedAt] = React.useState<number | null>(null);
 
-  // R41 C — count card click → severity filter on the drill-down table. The
-  // filter is a view-state concern only (no URL sync — designer §C.6); a
-  // [지금 검사] mutation invalidates cache without resetting the filter so a
-  // patch verification trip stays sticky.
+  // R41 C → R42 C — count card click → severity filter on the drill-down
+  // table, now URL-synced (`?severity=high`) so refresh / share preserves the
+  // filter. The filter still survives [지금 검사] mutations because that path
+  // only invalidates `auditQuery` cache, not URL state.
   const [severityFilter, setSeverityFilter] =
-    React.useState<VulnerabilitySeverity | null>(null);
+    React.useState<VulnerabilitySeverity | null>(() =>
+      parseSeverityParam(searchParams?.get('severity') ?? null),
+    );
+
+  // Mirror filter → URL. `router.replace` (not push) keeps the back stack
+  // clean across card toggles. Pattern matches search/page.tsx:597.
+  React.useEffect(() => {
+    const sp = new URLSearchParams(searchParams?.toString() ?? '');
+    if (severityFilter == null) {
+      sp.delete('severity');
+    } else {
+      sp.set('severity', severityFilter);
+    }
+    const qs = sp.toString();
+    const next = qs ? `/admin/security?${qs}` : '/admin/security';
+    const cur = `${window.location.pathname}${window.location.search}`;
+    if (cur !== next) {
+      router.replace(next);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [severityFilter]);
+
   const toggleSeverity = React.useCallback((sev: VulnerabilitySeverity) => {
     setSeverityFilter((cur) => (cur === sev ? null : sev));
   }, []);
