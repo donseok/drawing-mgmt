@@ -35,6 +35,33 @@ export const POSTGRES_PREFIX = 'postgres-';
 export const POSTGRES_SUFFIX = '.dump.gz';
 export const FILES_PREFIX = 'files-';
 export const FILES_SUFFIX = '.tar.gz';
+/**
+ * R50 / FIND-022 — at-rest encryption suffix appended to the artifact
+ * filename when `BACKUP_ENCRYPTION_KEY` is set. Pruner matches by prefix
+ * (`postgres-` / `files-`), so this suffix is invisible to cleanup.
+ *
+ * Recovery:
+ *   openssl aes-256-cbc -d -pbkdf2 -iter 100000 \
+ *     -k "$BACKUP_ENCRYPTION_KEY" \
+ *     -in postgres-XXX.dump.gz.enc -out postgres-XXX.dump.gz
+ */
+export const ENCRYPTED_SUFFIX = '.enc';
+
+/**
+ * Read the at-rest encryption key from env. Returns `null` (= use plaintext,
+ * preserves R33 behavior) when unset or shorter than 16 chars (likely a
+ * placeholder). The key length is enforced as a sanity check, not a
+ * cryptographic guarantee — OpenSSL with `-pbkdf2` will derive a 256-bit
+ * key from any input length, but accepting `BACKUP_ENCRYPTION_KEY=changeme`
+ * silently would defeat the point.
+ */
+function backupEncryptionKey(): string | null {
+  const k = process.env.BACKUP_ENCRYPTION_KEY;
+  if (!k) return null;
+  const trimmed = k.trim();
+  if (trimmed.length < 16) return null;
+  return trimmed;
+}
 
 /**
  * Format a Date as a filesystem-safe UTC stamp:  20260427T021500Z
@@ -87,31 +114,81 @@ export async function runPostgresBackup(
     throw new Error('DATABASE_URL not set — cannot run pg_dump');
   }
 
-  const filename = `${POSTGRES_PREFIX}${backupTimestamp(opts.now)}${POSTGRES_SUFFIX}`;
+  const encKey = backupEncryptionKey();
+  const baseFilename = `${POSTGRES_PREFIX}${backupTimestamp(opts.now)}${POSTGRES_SUFFIX}`;
+  const filename = encKey ? `${baseFilename}${ENCRYPTED_SUFFIX}` : baseFilename;
   const outPath = path.join(opts.outDir, filename);
 
   const binPath = opts.binPath ?? 'pg_dump';
   const timeoutMs = opts.timeoutMs ?? 30 * 60_000;
 
-  // We pass the URL through `--dbname=URL` (which pg_dump accepts directly,
-  // including DSN-style postgres:// URLs). Argv exposure of the URL itself is
-  // unavoidable for pg_dump unless we parse + split into PG* envs; we accept
-  // the tradeoff because the worker process is not user-facing.
-  const args = [
-    '--format=custom',
-    '--compress=9',
-    '--no-owner',
-    '--no-privileges',
-    `--file=${outPath}`,
-    `--dbname=${url}`,
-  ];
-
   try {
-    await execa(binPath, args, {
-      timeout: timeoutMs,
-      // pg_dump is verbose to stderr on success too — capture but don't pipe.
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
+    if (encKey) {
+      // R50 / FIND-022 — pipe pg_dump → openssl AES-256-CBC + pbkdf2.
+      // We stream stdout from pg_dump to openssl's stdin so we never write a
+      // plaintext copy to disk (also avoids any temp-file race window).
+      const dump = execa(
+        binPath,
+        [
+          '--format=custom',
+          '--compress=9',
+          '--no-owner',
+          '--no-privileges',
+          // No --file=… — write to stdout for the openssl pipe.
+          `--dbname=${url}`,
+        ],
+        {
+          timeout: timeoutMs,
+          stdio: ['ignore', 'pipe', 'pipe'],
+        },
+      );
+      const enc = execa(
+        'openssl',
+        [
+          'enc',
+          '-aes-256-cbc',
+          '-salt',
+          '-pbkdf2',
+          '-iter',
+          '100000',
+          '-pass',
+          // `env:VAR` reads the key from the named env var rather than argv,
+          // so it doesn't show up in `ps`. We pass it via the spawned env
+          // without leaking to the parent process's env.
+          'env:_DM_BACKUP_KEY',
+          '-out',
+          outPath,
+        ],
+        {
+          timeout: timeoutMs,
+          input: dump.stdout!,
+          stdio: ['pipe', 'pipe', 'pipe'],
+          env: { _DM_BACKUP_KEY: encKey },
+        },
+      );
+      await Promise.all([dump, enc]);
+    } else {
+      // Legacy plaintext path — preserve R33 behavior verbatim. Argv exposure
+      // of the URL itself is unavoidable for pg_dump unless we parse + split
+      // into PG* envs; we accept the tradeoff because the worker process is
+      // not user-facing.
+      await execa(
+        binPath,
+        [
+          '--format=custom',
+          '--compress=9',
+          '--no-owner',
+          '--no-privileges',
+          `--file=${outPath}`,
+          `--dbname=${url}`,
+        ],
+        {
+          timeout: timeoutMs,
+          // pg_dump is verbose to stderr on success too — capture but don't pipe.
+          stdio: ['ignore', 'pipe', 'pipe'],
+        },
+      );
+    }
   } catch (err) {
     // Best-effort cleanup of partial output.
     await fs.rm(outPath, { force: true }).catch(() => undefined);
@@ -180,7 +257,9 @@ export async function runFileStorageBackup(
 ): Promise<BackupArtifact> {
   await fs.mkdir(opts.outDir, { recursive: true });
 
-  const filename = `${FILES_PREFIX}${backupTimestamp(opts.now)}${FILES_SUFFIX}`;
+  const encKey = backupEncryptionKey();
+  const baseFilename = `${FILES_PREFIX}${backupTimestamp(opts.now)}${FILES_SUFFIX}`;
+  const filename = encKey ? `${baseFilename}${ENCRYPTED_SUFFIX}` : baseFilename;
   const outPath = path.join(opts.outDir, filename);
 
   const binPath = opts.binPath ?? 'tar';
@@ -226,14 +305,49 @@ export async function runFileStorageBackup(
   }
 
   try {
-    await execa(
-      binPath,
-      ['-czf', outPath, '-C', stageParent, stageBase],
-      {
-        timeout: timeoutMs,
-        stdio: ['ignore', 'pipe', 'pipe'],
-      },
-    );
+    if (encKey) {
+      // R50 / FIND-022 — `tar -cz | openssl enc` so the gzipped tarball is
+      // never on disk in plaintext form.
+      const tar = execa(
+        binPath,
+        ['-cz', '-C', stageParent, stageBase],
+        {
+          timeout: timeoutMs,
+          stdio: ['ignore', 'pipe', 'pipe'],
+        },
+      );
+      const enc = execa(
+        'openssl',
+        [
+          'enc',
+          '-aes-256-cbc',
+          '-salt',
+          '-pbkdf2',
+          '-iter',
+          '100000',
+          '-pass',
+          'env:_DM_BACKUP_KEY',
+          '-out',
+          outPath,
+        ],
+        {
+          timeout: timeoutMs,
+          input: tar.stdout!,
+          stdio: ['pipe', 'pipe', 'pipe'],
+          env: { _DM_BACKUP_KEY: encKey },
+        },
+      );
+      await Promise.all([tar, enc]);
+    } else {
+      await execa(
+        binPath,
+        ['-czf', outPath, '-C', stageParent, stageBase],
+        {
+          timeout: timeoutMs,
+          stdio: ['ignore', 'pipe', 'pipe'],
+        },
+      );
+    }
   } catch (err) {
     await fs.rm(outPath, { force: true }).catch(() => undefined);
     const errMsg = err instanceof Error ? err.message : String(err);

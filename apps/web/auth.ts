@@ -340,7 +340,8 @@ const credentialsProvider = Credentials({
     // attempts/minute/IP; the limiter is in-memory (single Node process for
     // v1; swap to Redis when we scale horizontally).
     const ip = clientIpFromRequest(request);
-    const rl = rateLimit({
+    // R50 / FIND-013: rateLimit is now async (Redis-backed, in-memory fallback).
+    const rl = await rateLimit({
       key: `login:ip:${ip}`,
       ...RateLimitConfig.LOGIN,
     });

@@ -85,7 +85,10 @@ export function withApi<Ctx = unknown>(
     //    handlers (rare but possible) bypass the bucket.
     if (opts.rateLimit !== 'none' && isMutating(req.method)) {
       const session = await getCurrentUser().catch(() => null);
-      const result = rateLimitForRequest(req, {
+      // R50 / FIND-013: rateLimitForRequest is now async (Redis-backed with
+      // in-memory fallback). The await is on the request hot path but the
+      // common case is a single Redis INCR (sub-millisecond on the same VPC).
+      const result = await rateLimitForRequest(req, {
         scope: opts.rateLimit,
         userId: session?.id ?? null,
         config: RateLimitConfig.API,

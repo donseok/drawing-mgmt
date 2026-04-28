@@ -1,9 +1,29 @@
-// Simple in-memory rate limiter (fixed window).
+// R50 / FIND-013 — Redis-backed rate limiter (with in-memory fallback).
 //
-// Production WARNING: this is per-process memory. With multiple Next.js
-// instances or serverless cold starts, counts are not shared. Replace with
-// Redis-backed implementation (e.g. ioredis INCR + EXPIRE) for prod.
+// Why Redis:
+//   The previous in-memory `Map<string, Bucket>` only protects one Node
+//   process. With multiple Next.js replicas (current docker-compose can scale
+//   `web` horizontally) every replica had its own bucket, so an attacker
+//   hitting the LB round-robin could effectively get N times the limit.
+//
+//   ioredis is already a runtime dep (BullMQ uses it), so this adds zero new
+//   dependencies. We use the canonical INCR + EXPIRE-on-first-hit pattern:
+//   one round-trip per request, atomic per-key, TTL self-cleans.
+//
+// Fallback:
+//   If REDIS_URL is unset OR the connection isn't `ready` (initial dev
+//   without Redis up, transient outage), we silently fall back to the
+//   in-memory limiter. That keeps single-instance dev painless and avoids a
+//   hard-fail if Redis is briefly unavailable in prod (better to over-allow
+//   for a few seconds than 500 every request).
+//
+// Interface change:
+//   `rateLimit()` and `rateLimitForRequest()` now return Promises. All
+//   callers updated in the same patch (`auth.ts`, `lib/api-helpers.ts`).
+//
 // See TRD §8.1: 로그인 5회/분, API 100회/분.
+
+import IORedis, { type Redis } from 'ioredis';
 
 interface Bucket {
   count: number;
@@ -30,13 +50,145 @@ export interface RateLimitOptions {
   windowSec: number;
 }
 
+// ── Redis singleton ───────────────────────────────────────────────────────
+//
+// Three states:
+//   - `null`         — not yet initialized; getRedis() will lazy-construct.
+//   - Redis client   — initialized; check `.status === 'ready'` before use.
+//   - 'unavailable'  — REDIS_URL missing or constructor threw; we never
+//                       retry within a process lifetime (avoids reconnect
+//                       loops thrashing the rate-limit hot path).
+
+type RedisState = Redis | 'unavailable' | null;
+let redisSingleton: RedisState = null;
+
+function getRedis(): Redis | null {
+  if (redisSingleton === 'unavailable') return null;
+  if (redisSingleton) return redisSingleton;
+
+  const url = process.env.REDIS_URL;
+  if (!url) {
+    redisSingleton = 'unavailable';
+    return null;
+  }
+
+  try {
+    const r = new IORedis(url, {
+      // Rate limiting is on the request hot path — fail fast rather than
+      // hold the request open while ioredis retries.
+      maxRetriesPerRequest: 1,
+      enableOfflineQueue: false,
+      // We do NOT set lazyConnect — we want the connection to start
+      // warming immediately on first import so the very first rate-limit
+      // call has a chance of being `ready`.
+      lazyConnect: false,
+    });
+    // Swallow connection errors so we degrade to in-memory rather than
+    // unhandled-rejecting the process. The error fires on every reconnect
+    // attempt; logging once is enough.
+    let warned = false;
+    r.on('error', (err) => {
+      if (!warned) {
+        warned = true;
+        // eslint-disable-next-line no-console
+        console.warn('[rate-limit] redis error, falling back to in-memory:', err.message);
+      }
+    });
+    redisSingleton = r;
+    return r;
+  } catch {
+    redisSingleton = 'unavailable';
+    return null;
+  }
+}
+
+// ── Public API ────────────────────────────────────────────────────────────
+
 /**
  * Take one token from the bucket identified by `key`. Returns `allowed=false`
  * (with a `retryAfter` hint in seconds) when the limit is exceeded.
  *
+ * Tries Redis first; falls back to in-memory if Redis isn't reachable.
+ */
+export async function rateLimit(opts: RateLimitOptions): Promise<RateLimitResult> {
+  const r = getRedis();
+  if (!r || r.status !== 'ready') {
+    return rateLimitInMemory(opts);
+  }
+
+  try {
+    return await rateLimitRedis(r, opts);
+  } catch (err) {
+    // Don't fail the request just because Redis blipped — degrade gracefully.
+    // eslint-disable-next-line no-console
+    console.warn(
+      '[rate-limit] redis op failed, falling back to in-memory for this request:',
+      err instanceof Error ? err.message : String(err),
+    );
+    return rateLimitInMemory(opts);
+  }
+}
+
+/**
+ * Reset a key (e.g. on successful login to clear the failed-attempt bucket).
+ *
+ * Best-effort: deletes from both Redis (if reachable) and the in-memory map.
+ */
+export async function resetRateLimit(key: string): Promise<void> {
+  buckets.delete(key);
+  const r = getRedis();
+  if (r && r.status === 'ready') {
+    try {
+      await r.del(`rl:${key}`);
+    } catch {
+      // ignore — best effort
+    }
+  }
+}
+
+// ── Redis impl ────────────────────────────────────────────────────────────
+
+async function rateLimitRedis(
+  r: Redis,
+  opts: RateLimitOptions,
+): Promise<RateLimitResult> {
+  const { key, limit, windowSec } = opts;
+  const redisKey = `rl:${key}`;
+
+  // Atomic INCR — bucket is created at 1 if it didn't exist.
+  const count = await r.incr(redisKey);
+  // First hit in this window: arm the TTL. (PX wouldn't help here — second-
+  // resolution is fine for a 60s window and matches resetRateLimit's grain.)
+  if (count === 1) {
+    await r.expire(redisKey, windowSec);
+  }
+
+  // Read TTL so we can return a precise `retryAfter`. -1 means no TTL set
+  // (race with EXPIRE — re-arm). -2 means key missing (race with delete).
+  let ttl = await r.ttl(redisKey);
+  if (ttl < 0) {
+    await r.expire(redisKey, windowSec);
+    ttl = windowSec;
+  }
+
+  const allowed = count <= limit;
+  const resetAt = Date.now() + ttl * 1000;
+  return {
+    allowed,
+    remaining: Math.max(0, limit - count),
+    resetAt,
+    retryAfter: allowed ? 0 : Math.max(1, ttl),
+  };
+}
+
+// ── In-memory fallback (formerly `rateLimit`) ─────────────────────────────
+
+/**
+ * Fallback bucket implementation — used when Redis is unavailable.
+ *
  * Includes a cheap inline GC: every ~60 s we sweep expired buckets.
  */
-export function rateLimit(opts: RateLimitOptions): RateLimitResult {
+function rateLimitInMemory(opts: RateLimitOptions): RateLimitResult {
   const { key, limit, windowSec } = opts;
   const now = Date.now();
   gc(now);
@@ -65,11 +217,6 @@ export function rateLimit(opts: RateLimitOptions): RateLimitResult {
     resetAt: existing.resetAt,
     retryAfter: 0,
   };
-}
-
-/** Reset a key (e.g. on successful login to clear failed-attempt bucket). */
-export function resetRateLimit(key: string): void {
-  buckets.delete(key);
 }
 
 let lastGc = 0;
@@ -123,10 +270,10 @@ export interface RateLimitForRequestOpts {
  * fall back to `${scope}:ip:${ip}` (mostly defensive — most v1 routes also
  * call `requireUser`, so the ip bucket only protects login/health/etc.).
  */
-export function rateLimitForRequest(
+export async function rateLimitForRequest(
   req: Request,
   opts: RateLimitForRequestOpts = {},
-): RateLimitResult {
+): Promise<RateLimitResult> {
   const scope = opts.scope ?? 'api';
   const config = opts.config ?? RateLimitConfig.API;
   const subject = opts.userId

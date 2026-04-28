@@ -25,10 +25,12 @@
 import {
   SAML,
   generateServiceProviderMetadata,
+  ValidateInResponseTo,
   type Profile,
   type SamlConfig,
 } from '@node-saml/node-saml';
 import crypto from 'node:crypto';
+import { samlCacheProvider } from '@/lib/saml-cache';
 
 // ── Env config ────────────────────────────────────────────────────────────
 
@@ -87,10 +89,20 @@ export function getSamlConfig(): SamlConfig {
     // outer Response).
     wantAssertionsSigned: true,
     wantAuthnResponseSigned: true,
-    // Don't enforce InResponseTo binding — we don't persist the request id
-    // across instances yet. Tighten to `always` once we wire a Redis-backed
-    // cache provider for the request id.
-    validateInResponseTo: 'never' as unknown as SamlConfig['validateInResponseTo'],
+    // R50 / FIND-007 — InResponseTo enforcement.
+    //
+    // When REDIS_URL is set we wire a Redis-backed CacheProvider (see
+    // lib/saml-cache.ts) that persists the request id across web replicas,
+    // so node-saml can reject SAMLResponses that don't match a request we
+    // just minted. This closes the replay window the audit flagged.
+    //
+    // Without Redis we keep the previous 'never' behavior so single-instance
+    // dev still works (the in-memory CacheProvider can't cover multi-replica
+    // anyway, so partial enforcement would be misleading).
+    validateInResponseTo: process.env.REDIS_URL
+      ? ValidateInResponseTo.always
+      : ValidateInResponseTo.never,
+    cacheProvider: process.env.REDIS_URL ? samlCacheProvider : undefined,
     // 5min clock-skew tolerance is the typical Active Directory federation
     // default. Tighten if your IdP/SP clocks are tightly synced.
     acceptedClockSkewMs: 5 * 60 * 1000,
