@@ -1,0 +1,31 @@
+{
+  "name": "@drawing-mgmt/migration",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "bin": {
+    "drawing-migration": "./src/cli.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "eslint src/ --ext .ts",
+    "dry-run": "tsx src/cli.ts dry-run",
+    "full": "tsx src/cli.ts full",
+    "verify": "tsx src/cli.ts verify",
+    "rehearsal": "tsx src/cli.ts rehearsal"
+  },
+  "dependencies": {
+    "@drawing-mgmt/shared": "workspace:*",
+    "@prisma/client": "^5.22.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.7.5",
+    "tsx": "^4.19.1",
+    "typescript": "^5.5.0",
+    "vitest": "^4.1.5"
+  }
+}
