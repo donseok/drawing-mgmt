@@ -14,6 +14,8 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 // R47 / FIND-003 — auth + folder VIEW + scan gate.
 import { requireAttachmentView } from '@/lib/attachment-auth';
+// R48 / FIND-019 — per-preview audit row.
+import { extractRequestMeta, logActivity } from '@/lib/audit';
 
 const STORAGE_ROOT = path.resolve(process.env.FILE_STORAGE_ROOT ?? './.data/files');
 
@@ -24,6 +26,22 @@ export async function GET(
   const gate = await requireAttachmentView(req, ctx.params.id);
   if (gate instanceof Response) return gate;
   const { id } = ctx.params;
+
+  // R48 / FIND-019 — preview fetch audit (DXF variant). HEAD probes are
+  // intentionally skipped to keep the audit table focused on real reads.
+  const auditMeta = extractRequestMeta(req);
+  await logActivity({
+    userId: gate.user.id,
+    action: 'OBJECT_PREVIEW',
+    objectId: gate.object.id,
+    ipAddress: auditMeta.ipAddress,
+    userAgent: auditMeta.userAgent,
+    metadata: {
+      attachmentId: gate.attachment.id,
+      filename: gate.attachment.filename,
+      kind: 'dxf',
+    },
+  });
 
   const filePath = resolvePreviewPath(id);
   if (!filePath) {

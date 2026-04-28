@@ -25,6 +25,11 @@ import { ok, error, ErrorCode } from '@/lib/api-response';
 import { extractRequestMeta, logActivity } from '@/lib/audit';
 import { enqueueNotification } from '@/lib/notifications';
 import { withApi } from '@/lib/api-helpers';
+// R48 / FIND-006 — admin-supplied temp passwords must satisfy the same
+// length + complexity policy as user-driven changes. We deliberately do
+// NOT run the history check here: this is the recovery path for a locked-
+// out user, so the prior hash list isn't load-bearing.
+import { validatePassword } from '@/lib/password-policy';
 
 const BCRYPT_ROUNDS = 12;
 
@@ -92,6 +97,21 @@ export const POST = withApi<{ params: { id: string } }>(
   const tempPassword = 'tempPassword' in parsed.data
     ? parsed.data.tempPassword
     : generateTempPassword();
+
+  // R48 / FIND-006 — enforce the password policy on the *admin-supplied*
+  // path. The generator we control (12-byte random base64url) is wide and
+  // mixed-case so it always satisfies the policy; running validate on it
+  // too costs nothing and keeps the contract uniform.
+  const validation = validatePassword(tempPassword);
+  if (!validation.ok) {
+    return error(
+      ErrorCode.E_VALIDATION,
+      '임시 비밀번호가 정책을 만족하지 않습니다.',
+      400,
+      { errors: validation.errors },
+    );
+  }
+
   const hash = await bcrypt.hash(tempPassword, BCRYPT_ROUNDS);
 
   await prisma.$transaction(async (tx) => {
@@ -99,6 +119,10 @@ export const POST = withApi<{ params: { id: string } }>(
       where: { id: target.id },
       data: {
         passwordHash: hash,
+        // R48 / FIND-006 — stamp the policy clock to the epoch so the next
+        // (main)/layout RSC render forces the user through /settings to
+        // pick a password of their own. Pairs with FIND-005 enforcement.
+        passwordChangedAt: new Date(0),
         failedLoginCount: 0,
         lockedUntil: null,
       },

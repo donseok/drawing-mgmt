@@ -20,6 +20,8 @@ import path from 'node:path';
 import { Readable } from 'node:stream';
 // R47 / FIND-003 — auth + folder VIEW + scan gate.
 import { requireAttachmentView } from '@/lib/attachment-auth';
+// R48 / FIND-019 — per-preview audit row.
+import { extractRequestMeta, logActivity } from '@/lib/audit';
 
 const STORAGE_ROOT = path.resolve(process.env.FILE_STORAGE_ROOT ?? './.data/files');
 
@@ -45,6 +47,26 @@ export async function GET(
 
   const total = stat.size;
   const rangeHeader = req.headers.get('range');
+
+  // R48 / FIND-019 — preview fetch audit (PDF variant). PDF.js issues many
+  // Range requests per document for streamed rendering; we only log the
+  // initial (no-Range) read so the audit table records "Alice opened
+  // doc X" without exploding to one row per chunk.
+  if (!rangeHeader) {
+    const auditMeta = extractRequestMeta(req);
+    await logActivity({
+      userId: gate.user.id,
+      action: 'OBJECT_PREVIEW',
+      objectId: gate.object.id,
+      ipAddress: auditMeta.ipAddress,
+      userAgent: auditMeta.userAgent,
+      metadata: {
+        attachmentId: gate.attachment.id,
+        filename: gate.attachment.filename,
+        kind: 'pdf',
+      },
+    });
+  }
 
   if (rangeHeader) {
     const range = parseRange(rangeHeader, total);

@@ -127,15 +127,20 @@ export const POST = withApi<{ params: { id: string } }>(
 
     const pdfUrl = `/api/v1/attachments/${attachment.id}/preview.pdf`;
 
+    // R48 / FIND-019 — rename `PRINT_REQUEST` → `OBJECT_PRINT` so the action
+    // code aligns with the OBJECT_DOWNLOAD / OBJECT_PREVIEW family used by
+    // the sibling attachment routes. Existing rows with `PRINT_REQUEST`
+    // remain readable via the legacy entry in activity-labels.ts.
     const meta = extractRequestMeta(req);
     await logActivity({
       userId: user.id,
-      action: 'PRINT_REQUEST',
+      action: 'OBJECT_PRINT',
       objectId: obj.id,
       ipAddress: meta.ipAddress,
       userAgent: meta.userAgent,
       metadata: {
         attachmentId: attachment.id,
+        filename: attachment.filename,
         jobId: result.jobId,
         ctb: payload.ctb,
         pageSize: payload.pageSize,

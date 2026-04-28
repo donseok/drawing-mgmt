@@ -1,5 +1,8 @@
+import { headers } from 'next/headers';
 import { redirect } from 'next/navigation';
 import { auth } from '@/auth';
+import { prisma } from '@/lib/prisma';
+import { isPasswordExpired } from '@/lib/password-policy';
 import { Header } from '@/components/layout/Header';
 import { NavRail } from '@/components/layout/NavRail';
 import { AppShellClient } from '@/components/layout/AppShellClient';
@@ -12,6 +15,33 @@ export default async function MainLayout({ children }: { children: React.ReactNo
   const session = await auth();
   if (!session?.user) {
     redirect('/login');
+  }
+
+  // R48 / FIND-005 — server-side enforcement of the 90-day password-expiry
+  // policy. The check is here (and not in middleware) because middleware runs
+  // on the Edge runtime and can't reach Prisma. We skip the redirect for
+  // `/settings*` and `/logout*` so the user can actually reach the password
+  // change form (and so legitimate sign-out isn't trapped). The pathname is
+  // forwarded by middleware via the `x-pathname` request header.
+  const pathname = headers().get('x-pathname') ?? '';
+  const isOnSettings = pathname.startsWith('/settings');
+  const isOnLogout = pathname.startsWith('/logout');
+  if (!isOnSettings && !isOnLogout) {
+    const sessionUserId = session.user.id;
+    if (sessionUserId) {
+      const row = await prisma.user
+        .findUnique({
+          where: { id: sessionUserId },
+          select: { passwordChangedAt: true },
+        })
+        .catch(() => null);
+      // Dev-fallback users (`dev-<username>`) don't have a Postgres row, so
+      // findUnique returns null. Treat that case as "not expired" — the dev
+      // accounts are an in-memory fixture, not a managed identity.
+      if (row && isPasswordExpired(row.passwordChangedAt)) {
+        redirect('/settings?tab=password&forced=1');
+      }
+    }
   }
 
   const { name, organizationId, role, email } = session.user;

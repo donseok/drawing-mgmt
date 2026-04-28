@@ -38,6 +38,8 @@ import { authConfig } from '@/auth.config';
 import { verifySamlBridgeToken } from '@/lib/saml';
 import { mintMfaBridgeToken, verifyMfaBridgeToken } from '@/lib/mfa-bridge';
 import { rateLimit, RateLimitConfig } from '@/lib/rate-limit';
+// R48 / FIND-018 — LOGIN_SUCCESS / LOGIN_FAIL ActivityLog rows.
+import { extractRequestMeta, logActivity } from '@/lib/audit';
 
 const LOCKOUT_THRESHOLD = 5;
 const LOCKOUT_DURATION_MS = 30 * 60 * 1000; // 30 min
@@ -148,15 +150,88 @@ function clientIpFromRequest(request: Request | undefined): string {
   return 'unknown';
 }
 
+// R48 / FIND-018 — login activity audit helpers.
+//
+// `extractRequestMeta` already pulls the same x-forwarded-for/x-real-ip
+// shape we use elsewhere in the codebase, but it expects a Request. The
+// authorize callback receives `(credentials, request)` where the second
+// arg is `Request | undefined` (Auth.js v5 docs), so we guard for that.
+type LoginAuditMeta = { ipAddress: string | null; userAgent: string | null };
+function loginAuditMeta(request: Request | undefined): LoginAuditMeta {
+  if (!request) return { ipAddress: null, userAgent: null };
+  return extractRequestMeta(request);
+}
+
+type LoginFailReason =
+  | 'invalid_credentials'
+  | 'account_locked'
+  | 'rate_limited'
+  | 'mfa_required'
+  | 'saml_bridge_invalid'
+  | 'mfa_bridge_invalid';
+
+/**
+ * Fire-and-forget LOGIN_FAIL row. We never await audit writes from inside
+ * authorize (`logActivity` already swallows its own errors), but Auth.js
+ * synchronous-throw flow wants the row written before the throw — so we
+ * `await` here. A DB outage just degrades to a swallowed console.error.
+ *
+ * NOTE: ActivityLog.userId is a non-null FK to User, so we can only persist
+ * the row when the actor is known. For unknown-username probes (e.g.
+ * `username=foo` where no row exists) we skip the DB write to avoid FK
+ * violations and surface the attempt via console.warn — those probes are
+ * what the IP-bucketed rate limit is for.
+ */
+async function recordLoginFail(
+  meta: LoginAuditMeta,
+  reason: LoginFailReason,
+  username: string | null,
+  userId: string | null,
+): Promise<void> {
+  if (!userId) {
+    // eslint-disable-next-line no-console
+    console.warn('[auth] login fail (no userId)', {
+      reason,
+      username,
+      ip: meta.ipAddress,
+    });
+    return;
+  }
+  await logActivity({
+    userId,
+    action: 'LOGIN_FAIL',
+    objectId: null,
+    ipAddress: meta.ipAddress,
+    userAgent: meta.userAgent,
+    metadata: { username: username ?? null, reason },
+  });
+}
+
+async function recordLoginSuccess(
+  meta: LoginAuditMeta,
+  userId: string,
+  mode: 'password' | 'samlBridge' | 'mfaBridge',
+): Promise<void> {
+  await logActivity({
+    userId,
+    action: 'LOGIN_SUCCESS',
+    objectId: null,
+    ipAddress: meta.ipAddress,
+    userAgent: meta.userAgent,
+    metadata: { mode },
+  });
+}
+
 /**
  * R37 / A-2 — verify a SAML bridge token, resolve the User row that the
  * ACS endpoint provisioned, and return the Auth.js User shape. Null/invalid
  * tokens raise InvalidSamlBridgeError (code: saml_bridge_invalid) so the
  * login page can surface a stable error.
  */
-async function authorizeSamlBridge(token: string) {
+async function authorizeSamlBridge(token: string, meta: LoginAuditMeta) {
   const userId = verifySamlBridgeToken(token);
   if (!userId) {
+    await recordLoginFail(meta, 'saml_bridge_invalid', null, null);
     throw new InvalidSamlBridgeError();
   }
 
@@ -165,9 +240,11 @@ async function authorizeSamlBridge(token: string) {
     // The ACS endpoint just provisioned this row, so missing here means the
     // token is forged or the user was deactivated mid-flight. Either way
     // we refuse the session.
+    await recordLoginFail(meta, 'saml_bridge_invalid', null, userId);
     throw new InvalidSamlBridgeError();
   }
 
+  await recordLoginSuccess(meta, user.id, 'samlBridge');
   return {
     id: user.id,
     username: user.username,
@@ -190,13 +267,15 @@ async function authorizeSamlBridge(token: string) {
  * second factor is already proven. We just resolve the user row and return
  * the same shape the password path returns.
  */
-async function authorizeMfaBridge(token: string) {
+async function authorizeMfaBridge(token: string, meta: LoginAuditMeta) {
   const userId = verifyMfaBridgeToken(token);
   if (!userId) {
+    await recordLoginFail(meta, 'mfa_bridge_invalid', null, null);
     throw new InvalidCredentialsError();
   }
   const user = await prisma.user.findUnique({ where: { id: userId } });
   if (!user || user.deletedAt) {
+    await recordLoginFail(meta, 'mfa_bridge_invalid', null, userId);
     throw new InvalidCredentialsError();
   }
   // Stamp lastLoginAt + reset lockout counters now that the full 2-step
@@ -211,6 +290,7 @@ async function authorizeMfaBridge(token: string) {
       lastLoginAt: new Date(),
     },
   });
+  await recordLoginSuccess(meta, user.id, 'mfaBridge');
   return {
     id: user.id,
     username: user.username,
@@ -250,6 +330,10 @@ const credentialsProvider = Credentials({
     mfaBridge: { label: 'mfaBridge', type: 'text' },
   },
   async authorize(raw, request) {
+    // R48 / FIND-018 — capture audit metadata once. Every fail/success
+    // branch threads this through recordLoginFail / recordLoginSuccess.
+    const meta = loginAuditMeta(request);
+
     // R47 / FIND-014 — IP-bucketed login rate limit. We gate every authorize
     // entry (credentials AND bridge tokens) so a brute-force loop on the SAML
     // or MFA bridge endpoint can't slip past. TRD §8.1 sets the budget at 5
@@ -261,6 +345,13 @@ const credentialsProvider = Credentials({
       ...RateLimitConfig.LOGIN,
     });
     if (!rl.allowed) {
+      // No userId resolved yet — recordLoginFail will downgrade to a
+      // console.warn (FK-safe).
+      const usernameProbe =
+        typeof (raw as Record<string, unknown> | null)?.username === 'string'
+          ? ((raw as Record<string, string>).username ?? null)
+          : null;
+      await recordLoginFail(meta, 'rate_limited', usernameProbe, null);
       throw new LoginRateLimitedError();
     }
 
@@ -268,16 +359,17 @@ const credentialsProvider = Credentials({
     // path skips bcrypt entirely.
     const bridge = (raw as Record<string, unknown> | null)?.samlBridge;
     if (typeof bridge === 'string' && bridge.length > 0) {
-      return authorizeSamlBridge(bridge);
+      return authorizeSamlBridge(bridge, meta);
     }
     // R40 / R39 finish — MFA bridge mode (post-2nd-factor).
     const mfaBridgeRaw = (raw as Record<string, unknown> | null)?.mfaBridge;
     if (typeof mfaBridgeRaw === 'string' && mfaBridgeRaw.length > 0) {
-      return authorizeMfaBridge(mfaBridgeRaw);
+      return authorizeMfaBridge(mfaBridgeRaw, meta);
     }
 
     const parsed = credentialsSchema.safeParse(raw);
     if (!parsed.success) {
+      await recordLoginFail(meta, 'invalid_credentials', null, null);
       throw new InvalidCredentialsError();
     }
     const { username, password } = parsed.data;
@@ -293,14 +385,23 @@ const credentialsProvider = Credentials({
     }
     if (!user) {
       const dev = findDevUser(username, password);
-      if (dev) return dev;
+      if (dev) {
+        // Dev fallback users have no Postgres row, so we can't write a
+        // LOGIN_SUCCESS row (FK to User). Surface via console for traceability.
+        // eslint-disable-next-line no-console
+        console.info('[auth] dev fallback login', { username, ip: meta.ipAddress });
+        return dev;
+      }
       // Constant-time-ish: still hash a dummy to reduce timing oracle.
       await bcrypt.compare(password, '$2a$12$invalidinvalidinvalidinvalidinva');
+      // Unknown username — userId null, FK-safe path.
+      await recordLoginFail(meta, 'invalid_credentials', username, null);
       throw new InvalidCredentialsError();
     }
 
     // Lockout check.
     if (user.lockedUntil && user.lockedUntil > new Date()) {
+      await recordLoginFail(meta, 'account_locked', username, user.id);
       throw new AccountLockedError();
     }
 
@@ -317,7 +418,11 @@ const credentialsProvider = Credentials({
             : user.lockedUntil,
         },
       });
-      if (shouldLock) throw new AccountLockedError();
+      if (shouldLock) {
+        await recordLoginFail(meta, 'account_locked', username, user.id);
+        throw new AccountLockedError();
+      }
+      await recordLoginFail(meta, 'invalid_credentials', username, user.id);
       throw new InvalidCredentialsError();
     }
 
@@ -335,6 +440,11 @@ const credentialsProvider = Credentials({
           lockedUntil: null,
         },
       });
+      // FIND-018 — the password step succeeded but the session is not
+      // yet issued. Record as LOGIN_FAIL { reason: 'mfa_required' } so the
+      // audit trail clearly shows the partial auth; the post-MFA step
+      // emits LOGIN_SUCCESS.
+      await recordLoginFail(meta, 'mfa_required', username, user.id);
       const mfaToken = mintMfaBridgeToken(user.id);
       throw new MfaRequiredError(mfaToken);
     }
@@ -348,6 +458,8 @@ const credentialsProvider = Credentials({
         lastLoginAt: new Date(),
       },
     });
+
+    await recordLoginSuccess(meta, user.id, 'password');
 
     // Returned object is fed to `jwt` callback as `user`.
     return {
