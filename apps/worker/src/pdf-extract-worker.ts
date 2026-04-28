@@ -43,6 +43,13 @@ import {
 import { extractPdfText } from './pdf-extract.js';
 import { getStorage, type Storage } from './storage.js';
 
+/**
+ * R41 / A — cap for `pdfExtractError`. Worker errors are sometimes huge
+ * (full pdfjs stack trace + stream context); 200 chars is enough for an
+ * admin to recognize the failure class without bloating the row.
+ */
+const PDF_EXTRACT_ERROR_CAP = 200;
+
 export interface PdfExtractWorkerHandle {
   worker: Worker<PdfExtractJobPayload, PdfExtractResult>;
   close: () => Promise<void>;
@@ -102,6 +109,33 @@ export async function processPdfExtractJob(
     'pdf-extract start',
   );
 
+  // R41 / A — flip the row to EXTRACTING the moment the worker picks
+  // it up. /admin/pdf-extracts uses this to show "in flight" badges so
+  // an admin doesn't double-click retry while a job is mid-run. Best
+  // effort: a P2025 (row gone) is non-fatal; any other error here is
+  // unexpected (DB outage) and we let it propagate so BullMQ retries.
+  try {
+    await prisma.attachment.update({
+      where: { id: payload.attachmentId },
+      data: { pdfExtractStatus: 'EXTRACTING' },
+    });
+  } catch (e) {
+    if ((e as { code?: string }).code === 'P2025') {
+      log.warn(
+        { attachmentId: payload.attachmentId },
+        'pdf-extract: attachment row gone before start, skipping',
+      );
+      // Pretend success so BullMQ doesn't retry a non-existent row.
+      return {
+        attachmentId: payload.attachmentId,
+        status: 'DONE',
+        charCount: 0,
+        durationMs: Date.now() - startedAt,
+      };
+    }
+    throw e;
+  }
+
   try {
     // 1) Load PDF bytes from storage.
     const { stream } = await storage.get(payload.pdfStorageKey);
@@ -121,7 +155,15 @@ export async function processPdfExtractJob(
     try {
       await prisma.attachment.update({
         where: { id: payload.attachmentId },
-        data: { contentText: trimmed.length > 0 ? trimmed : null },
+        data: {
+          contentText: trimmed.length > 0 ? trimmed : null,
+          // R41 / A — DONE transition. Stamp `pdfExtractAt` so admins can
+          // see when the row was last successfully indexed; clear any
+          // prior error so a retried-and-recovered row isn't misleading.
+          pdfExtractStatus: 'DONE',
+          pdfExtractAt: new Date(),
+          pdfExtractError: null,
+        },
       });
     } catch (e) {
       // P2025 = "An operation failed because it depends on one or more
@@ -157,6 +199,37 @@ export async function processPdfExtractJob(
       },
       'pdf-extract attempt failed',
     );
+
+    // R41 / A — only flip the row to FAILED on the *last* attempt. While
+    // BullMQ still has retries left, leaving it as EXTRACTING (set above)
+    // keeps the admin UI honest: "the worker is still trying". If it's
+    // the final attempt we record the truncated error message so the
+    // admin can see *why* without diving into worker logs.
+    if (isLastAttempt) {
+      try {
+        await prisma.attachment.update({
+          where: { id: payload.attachmentId },
+          data: {
+            pdfExtractStatus: 'FAILED',
+            pdfExtractAt: new Date(),
+            pdfExtractError: errMessage.slice(0, PDF_EXTRACT_ERROR_CAP),
+          },
+        });
+      } catch (e) {
+        // Row may have been deleted between attempts — that's fine, we
+        // would just be stamping a phantom failure on it. Log and move on.
+        if ((e as { code?: string }).code !== 'P2025') {
+          log.warn(
+            {
+              attachmentId: payload.attachmentId,
+              err: (e as Error).message,
+            },
+            'pdf-extract: failed to record FAILED status',
+          );
+        }
+      }
+    }
+
     // Always rethrow — BullMQ honors attempts/backoff via the queue's
     // job options (set on the enqueuer side; defaults are 3 + exp).
     throw err;
