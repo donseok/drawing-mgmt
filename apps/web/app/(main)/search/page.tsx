@@ -85,6 +85,10 @@ interface ServerObjectSummary {
   // 마커 포함 plain string)가 채워짐. number/name/description 매칭이면
   // null. FE는 이 필드가 있을 때만 결과 cell 하단에 1줄 snippet을 렌더.
   pdfSnippet?: string | null;
+  // R42 D — 결과 행의 매치 출처. q 없는 일반 list에선 항상 null. q 있을
+  // 때 'meta'(자료번호/이름/설명), 'pdf'(본문), 'both'. ObjectTable의
+  // <MatchSourceChip>이 'pdf'/'both'일 때만 작은 chip을 그린다.
+  matchSource?: 'meta' | 'pdf' | 'both' | null;
 }
 
 function adaptFolder(node: ServerFolderNode): FolderNode {
@@ -135,6 +139,9 @@ function adaptObject(o: ServerObjectSummary): ObjectRow {
     // R40 S-1 — pass the BE-supplied PDF snippet through. ObjectTable's name
     // cell renders <PdfSnippetLine> when this is non-null/non-empty.
     pdfSnippet: o.pdfSnippet ?? null,
+    // R42 D — pass match source through. BE may not yet send the field, in
+    // which case it stays null and the chip is hidden.
+    matchSource: o.matchSource ?? null,
   };
 }
 
