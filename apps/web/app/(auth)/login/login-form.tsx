@@ -285,6 +285,10 @@ function mapErrorCode(code: string | null): string | null {
       return '인증 시도 횟수를 초과했거나 세션이 만료되었습니다. 처음부터 다시 로그인하세요.';
     case 'mfa_disabled':
       return '2단계 인증이 비활성화되었습니다. 처음부터 다시 로그인하세요.';
+    // R48 — backend의 LoginRateLimitedError가 surface시키는 코드. 윈도우가
+    // 1분으로 짧아 카운트다운 UI 없이 단순 안내만 노출한다.
+    case 'rate_limited':
+      return '로그인 시도가 너무 많습니다. 잠시 후 다시 시도하세요.';
     default:
       return '로그인에 실패했습니다. 다시 시도하세요.';
   }
