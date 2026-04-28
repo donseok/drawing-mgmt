@@ -58,15 +58,15 @@ interface MeResponse {
 const VALID_TABS = ['profile', 'password', 'security', 'signature', 'notifications'] as const;
 type TabId = (typeof VALID_TABS)[number];
 
+const isTabId = (v: string | null | undefined): v is TabId =>
+  !!v && (VALID_TABS as readonly string[]).includes(v);
+
 export default function SettingsPage() {
   const searchParams = useSearchParams();
-  // R56 / QA P1-4 — `/settings?tab=notifications` 같이 외부에서(알림 패널 footer 등)
-  // 진입할 때 해당 탭이 바로 열리도록. 잘못된 값은 기본 'profile'로 fallback.
+  // `?tab=…`로 진입한 경우 해당 탭을 초기 선택 (e.g. NotificationPanel footer →
+  // `/settings?tab=notifications`). `defaultValue`만 쓰므로 마운트 시 1회 적용.
   const tabParam = searchParams?.get('tab');
-  const initialTab: TabId =
-    tabParam && (VALID_TABS as readonly string[]).includes(tabParam)
-      ? (tabParam as TabId)
-      : 'profile';
+  const initialTab: TabId = isTabId(tabParam) ? tabParam : 'profile';
 
   const { data: me, isLoading } = useQuery<MeResponse>({
     queryKey: queryKeys.me(),

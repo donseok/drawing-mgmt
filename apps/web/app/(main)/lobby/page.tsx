@@ -13,29 +13,33 @@ interface BoxMeta {
   key: BoxKey;
   label: string;
   icon: React.ComponentType<{ className?: string }>;
+  emptyTitle: string;
+  emptyDescription: string;
 }
 
 const BOX_META: BoxMeta[] = [
-  { key: 'received', label: '받은 로비함', icon: Inbox },
-  { key: 'sent', label: '보낸 로비함', icon: Send },
-  { key: 'expired', label: '만료된 로비함', icon: Clock4 },
+  {
+    key: 'received',
+    label: '받은 로비함',
+    icon: Inbox,
+    emptyTitle: '받은 로비 패키지가 없습니다.',
+    emptyDescription: '협력업체로부터 검토 요청이 들어오면 여기 표시됩니다.',
+  },
+  {
+    key: 'sent',
+    label: '보낸 로비함',
+    icon: Send,
+    emptyTitle: '보낸 로비 패키지가 없습니다.',
+    emptyDescription: '검색 화면에서 자료를 선택해 [트랜스미털]로 협력업체에 발송하면 표시됩니다.',
+  },
+  {
+    key: 'expired',
+    label: '만료된 로비함',
+    icon: Clock4,
+    emptyTitle: '만료된 로비 패키지가 없습니다.',
+    emptyDescription: '만료일이 지난 로비 패키지가 30일간 보관됩니다.',
+  },
 ];
-
-// R56 / QA P2 — 빈 상태 안내 텍스트 보강.
-function emptyTitle(box: BoxKey): string {
-  switch (box) {
-    case 'received': return '받은 로비 패키지가 없습니다.';
-    case 'sent':     return '보낸 로비 패키지가 없습니다.';
-    case 'expired':  return '만료된 로비 패키지가 없습니다.';
-  }
-}
-function emptyDescription(box: BoxKey): string {
-  switch (box) {
-    case 'received': return '협력업체로부터 검토 요청이 들어오면 여기 표시됩니다.';
-    case 'sent':     return '검색 화면에서 자료를 선택해 [트랜스미털]로 협력업체에 발송하면 표시됩니다.';
-    case 'expired':  return '만료일이 지난 로비 패키지가 30일간 보관됩니다.';
-  }
-}
 
 // MOCK lobby cards — TODO api.get('/api/v1/lobbies?box=...')
 const MOCK_LOBBIES = [
@@ -157,8 +161,8 @@ export default function LobbyPage() {
           {rows.length === 0 ? (
             <EmptyState
               icon={Inbox}
-              title={emptyTitle(box)}
-              description={emptyDescription(box)}
+              title={BOX_META.find((b) => b.key === box)!.emptyTitle}
+              description={BOX_META.find((b) => b.key === box)!.emptyDescription}
               className="min-h-80"
             />
           ) : (

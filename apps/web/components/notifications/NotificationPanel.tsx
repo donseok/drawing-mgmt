@@ -244,8 +244,7 @@ export function NotificationPanelBody({
         </ScrollArea>
       )}
 
-      {/* R35 N-1 — footer hint guiding users to the email channel toggle.
-          R56 — `?tab=notifications`로 알림 탭이 바로 열리도록 (settings page가 인식). */}
+      {/* R35 N-1 — footer hint guiding users to the email channel toggle. */}
       <footer className="border-t border-border bg-bg-subtle px-3 py-2 text-[11px] text-fg-subtle">
         메일도 받으시려면{' '}
         <Link
