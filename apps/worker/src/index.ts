@@ -403,12 +403,24 @@ function getPdfExtractQueue(): Queue<PdfExtractJobPayload> {
 async function maybeEnqueuePdfExtract(attachmentId: string): Promise<void> {
   // Honor the feature flag on the enqueue side too — keeps the queue
   // empty in dev/CI and matches the worker bootstrap gate.
-  if ((process.env.PDF_EXTRACT_ENABLED ?? '1') === '0') return;
+  //
+  // R41 / A — when the feature is OFF we still want /admin/pdf-extracts
+  // to render a meaningful state instead of an everlasting PENDING. Mark
+  // the row as SKIPPED so admins can later flip the flag + manually retry.
+  if ((process.env.PDF_EXTRACT_ENABLED ?? '1') === '0') {
+    await markPdfExtractSkipped(attachmentId, 'feature-disabled');
+    return;
+  }
 
   const pdfStorageKey = `${attachmentId}/preview.pdf`;
   const exists = await storage.exists(pdfStorageKey).catch(() => false);
   if (!exists) {
     log.debug({ attachmentId, pdfStorageKey }, 'pdf-extract: no preview.pdf, skip enqueue');
+    // R41 / A — same rationale as above: a non-PDF attachment (or one
+    // whose preview pipeline never produced a PDF) should be visibly
+    // SKIPPED in /admin/pdf-extracts. An admin can later trigger a
+    // re-conversion + retry if appropriate.
+    await markPdfExtractSkipped(attachmentId, 'no-preview-pdf');
     return;
   }
 
@@ -421,6 +433,39 @@ async function maybeEnqueuePdfExtract(attachmentId: string): Promise<void> {
     { jobId: `${attachmentId}:${pdfStorageKey}` },
   );
   log.info({ attachmentId, pdfStorageKey }, 'pdf-extract enqueued');
+}
+
+/**
+ * R41 / A — flip the row to SKIPPED when the conversion DONE branch
+ * decided not to enqueue a pdf-extract job. Idempotent: only collapses
+ * from PENDING so a manual admin retry (which sets PENDING) is the
+ * single legitimate way to leave a SKIPPED state — but a row already in
+ * EXTRACTING/DONE/FAILED is left alone. Row deletion (P2025-equivalent)
+ * just no-ops via updateMany's count semantics.
+ */
+async function markPdfExtractSkipped(
+  attachmentId: string,
+  reason: 'feature-disabled' | 'no-preview-pdf',
+): Promise<void> {
+  try {
+    const result = await prisma.attachment.updateMany({
+      where: { id: attachmentId, pdfExtractStatus: 'PENDING' },
+      data: {
+        pdfExtractStatus: 'SKIPPED',
+        pdfExtractAt: new Date(),
+        pdfExtractError: null,
+      },
+    });
+    log.debug(
+      { attachmentId, reason, updated: result.count },
+      'pdf-extract marked SKIPPED',
+    );
+  } catch (e) {
+    log.warn(
+      { attachmentId, reason, err: (e as Error).message },
+      'pdf-extract: failed to mark SKIPPED (non-fatal)',
+    );
+  }
 }
 
 /**

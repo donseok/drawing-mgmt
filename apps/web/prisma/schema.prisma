@@ -402,12 +402,29 @@ model Attachment {
   // raw SQL search query reach into it.
   contentText      String?
 
+  // R41 / A — PDF body extraction (`pdf-extract` worker) lifecycle.
+  //   PENDING    → enqueued (or eligible to be) but not yet picked up.
+  //   EXTRACTING → worker has the job in flight.
+  //   DONE       → contentText populated (may be empty string for textless PDFs).
+  //   FAILED     → all retries exhausted. `pdfExtractError` carries the
+  //                last error message, capped at 200 chars by the worker.
+  //   SKIPPED    → PDF artifact missing OR PDF_EXTRACT_ENABLED=0 — admins
+  //                can manually retry via /admin/pdf-extracts.
+  // R40 only tracked `contentText`; a NULL there could mean "never ran" or
+  // "ran and got nothing", which made admin triage impossible. The status
+  // enum + per-row error message + last-attempt timestamp give /admin
+  // /pdf-extracts the visibility it needs to retry/inspect failures.
+  pdfExtractStatus PdfExtractStatus @default(PENDING)
+  pdfExtractAt     DateTime?
+  pdfExtractError  String?
+
   version        Version         @relation(fields: [versionId], references: [id], onDelete: Cascade)
   conversionJobs ConversionJob[]
 
   @@index([versionId])
   @@index([conversionStatus])
   @@index([virusScanStatus])
+  @@index([pdfExtractStatus])
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -885,4 +902,19 @@ enum VirusScanStatus {
   INFECTED
   SKIPPED
   FAILED
+}
+
+// R41 / A — Attachment PDF body-text extraction lifecycle.
+//   PENDING    — eligible / enqueued, worker hasn't picked it up yet.
+//   EXTRACTING — worker has the job in flight.
+//   DONE       — contentText populated (zero-length is possible for textless PDFs).
+//   FAILED     — retries exhausted. `pdfExtractError` holds the last reason.
+//   SKIPPED    — PDF artifact missing (non-PDF source or DXF→PDF pipeline
+//                hasn't produced one yet) or PDF_EXTRACT_ENABLED=0.
+enum PdfExtractStatus {
+  PENDING
+  EXTRACTING
+  DONE
+  FAILED
+  SKIPPED
 }

@@ -62,6 +62,8 @@ export const ACTIVITY_LABELS: Record<string, string> = {
   BACKUP_DOWNLOAD: '백업 다운로드',
   // R36 / V-INF-3 — admin re-enqueued an INFECTED/FAILED virus scan.
   VIRUS_SCAN_RETRY: '바이러스 재스캔',
+  // R41 / A — admin re-enqueued a FAILED/SKIPPED PDF body-text extraction.
+  PDF_EXTRACT_RETRY: 'PDF 본문 재추출',
 };
 
 /**

@@ -30,10 +30,30 @@ interface VulnerabilityCounts {
   low: number;
 }
 
+/**
+ * R41 / B — single advisory entry for the /admin/security
+ * VulnerabilitiesTable. The shape is denormalized so the FE renders
+ * directly without a second hop, and stays a strict subset of the
+ * fields pnpm exposes across both the legacy single-blob shape and
+ * the newer JSONL stream.
+ */
+interface AdvisoryEntry {
+  id: string | number;
+  severity: 'critical' | 'high' | 'moderate' | 'low';
+  title: string;
+  package: string;
+  versionRange: string | null;
+  url: string | null;
+}
+
 interface AuditPayload {
   vulnerabilities: VulnerabilityCounts;
   count: number;
   lastChecked: string;
+  // R41 / B — per-advisory detail. May be empty even when `count > 0` if
+  // pnpm only emitted a metadata summary; in that case the FE shows a
+  // graceful "no detail available" empty state.
+  advisories: AdvisoryEntry[];
 }
 
 // 15-min in-memory cache. The audit payload is a small JSON blob and
@@ -142,12 +162,16 @@ function runPnpmAudit(): Promise<AuditPayload> {
         return;
       }
       try {
-        const counts = parseAuditOutput(stdout);
+        const detail = parseAuditDetail(stdout);
         finish(() =>
           resolve({
-            vulnerabilities: counts,
+            vulnerabilities: detail.counts,
             count:
-              counts.critical + counts.high + counts.moderate + counts.low,
+              detail.counts.critical +
+              detail.counts.high +
+              detail.counts.moderate +
+              detail.counts.low,
+            advisories: detail.advisories,
             lastChecked: new Date().toISOString(),
           }),
         );
@@ -159,15 +183,25 @@ function runPnpmAudit(): Promise<AuditPayload> {
 }
 
 /**
- * Tolerant parser. pnpm's `--json` output across versions either emits a
- * single JSON object with a `metadata.vulnerabilities` summary, or a
- * stream of JSON Lines where each line is one advisory. Try the single-
- * object form first and fall back to JSONL.
+ * R41 / B — tolerant parser. pnpm's `--json` output across versions either
+ * emits a single JSON object with `advisories: { id: {...} }` + a
+ * `metadata.vulnerabilities` summary, or a stream of JSON Lines where each
+ * line is one advisory `{ id, severity, title, module_name, ... }`. We try
+ * the single-object form first (fast path) and fall back to JSONL.
+ *
+ * Both shapes are mapped into the same `AdvisoryEntry` shape for the FE.
+ * The counts are derived from the advisory list when we have one (more
+ * accurate) and from the metadata summary as a fallback.
+ *
+ * Returns `{ counts, advisories }`. Advisories may be empty even when
+ * counts > 0 (older pnpm: metadata summary only, no per-advisory detail).
  */
-function parseAuditOutput(stdout: string): VulnerabilityCounts {
+function parseAuditDetail(
+  stdout: string,
+): { counts: VulnerabilityCounts; advisories: AdvisoryEntry[] } {
   const trimmed = stdout.trim();
   if (!trimmed) {
-    return zeroCounts();
+    return { counts: zeroCounts(), advisories: [] };
   }
 
   // 1) Single JSON blob (npm/pnpm 8 shape).
@@ -178,71 +212,166 @@ function parseAuditOutput(stdout: string): VulnerabilityCounts {
           info?: number;
         };
       };
-      advisories?: Record<
-        string,
-        { severity?: string }
-      >;
+      advisories?: Record<string, RawAdvisory>;
     };
+
+    // 1a) advisories map present — preferred path, gives us per-row detail.
+    if (parsed.advisories && typeof parsed.advisories === 'object') {
+      const advisories: AdvisoryEntry[] = [];
+      const counts = zeroCounts();
+      for (const [id, raw] of Object.entries(parsed.advisories)) {
+        const entry = mapAdvisory(id, raw);
+        if (!entry) continue;
+        advisories.push(entry);
+        counts[entry.severity]++;
+      }
+      // If the metadata summary has higher counts than what we mapped (e.g.
+      // a malformed advisory we dropped), prefer the metadata for the
+      // header badges so we don't under-report.
+      if (parsed.metadata?.vulnerabilities) {
+        const v = parsed.metadata.vulnerabilities;
+        return {
+          counts: {
+            critical: Math.max(counts.critical, v.critical ?? 0),
+            high: Math.max(counts.high, v.high ?? 0),
+            moderate: Math.max(counts.moderate, v.moderate ?? 0),
+            low: Math.max(counts.low, v.low ?? 0),
+          },
+          advisories,
+        };
+      }
+      return { counts, advisories };
+    }
+
+    // 1b) metadata summary only — no advisory detail available.
     if (parsed.metadata?.vulnerabilities) {
       const v = parsed.metadata.vulnerabilities;
       return {
-        critical: v.critical ?? 0,
-        high: v.high ?? 0,
-        moderate: v.moderate ?? 0,
-        low: v.low ?? 0,
+        counts: {
+          critical: v.critical ?? 0,
+          high: v.high ?? 0,
+          moderate: v.moderate ?? 0,
+          low: v.low ?? 0,
+        },
+        advisories: [],
       };
-    }
-    // Some pnpm versions emit just the advisories map.
-    if (parsed.advisories) {
-      const counts = zeroCounts();
-      for (const id of Object.keys(parsed.advisories)) {
-        const s = parsed.advisories[id]?.severity ?? 'low';
-        bumpSeverity(counts, s);
-      }
-      return counts;
     }
   } catch {
     // fall through to JSONL parsing
   }
 
-  // 2) JSON-Lines stream (newer pnpm). Each non-empty line is its own JSON.
+  // 2) JSON-Lines stream (newer pnpm). Each non-empty line is its own
+  //    advisory record. We map each line into AdvisoryEntry and increment
+  //    the severity counter.
   const counts = zeroCounts();
+  const advisories: AdvisoryEntry[] = [];
   for (const raw of trimmed.split('\n')) {
     const line = raw.trim();
     if (!line) continue;
     try {
-      const obj = JSON.parse(line) as { severity?: string };
-      if (obj && typeof obj.severity === 'string') {
-        bumpSeverity(counts, obj.severity);
+      const obj = JSON.parse(line) as RawAdvisory & { id?: string | number };
+      const entry = mapAdvisory(
+        obj.id !== undefined ? String(obj.id) : `idx-${advisories.length}`,
+        obj,
+      );
+      if (entry) {
+        advisories.push(entry);
+        counts[entry.severity]++;
       }
     } catch {
       // skip malformed lines — pnpm sometimes interleaves a banner.
     }
   }
-  return counts;
+  return { counts, advisories };
+}
+
+/**
+ * Raw advisory shape we tolerate from either pnpm output mode. Every
+ * field is optional — `mapAdvisory` enforces the minimum (severity).
+ */
+interface RawAdvisory {
+  id?: string | number;
+  severity?: string;
+  title?: string;
+  module_name?: string;
+  // pnpm 9 sometimes uses `name` instead of `module_name`.
+  name?: string;
+  vulnerable_versions?: string;
+  // pnpm 9 sometimes uses `range` instead of `vulnerable_versions`.
+  range?: string;
+  url?: string;
+  // pnpm 9 sometimes nests advisory metadata under `advisory`.
+  advisory?: {
+    title?: string;
+    module_name?: string;
+    name?: string;
+    vulnerable_versions?: string;
+    range?: string;
+    url?: string;
+    severity?: string;
+  };
+}
+
+/**
+ * Map a raw advisory record into the canonical `AdvisoryEntry`. Returns
+ * `null` when the record is missing essential fields (severity) — those
+ * are dropped from the table but counted via `metadata.vulnerabilities`
+ * if available.
+ */
+function mapAdvisory(
+  id: string | number,
+  raw: RawAdvisory,
+): AdvisoryEntry | null {
+  const a = raw.advisory ?? {};
+  const sevRaw = (raw.severity ?? a.severity ?? '').toLowerCase();
+  const severity = canonicalSeverity(sevRaw);
+  if (!severity) return null;
+  const pkg = raw.module_name ?? raw.name ?? a.module_name ?? a.name ?? '(unknown)';
+  const title = raw.title ?? a.title ?? '(no title)';
+  const versionRange =
+    raw.vulnerable_versions ??
+    raw.range ??
+    a.vulnerable_versions ??
+    a.range ??
+    null;
+  const url = raw.url ?? a.url ?? null;
+  return {
+    id,
+    severity,
+    title,
+    package: pkg,
+    versionRange,
+    url,
+  };
+}
+
+/**
+ * Map any of pnpm's severity strings ('critical' / 'high' / 'moderate' /
+ * 'medium' / 'low' / 'info') into the canonical four-bucket scheme used
+ * by the FE table. Returns `null` for unrecognized values so they're
+ * dropped (rather than mis-bucketed).
+ */
+function canonicalSeverity(
+  s: string,
+): 'critical' | 'high' | 'moderate' | 'low' | null {
+  switch (s) {
+    case 'critical':
+      return 'critical';
+    case 'high':
+      return 'high';
+    case 'moderate':
+    case 'medium':
+      return 'moderate';
+    case 'low':
+    case 'info':
+      return 'low';
+    default:
+      return null;
+  }
 }
 
 function zeroCounts(): VulnerabilityCounts {
   return { critical: 0, high: 0, moderate: 0, low: 0 };
-}
-
-function bumpSeverity(counts: VulnerabilityCounts, severity: string) {
-  switch (severity.toLowerCase()) {
-    case 'critical':
-      counts.critical++;
-      break;
-    case 'high':
-      counts.high++;
-      break;
-    case 'moderate':
-    case 'medium':
-      counts.moderate++;
-      break;
-    case 'low':
-    case 'info':
-      counts.low++;
-      break;
-  }
 }
 
 /**
