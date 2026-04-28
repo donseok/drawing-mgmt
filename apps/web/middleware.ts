@@ -38,12 +38,14 @@ export default auth((req) => {
   }
 
   const isAuthPage = pathname === '/login' || pathname.startsWith('/login/');
-  // DEV/DEMO: 뷰어와 health는 인증 없이 접근 허용 (DB 미가용 환경에서 샘플 fixture 시연 목적)
-  // 운영 전 제거 또는 NODE_ENV 분기 강제.
+  // R47 / FIND-003 — `/api/v1/attachments/*` is no longer demo-public; the
+  // attachment routes themselves now call `requireAttachmentView` to gate
+  // by folder permission + scan status. `/viewer/*` stays open ONLY in
+  // non-production so the dev fixture demo still works without a DB; in
+  // production the matcher below funnels into the requireLogin branch.
   const isDemoPublic =
-    pathname.startsWith('/viewer/') ||
     pathname === '/api/v1/health' ||
-    pathname.startsWith('/api/v1/attachments/');
+    (process.env.NODE_ENV !== 'production' && pathname.startsWith('/viewer/'));
 
   // Logged-in users hitting /login → bounce home.
   if (isAuthPage && isLoggedIn) {

@@ -112,7 +112,7 @@ describe('POST /api/v1/objects/{id}/attachments — virus scan integration', () 
         body,
       },
     );
-    const resp = await POST(req, { params: { id: objectId } });
+    const resp = await POST(req as never, { params: { id: objectId } });
     expect(resp.status).toBe(201);
 
     const att = await getTestPrisma().attachment.findFirst({

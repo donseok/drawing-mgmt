@@ -13,13 +13,17 @@ import { requireUser } from '@/lib/auth-helpers';
 import { ok, error, ErrorCode } from '@/lib/api-response';
 import { extractRequestMeta, logActivity } from '@/lib/audit';
 import { enqueueNotification } from '@/lib/notifications';
+import { withApi } from '@/lib/api-helpers';
 
 const bodySchema = z.object({
   comment: z.string().min(1).max(2000),
   signatureFile: z.string().max(500).optional(),
 });
 
-export async function POST(
+/**
+ * Inner handler — see approveHandler for why this is split out.
+ */
+export async function rejectHandler(
   req: Request,
   { params }: { params: { id: string } },
 ): Promise<NextResponse> {
@@ -118,3 +122,8 @@ export async function POST(
     objectState: ObjectState.CHECKED_IN,
   });
 }
+
+export const POST = withApi<{ params: { id: string } }>(
+  { rateLimit: 'api' },
+  rejectHandler,
+);

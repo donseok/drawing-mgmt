@@ -20,6 +20,7 @@ import { prisma } from '@/lib/prisma';
 import { requireUser } from '@/lib/auth-helpers';
 import { ok, error, ErrorCode } from '@/lib/api-response';
 import { extractRequestMeta, logActivity } from '@/lib/audit';
+import { withApi } from '@/lib/api-helpers';
 
 const BCRYPT_ROUNDS = 12;
 
@@ -122,7 +123,7 @@ const createSchema = z.object({
   password: z.string().min(8).max(128),
 });
 
-export async function POST(req: Request): Promise<NextResponse> {
+export const POST = withApi({ rateLimit: 'api' }, async (req: Request) => {
   let actor;
   try {
     actor = await requireUser();
@@ -210,4 +211,4 @@ export async function POST(req: Request): Promise<NextResponse> {
   });
 
   return ok({ ...created, lockStatus: 'NONE' as const }, undefined, { status: 201 });
-}
+});

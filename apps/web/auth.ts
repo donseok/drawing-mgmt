@@ -37,6 +37,7 @@ import { prisma } from '@/lib/prisma';
 import { authConfig } from '@/auth.config';
 import { verifySamlBridgeToken } from '@/lib/saml';
 import { mintMfaBridgeToken, verifyMfaBridgeToken } from '@/lib/mfa-bridge';
+import { rateLimit, RateLimitConfig } from '@/lib/rate-limit';
 
 const LOCKOUT_THRESHOLD = 5;
 const LOCKOUT_DURATION_MS = 30 * 60 * 1000; // 30 min
@@ -54,6 +55,11 @@ const DEV_USERS = [
 ] as const;
 
 function findDevUser(username: string, password: string) {
+  // R47 / FIND-004 — Hard production gate. Even with DEV_AUTH_FALLBACK
+  // accidentally set to "true" in prod env, NODE_ENV=production refuses to
+  // honor the in-memory plaintext credentials. The opt-in env flag is now
+  // a defense-in-depth layer rather than the only line of protection.
+  if (process.env.NODE_ENV === 'production') return null;
   if (process.env.DEV_AUTH_FALLBACK === 'false') return null;
   const u = DEV_USERS.find((x) => x.username === username && x.password === password);
   if (!u) return null;
@@ -86,6 +92,15 @@ class AccountLockedError extends CredentialsSignin {
 class InvalidSamlBridgeError extends CredentialsSignin {
   code = 'saml_bridge_invalid';
 }
+/**
+ * R47 / FIND-014 — surfaced when too many login attempts arrive from one IP
+ * inside the rolling window. Throwing here lets next-auth's URL-error
+ * propagation carry the `rate_limited` token to the FE login form, which
+ * can map it to a user-visible "잠시 후 다시 시도해 주세요." message.
+ */
+class LoginRateLimitedError extends CredentialsSignin {
+  code = 'rate_limited';
+}
 
 /**
  * R40 / R39 finish — surfaced when the credentials passed validation but the
@@ -113,6 +128,25 @@ class MfaRequiredError extends CredentialsSignin {
 }
 
 const isKeycloakEnabled = process.env.KEYCLOAK_ENABLED === '1';
+
+/**
+ * R47 / FIND-014 — best-effort client IP extraction for the login rate
+ * limiter. Mirrors `lib/audit.extractRequestMeta` but is local here so we
+ * don't pull a request-scoped helper into the auth.config bundle. Falls
+ * back to `'unknown'` so the limiter still works (single shared bucket)
+ * when behind a proxy that strips XFF.
+ */
+function clientIpFromRequest(request: Request | undefined): string {
+  if (!request) return 'unknown';
+  const xff = request.headers.get('x-forwarded-for');
+  if (xff) {
+    const first = xff.split(',')[0]?.trim();
+    if (first) return first;
+  }
+  const real = request.headers.get('x-real-ip');
+  if (real) return real;
+  return 'unknown';
+}
 
 /**
  * R37 / A-2 — verify a SAML bridge token, resolve the User row that the
@@ -215,7 +249,21 @@ const credentialsProvider = Credentials({
     // /api/v1/auth/mfa/verify hands back a fresh bridge token.
     mfaBridge: { label: 'mfaBridge', type: 'text' },
   },
-  async authorize(raw) {
+  async authorize(raw, request) {
+    // R47 / FIND-014 — IP-bucketed login rate limit. We gate every authorize
+    // entry (credentials AND bridge tokens) so a brute-force loop on the SAML
+    // or MFA bridge endpoint can't slip past. TRD §8.1 sets the budget at 5
+    // attempts/minute/IP; the limiter is in-memory (single Node process for
+    // v1; swap to Redis when we scale horizontally).
+    const ip = clientIpFromRequest(request);
+    const rl = rateLimit({
+      key: `login:ip:${ip}`,
+      ...RateLimitConfig.LOGIN,
+    });
+    if (!rl.allowed) {
+      throw new LoginRateLimitedError();
+    }
+
     // R37 / A-2 — SAML bridge mode. Branches first because the bridge token
     // path skips bcrypt entirely.
     const bridge = (raw as Record<string, unknown> | null)?.samlBridge;

@@ -21,6 +21,7 @@ import {
 import { ok, error, ErrorCode } from '@/lib/api-response';
 import { extractRequestMeta, logActivity } from '@/lib/audit';
 import { evaluateNumberRule } from '@/lib/db-helpers';
+import { withApi } from '@/lib/api-helpers';
 
 const SORT_FIELDS = ['registeredAt', 'number', 'name', 'revision', 'state'] as const;
 const SORT_DIRS = ['asc', 'desc'] as const;
@@ -532,7 +533,7 @@ export async function GET(req: Request): Promise<NextResponse> {
   return ok(data, { nextCursor, hasMore });
 }
 
-export async function POST(req: Request): Promise<NextResponse> {
+export const POST = withApi({ rateLimit: 'api' }, async (req: Request) => {
   let user;
   try {
     user = await requireUser();
@@ -648,7 +649,7 @@ export async function POST(req: Request): Promise<NextResponse> {
     }
     throw err;
   }
-}
+});
 
 async function createObject(
   dto: z.infer<typeof createSchema>,

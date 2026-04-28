@@ -7,6 +7,7 @@ import { z } from 'zod';
 import { prisma } from '@/lib/prisma';
 import { requireUser } from '@/lib/auth-helpers';
 import { ok, error, ErrorCode } from '@/lib/api-response';
+import { withApi } from '@/lib/api-helpers';
 
 export async function GET(): Promise<NextResponse> {
   let session;
@@ -53,7 +54,7 @@ const patchProfileSchema = z.object({
   message: '수정할 필드가 하나 이상 필요합니다.',
 });
 
-export async function PATCH(req: Request): Promise<NextResponse> {
+export const PATCH = withApi({ rateLimit: 'api' }, async (req: Request) => {
   let session;
   try {
     session = await requireUser();
@@ -105,4 +106,4 @@ export async function PATCH(req: Request): Promise<NextResponse> {
     ...rest,
     groups: groups.map((ug) => ug.group),
   });
-}
+});

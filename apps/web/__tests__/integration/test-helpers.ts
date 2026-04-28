@@ -240,13 +240,20 @@ export function conversionQueueMockFactory() {
 /**
  * Build a JSON Request for a Route Handler. Adds a same-origin Origin
  * header so `withApi`'s CSRF guard accepts the call.
+ *
+ * Returns a `NextRequest`-typed object so tests can pass the result straight
+ * into withApi-wrapped handlers without a cast. The runtime shape is a plain
+ * `Request` — Next.js's runtime tolerates this because the wrapper only
+ * touches `req.headers`, `req.method`, `req.url`, and `req.json()`.
  */
+import type { NextRequest } from 'next/server';
+
 export function jsonRequest(
   method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE',
   url: string,
   body?: unknown,
   init?: { headers?: Record<string, string> },
-): Request {
+): NextRequest {
   const fullUrl = url.startsWith('http')
     ? url
     : `http://localhost:3000${url}`;
@@ -261,7 +268,7 @@ export function jsonRequest(
     method,
     headers,
     body: body !== undefined ? JSON.stringify(body) : undefined,
-  });
+  }) as unknown as NextRequest;
 }
 
 /**

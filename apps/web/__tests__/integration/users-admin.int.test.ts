@@ -51,7 +51,7 @@ describe('POST /api/v1/admin/users', () => {
       securityLevel: 5,
       password: 'super-secret-1234',
     });
-    const resp = await POST(req);
+    const resp = await POST(req, undefined as never);
     const body = await readJson<{ data: { id: string; username: string } }>(
       resp,
     );
@@ -78,7 +78,7 @@ describe('POST /api/v1/admin/users', () => {
       role: 'USER',
       password: 'irrelevant-1234',
     });
-    const resp = await POST(req);
+    const resp = await POST(req, undefined as never);
     expect(resp.status).toBe(403);
 
     const row = await getTestPrisma().user.findUnique({

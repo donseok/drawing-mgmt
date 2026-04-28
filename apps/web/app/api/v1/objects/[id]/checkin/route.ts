@@ -20,15 +20,15 @@ import { ok, error, ErrorCode } from '@/lib/api-response';
 import { canTransition } from '@/lib/state-machine';
 import { extractRequestMeta, logActivity } from '@/lib/audit';
 import { enqueueNotification } from '@/lib/notifications';
+import { withApi } from '@/lib/api-helpers';
 
 const bodySchema = z.object({
   comment: z.string().max(2000).optional(),
 });
 
-export async function POST(
-  req: Request,
-  { params }: { params: { id: string } },
-): Promise<NextResponse> {
+export const POST = withApi<{ params: { id: string } }>(
+  { rateLimit: 'api' },
+  async (req, { params }) => {
   let user;
   try {
     user = await requireUser();
@@ -161,4 +161,5 @@ export async function POST(
   });
 
   return ok(updated);
-}
+  },
+);

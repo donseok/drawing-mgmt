@@ -26,8 +26,9 @@ import { prisma } from '@/lib/prisma';
 import { requireUser } from '@/lib/auth-helpers';
 import { ok, error, ErrorCode } from '@/lib/api-response';
 import { extractRequestMeta, logActivity } from '@/lib/audit';
-import { POST as approvePost } from '@/app/api/v1/approvals/[id]/approve/route';
-import { POST as rejectPost } from '@/app/api/v1/approvals/[id]/reject/route';
+import { withApi } from '@/lib/api-helpers';
+import { approveHandler } from '@/app/api/v1/approvals/[id]/approve/route';
+import { rejectHandler } from '@/app/api/v1/approvals/[id]/reject/route';
 
 const bodySchema = z.object({
   action: z.enum(['approve', 'reject', 'defer', 'recall']),
@@ -35,10 +36,9 @@ const bodySchema = z.object({
   signatureFile: z.string().max(500).optional(),
 });
 
-export async function POST(
-  req: Request,
-  ctx: { params: { id: string } },
-): Promise<NextResponse> {
+export const POST = withApi<{ params: { id: string } }>(
+  { rateLimit: 'api' },
+  async (req, ctx) => {
   let user;
   try {
     user = await requireUser();
@@ -78,7 +78,7 @@ export async function POST(
 
   if (dto.action === 'approve') {
     const fwd = new Request(req.url, forwardInit);
-    return approvePost(fwd, ctx);
+    return approveHandler(fwd, ctx);
   }
 
   if (dto.action === 'reject') {
@@ -86,7 +86,7 @@ export async function POST(
       return error(ErrorCode.E_VALIDATION, '반려 사유를 입력하세요.');
     }
     const fwd = new Request(req.url, forwardInit);
-    return rejectPost(fwd, ctx);
+    return rejectHandler(fwd, ctx);
   }
 
   // ── defer ─────────────────────────────────────────────────────────────
@@ -96,7 +96,8 @@ export async function POST(
 
   // ── recall ────────────────────────────────────────────────────────────
   return handleRecall(req, user.id, ctx.params.id, dto.comment ?? null);
-}
+  },
+);
 
 async function handleDefer(
   req: Request,

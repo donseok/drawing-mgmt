@@ -13,6 +13,7 @@ import { z } from 'zod';
 import { prisma } from '@/lib/prisma';
 import { requireUser } from '@/lib/auth-helpers';
 import { ok, error, ErrorCode } from '@/lib/api-response';
+import { withApi } from '@/lib/api-helpers';
 
 const pinTypeSchema = z.enum(['folder', 'object']);
 
@@ -101,7 +102,7 @@ export async function GET(req: Request): Promise<NextResponse> {
   return ok({ items });
 }
 
-export async function POST(req: Request): Promise<NextResponse> {
+export const POST = withApi({ rateLimit: 'api' }, async (req: Request) => {
   let user;
   try {
     user = await requireUser();
@@ -196,4 +197,4 @@ export async function POST(req: Request): Promise<NextResponse> {
     },
   };
   return ok(payload, undefined, { status: 201 });
-}
+});

@@ -13,6 +13,7 @@ import { prisma } from '@/lib/prisma';
 import { requireUser } from '@/lib/auth-helpers';
 import { ok, error, ErrorCode } from '@/lib/api-response';
 import { extractRequestMeta, logActivity } from '@/lib/audit';
+import { withApi } from '@/lib/api-helpers';
 
 function isAdmin(role: string): boolean {
   return role === 'SUPER_ADMIN' || role === 'ADMIN';
@@ -63,10 +64,9 @@ export async function GET(
   return ok(rows);
 }
 
-export async function POST(
-  req: Request,
-  { params }: { params: { id: string } },
-): Promise<NextResponse> {
+export const POST = withApi<{ params: { id: string } }>(
+  { rateLimit: 'api' },
+  async (req, { params }) => {
   let user;
   try {
     user = await requireUser();
@@ -148,4 +148,5 @@ export async function POST(
   });
 
   return ok(created, undefined, { status: 201 });
-}
+  },
+);
