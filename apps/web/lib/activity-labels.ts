@@ -9,6 +9,10 @@
 
 export const ACTIVITY_LABELS: Record<string, string> = {
   LOGIN: '로그인',
+  // R48 / FIND-018 — explicit success/fail rows. `LOGIN` (legacy) is kept
+  // for backwards compat with any older rows; new writes always use
+  // LOGIN_SUCCESS or LOGIN_FAIL so the audit table can group cleanly.
+  LOGIN_SUCCESS: '로그인 성공',
   LOGIN_FAIL: '로그인 실패',
   OBJECT_CREATE: '자료 등록',
   OBJECT_UPDATE: '자료 수정',
@@ -53,6 +57,13 @@ export const ACTIVITY_LABELS: Record<string, string> = {
   // outcome is tracked via ConversionJob rows; this row is the user-facing
   // "I asked for a printout" log entry.
   PRINT_REQUEST: '인쇄 요청',
+  // R48 / FIND-019 — per-attachment download / preview / print audit. We
+  // intentionally omit a thumbnail action: list pages render 50–100 thumbs
+  // per page, so logging would drown the audit table for negligible
+  // security gain.
+  OBJECT_DOWNLOAD: '자료 다운로드',
+  OBJECT_PREVIEW: '자료 미리보기',
+  OBJECT_PRINT: '자료 인쇄',
   // R31 — admin retry on a generic ConversionJob (already used by R28's
   // /api/v1/admin/conversions/jobs/{id}/retry).
   CONVERSION_RETRY: '변환 재시도',

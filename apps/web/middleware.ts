@@ -70,7 +70,16 @@ export default auth((req) => {
   }
 
   // Authenticated request — pass through, but stamp the headers.
-  return applySecurityHeaders(NextResponse.next());
+  // R48 / FIND-005 — propagate the resolved pathname into a request header
+  // so the (main)/layout RSC can decide whether to skip the password-expiry
+  // redirect when the user is already on /settings (avoids redirect loops).
+  // Edge → RSC header forwarding is the documented pattern in Next 14:
+  //   NextResponse.next({ request: { headers: <new headers> } }).
+  const reqHeaders = new Headers(req.headers);
+  reqHeaders.set('x-pathname', pathname);
+  return applySecurityHeaders(
+    NextResponse.next({ request: { headers: reqHeaders } }),
+  );
 });
 
 export const config = {

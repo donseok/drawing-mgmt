@@ -13,7 +13,7 @@
 import { NextResponse } from 'next/server';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import { auth } from '@/auth';
+import { requireUser } from '@/lib/auth-helpers';
 import type { AttachmentMeta } from '@/lib/viewer/types';
 
 const STORAGE_ROOT = path.resolve(process.env.FILE_STORAGE_ROOT ?? './.data/files');
@@ -22,7 +22,19 @@ export async function GET(
   _req: Request,
   ctx: { params: { id: string } },
 ): Promise<Response> {
-  await auth().catch(() => null);
+  // R48 / FIND-003 follow-up — the four sibling attachment routes (file,
+  // preview.dxf, preview.pdf, print) already gate on
+  // `requireAttachmentView`; meta was deferred in R47 because it serves the
+  // dev fixture path and a full folder-permission round-trip would break
+  // the seed-less viewer demo. We now at least require an authenticated
+  // session so this endpoint stops being anonymous-readable. Folder
+  // permission enforcement is tracked as a P3 follow-up.
+  try {
+    await requireUser();
+  } catch (err) {
+    if (err instanceof Response) return err;
+    throw err;
+  }
   const { id } = ctx.params;
 
   const dir = /^[A-Za-z0-9_\-]+$/.test(id) ? path.join(STORAGE_ROOT, id) : null;

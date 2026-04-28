@@ -25,6 +25,9 @@ import { StorageNotFoundError } from '@drawing-mgmt/shared/storage';
 // pre-R47 `auth().catch(() => null)` opt-in that left these routes effectively
 // public.
 import { requireAttachmentView } from '@/lib/attachment-auth';
+// R48 / FIND-019 — per-download audit row. Pairs with OBJECT_PREVIEW /
+// OBJECT_PRINT writes on the sibling routes.
+import { extractRequestMeta, logActivity } from '@/lib/audit';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -44,6 +47,23 @@ export async function GET(
   const gate = await requireAttachmentView(req, ctx.params.id);
   if (gate instanceof Response) return gate;
   const { id } = ctx.params;
+
+  // R48 / FIND-019 — record the download intent. We log on GET only (HEAD
+  // probes from the FE shouldn't pollute the audit table). Logging here
+  // (before resolveSource) means a 404 still leaves a "tried to download
+  // a deleted file" audit row, which is exactly what the auditor wanted.
+  const auditMeta = extractRequestMeta(req);
+  await logActivity({
+    userId: gate.user.id,
+    action: 'OBJECT_DOWNLOAD',
+    objectId: gate.object.id,
+    ipAddress: auditMeta.ipAddress,
+    userAgent: auditMeta.userAgent,
+    metadata: {
+      attachmentId: gate.attachment.id,
+      filename: gate.attachment.filename,
+    },
+  });
 
   const storage = getStorage();
   const sidecar = await readSidecar(storage, id);
