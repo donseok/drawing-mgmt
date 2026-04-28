@@ -204,6 +204,7 @@ drawing-mgmt/
 | Backup | `BACKUP_ROOT` | N | `./.data/backups` |
 | Backup | `BACKUP_RETENTION_DAYS` | N | `30` |
 | Backup | `BACKUP_CRON_ENABLED` | N | `0`/`1` |
+| Backup | `BACKUP_ENCRYPTION_KEY` | N | 16자 이상 시 산출물 AES-256-CBC + pbkdf2 암호화(`.enc` 접미사). 비어있으면 평문(R33 호환). 복구 절차는 §백업 복구 참조 |
 | Files | `REDIS_URL` | Y | `redis://localhost:6379` |
 | Files | `FILE_STORAGE_ROOT` | Y | `./.data/files` (local 드라이버 시) |
 | Convert | `ODA_CONVERTER_PATH` | N | ODA File Converter binary 경로 |
@@ -812,6 +813,35 @@ docker compose -f docker-compose.prod.yml ps
 - `apps/worker/Dockerfile` (R32 X-1.b, LibreDWG binary 포함)
 - `docker-compose.prod.yml` (R32 X-1.c)
 - `.github/workflows/ci.yml` (R32 X-3)
+
+### 10.6 백업 복구 (R50 / FIND-022)
+
+`BACKUP_ENCRYPTION_KEY`(16자 이상)가 설정된 환경에서 생성된 백업은 `.enc` 접미사가 붙는다(`postgres-XXX.dump.gz.enc`, `files-XXX.tar.gz.enc`). 복호화 후 기존 R33 절차와 동일하게 복원한다.
+
+```bash
+# 1) 키를 환경에 export — argv 노출 회피.
+export BACKUP_ENCRYPTION_KEY='...'
+
+# 2) Postgres dump 복호화 → pg_restore
+openssl enc -d -aes-256-cbc -pbkdf2 -iter 100000 \
+  -pass env:BACKUP_ENCRYPTION_KEY \
+  -in postgres-20260427T021500Z.dump.gz.enc \
+  -out postgres-20260427T021500Z.dump.gz
+pg_restore --clean --if-exists -d "$DATABASE_URL" \
+  postgres-20260427T021500Z.dump.gz
+
+# 3) Files tar 복호화 → tar -x
+openssl enc -d -aes-256-cbc -pbkdf2 -iter 100000 \
+  -pass env:BACKUP_ENCRYPTION_KEY \
+  -in files-20260427T021500Z.tar.gz.enc \
+  -out files-20260427T021500Z.tar.gz
+tar -xzf files-20260427T021500Z.tar.gz -C "$FILE_STORAGE_ROOT"
+```
+
+운영 노트:
+- 키 회전 시 과거 백업의 키 값은 KMS/볼트 등에 보관 — PBKDF2 + per-file salt 구조라 archive 별로 같은 입력으로만 복호화된다.
+- `.enc`가 붙어도 prune 로직(`name.startsWith('postgres-' | 'files-')`)에는 영향 없음.
+- 평문 백업과의 혼재가 가능 — 파일명을 보고 분기.
 
 ---
 
