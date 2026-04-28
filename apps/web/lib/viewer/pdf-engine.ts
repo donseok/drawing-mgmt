@@ -3,17 +3,13 @@
  *
  * - Lazy-loads `pdfjs-dist` so PDF code only ships when the viewer mounts
  *   (it's ~600KB+ minified).
- * - Wires the worker to a CDN URL whose version matches the locally installed
- *   `pdfjs-dist` package — pdf.worker.* is built from the same sources, and
- *   loading a mismatched worker version causes hard runtime errors.
+ * - Serves the worker from our own origin (`/pdfjs/pdf.worker.min.mjs`).
+ *   The file is copied from `node_modules/pdfjs-dist/build/pdf.worker.min.mjs`
+ *   to `apps/web/public/pdfjs/` by `scripts/copy-pdfjs-worker.mjs`, which runs
+ *   on `predev`/`prebuild`/`postinstall`. Self-hosting avoids CDN dependency
+ *   (sandboxed networks, jsdelivr outage) and version drift.
  * - Provides only the surface the viewer UI actually uses: load, render,
  *   text-search via findController.
- *
- * The worker URL strategy: we read `pdfjs.version` at runtime (it's a string
- * exported from the entry) and template it into a jsdelivr URL. This avoids
- * needing a Next.js webpack rule to copy the worker file into /public, at the
- * cost of a CDN dependency. If the network is blocked, the user sees an
- * inline error and can still download the original file.
  */
 
 'use client';
@@ -33,10 +29,7 @@ function loadPdfjs(): Promise<typeof import('pdfjs-dist')> {
       // The legacy build avoids `import.meta.url` worker resolution that breaks
       // under some bundler configs; the mjs entry is the modern API.
       const mod = await import('pdfjs-dist');
-      // Configure worker once. jsdelivr exposes the package's own worker file.
-      // If the worker URL doesn't match the lib version, PDF.js throws.
-      const version = (mod as { version?: string }).version ?? '4.7.76';
-      mod.GlobalWorkerOptions.workerSrc = `https://cdn.jsdelivr.net/npm/pdfjs-dist@${version}/build/pdf.worker.min.mjs`;
+      mod.GlobalWorkerOptions.workerSrc = '/pdfjs/pdf.worker.min.mjs';
       return mod;
     })();
   }

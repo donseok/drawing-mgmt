@@ -70,3 +70,7 @@ migration-reports/
 migration-storage/
 packages/migration/migration-reports/
 packages/migration/migration-storage/
+
+# pdfjs-dist worker — copied from node_modules at install/dev/build time
+# by apps/web/scripts/copy-pdfjs-worker.mjs (kept version-synced).
+apps/web/public/pdfjs/

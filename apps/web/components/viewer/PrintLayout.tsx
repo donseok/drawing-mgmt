@@ -36,6 +36,7 @@ export interface PrintLayoutProps {
  */
 export function PrintLayout({ meta, captureFrame }: PrintLayoutProps) {
   const [snapshot, setSnapshot] = useState<string | null>(null);
+  const [printedAt, setPrintedAt] = useState<string | null>(null);
 
   useEffect(() => {
     const onBeforePrint = () => {
@@ -46,6 +47,7 @@ export function PrintLayout({ meta, captureFrame }: PrintLayoutProps) {
           .__viewerPrintSnapshot ?? null;
       const current = stash ?? captureFrame();
       if (current) setSnapshot(current);
+      setPrintedAt(new Date().toLocaleString('ko-KR'));
     };
     const onAfterPrint = () => {
       (window as unknown as { __viewerPrintSnapshot?: string })
@@ -73,7 +75,7 @@ export function PrintLayout({ meta, captureFrame }: PrintLayoutProps) {
           </div>
           <div>
             <strong>인쇄 시각:</strong>{' '}
-            <span>{new Date().toLocaleString('ko-KR')}</span>
+            <span>{printedAt ?? '—'}</span>
           </div>
         </div>
         {snapshot ? (
