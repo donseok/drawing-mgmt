@@ -1,22 +1,28 @@
 'use client';
 
 /**
- * /admin/security — R40 SEC-PAGE.
+ * /admin/security — R40 SEC-PAGE + R41 보강 (B/C 카드).
  *
  * pnpm audit 결과를 admin에게 노출. 4개의 severity 카운트 카드 + 마지막 검사
- * 시각 + [지금 검사] 버튼. R40 1차에는 카운트 0건이면 EmptyState로 보강하지만
- * 클릭 → 필터/테이블 같은 drill-down은 R41 후보 (designer §J #5).
+ * 시각 + [지금 검사] 버튼. R41에서 추가:
+ *   - 카운트 카드 클릭 → 하단 테이블 필터 토글 (`severityFilter` 단일 source)
+ *   - 카드 active 시각: ring-2 ring-brand/40 + bg-bg-subtle + aria-pressed
+ *   - VulnerabilitiesTable: 카운트 카드 아래에 advisory 배열 drill-down
+ *   - allZero EmptyState는 R40 그대로 (테이블 mount 안 됨)
  *
  * 데이터 흐름:
- *   - GET  /api/v1/admin/security/audit  (useAdminSecurityAudit)
+ *   - GET  /api/v1/admin/security/audit  (useAdminSecurityAudit) — R41에서
+ *     `advisories` 배열 포함 (계약 §4.3)
  *   - POST /api/v1/admin/security/audit  (useRunSecurityAudit) — invalidates
- *     the same cache key on settle so 카드는 mutation이 끝나면 자동 갱신.
+ *     the same cache key on settle so 카드와 테이블은 mutation이 끝나면 자동
+ *     갱신.
  *
  * 권한: BE가 SUPER_ADMIN/ADMIN 외에는 403을 돌려주므로 별도 client gate를
  * 두지 않음. /admin/users 같은 다른 admin 페이지와 동일 패턴 (서버
  * /admin/page.tsx 진입을 통해 일반 사용자는 이미 redirect됐음).
  *
- * 디자이너 spec: docs/_specs/r40_mfa_login_security_pdf.md §C.
+ * 디자이너 spec: docs/_specs/r40_mfa_login_security_pdf.md §C,
+ *               docs/_specs/r41_admin_pdf_extracts_vuln_table.md §B/§C.
  */
 
 import * as React from 'react';
@@ -26,11 +32,13 @@ import { toast } from 'sonner';
 import { AdminSidebar } from '@/app/(main)/admin/AdminSidebar';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
+import { VulnerabilitiesTable } from '@/components/admin/VulnerabilitiesTable';
 import { ApiError } from '@/lib/api-client';
 import {
   useAdminSecurityAudit,
   useRunSecurityAudit,
   type AdminSecurityAuditResponse,
+  type VulnerabilitySeverity,
 } from '@/lib/queries';
 import { cn } from '@/lib/cn';
 
@@ -48,6 +56,17 @@ export default function AdminSecurityPage(): JSX.Element {
   // Track a transient "방금 완료" affordance on the [지금 검사] button so the
   // user gets a confirmation flicker even when the count didn't change.
   const [justCompletedAt, setJustCompletedAt] = React.useState<number | null>(null);
+
+  // R41 C — count card click → severity filter on the drill-down table. The
+  // filter is a view-state concern only (no URL sync — designer §C.6); a
+  // [지금 검사] mutation invalidates cache without resetting the filter so a
+  // patch verification trip stays sticky.
+  const [severityFilter, setSeverityFilter] =
+    React.useState<VulnerabilitySeverity | null>(null);
+  const toggleSeverity = React.useCallback((sev: VulnerabilitySeverity) => {
+    setSeverityFilter((cur) => (cur === sev ? null : sev));
+  }, []);
+  const clearSeverity = React.useCallback(() => setSeverityFilter(null), []);
 
   const handleRunNow = React.useCallback(() => {
     runMutation.mutate(undefined, {
@@ -120,8 +139,21 @@ export default function AdminSecurityPage(): JSX.Element {
                 justCompleted={justCompletedAt !== null}
                 onRunNow={handleRunNow}
               />
-              <VulnerabilityCounts counts={counts} dimZeros={!allZero} />
-              {allZero ? <VulnerabilitiesEmpty /> : null}
+              <VulnerabilityCounts
+                counts={counts}
+                dimZeros={!allZero}
+                activeSeverity={severityFilter}
+                onToggle={toggleSeverity}
+              />
+              {allZero ? (
+                <VulnerabilitiesEmpty />
+              ) : (
+                <VulnerabilitiesTable
+                  advisories={data?.advisories ?? []}
+                  filter={severityFilter}
+                  onClearFilter={clearSeverity}
+                />
+              )}
             </>
           )}
 
@@ -219,24 +251,59 @@ interface VulnerabilityCountsProps {
   counts: VulnerabilityCounts;
   /** 0건 카드를 dim 처리. allZero일 때는 모든 카드를 동일 톤으로 표시. */
   dimZeros: boolean;
+  /**
+   * R41 C — currently active severity filter. When set, the matching card
+   * renders the active token (`ring-2 ring-brand/40 + bg-bg-subtle`). Optional
+   * so older callers (R40 shape) keep working.
+   */
+  activeSeverity?: VulnerabilitySeverity | null;
+  /**
+   * R41 C — click handler for card toggle. When provided, cards become
+   * `<button aria-pressed>` elements; otherwise the legacy `<div>` static
+   * cards are rendered.
+   */
+  onToggle?: (severity: VulnerabilitySeverity) => void;
 }
 
 function VulnerabilityCounts({
   counts,
   dimZeros,
+  activeSeverity = null,
+  onToggle,
 }: VulnerabilityCountsProps): JSX.Element {
   const items: Array<{
-    key: keyof VulnerabilityCounts;
+    key: VulnerabilitySeverity;
     label: string;
     dotClass: string;
+    ariaSeverity: string;
   }> = [
     // R39 §J #7 — Critical만 danger, High는 warning. Moderate는 warning의
     // 반투명 변형, Low는 neutral fg-muted. 색만으로 severity를 표현하지 않도록
     // 텍스트 라벨은 항상 함께 노출.
-    { key: 'critical', label: 'Critical', dotClass: 'bg-danger' },
-    { key: 'high', label: 'High', dotClass: 'bg-warning' },
-    { key: 'moderate', label: 'Moderate', dotClass: 'bg-warning/60' },
-    { key: 'low', label: 'Low', dotClass: 'bg-fg-muted' },
+    {
+      key: 'critical',
+      label: 'Critical',
+      dotClass: 'bg-danger',
+      ariaSeverity: '심각',
+    },
+    {
+      key: 'high',
+      label: 'High',
+      dotClass: 'bg-warning',
+      ariaSeverity: '높음',
+    },
+    {
+      key: 'moderate',
+      label: 'Moderate',
+      dotClass: 'bg-warning/60',
+      ariaSeverity: '보통',
+    },
+    {
+      key: 'low',
+      label: 'Low',
+      dotClass: 'bg-fg-muted',
+      ariaSeverity: '낮음',
+    },
   ];
 
   return (
@@ -244,14 +311,14 @@ function VulnerabilityCounts({
       {items.map((it) => {
         const value = counts[it.key];
         const isZero = value === 0;
-        return (
-          <div
-            key={it.key}
-            className={cn(
-              'app-panel p-4 transition-opacity',
-              dimZeros && isZero ? 'opacity-60' : 'opacity-100',
-            )}
-          >
+        const isActive = activeSeverity === it.key;
+        const baseClass = cn(
+          'app-panel p-4 transition-opacity',
+          dimZeros && isZero ? 'opacity-60' : 'opacity-100',
+        );
+
+        const inner = (
+          <>
             <dt className="text-xs font-medium uppercase tracking-wide text-fg-subtle">
               {it.label}
             </dt>
@@ -264,7 +331,34 @@ function VulnerabilityCounts({
                 {value.toLocaleString()}
               </span>
             </dd>
-          </div>
+          </>
+        );
+
+        if (!onToggle) {
+          return (
+            <div key={it.key} className={baseClass}>
+              {inner}
+            </div>
+          );
+        }
+
+        return (
+          <button
+            key={it.key}
+            type="button"
+            aria-pressed={isActive}
+            aria-label={`${it.label} ${value.toLocaleString()}건${isActive ? ', 필터 활성' : ''}`}
+            onClick={() => onToggle(it.key)}
+            className={cn(
+              baseClass,
+              'text-left',
+              'hover:border-border-strong hover:bg-bg-subtle',
+              'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+              isActive && 'bg-bg-subtle ring-2 ring-brand/40',
+            )}
+          >
+            {inner}
+          </button>
         );
       })}
     </dl>

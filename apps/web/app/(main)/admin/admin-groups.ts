@@ -7,6 +7,7 @@
 import {
   Archive,
   Building2,
+  FileText,
   FolderTree as FolderTreeIcon,
   HardDrive,
   Hash,
@@ -87,6 +88,17 @@ export const ADMIN_GROUPS: AdminGroup[] = [
         label: '변환 작업',
         description: 'DWG/DXF 변환 큐 모니터링 및 재시도',
         icon: RefreshCw,
+      },
+      // R41 — PDF 본문 추출(`pdf-extract` BullMQ worker) admin surface. Sits
+      // directly under 변환 작업 because both are operational worker queues
+      // (designer §I.2). Icon = FileText (designer §I.1) — "PDF + 텍스트"
+      // semantics. The page mirrors /admin/scans (status counts + filter +
+      // table + per-row 재시도 confirm dialog).
+      {
+        href: '/admin/pdf-extracts',
+        label: 'PDF 본문 추출',
+        description: 'PDF 본문 인덱싱 워커 / 실패 재시도',
+        icon: FileText,
       },
       // R33 D-5 — backup history. Sits between 변환 작업 and API Key per
       // designer spec (§B.1) because both 변환 and 백업 are BullMQ-backed
