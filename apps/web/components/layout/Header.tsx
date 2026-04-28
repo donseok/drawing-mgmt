@@ -1,6 +1,7 @@
 'use client';
 
 import Link from 'next/link';
+import * as React from 'react';
 import { Building2, Search, ShieldCheck } from 'lucide-react';
 import { useUiStore } from '@/stores/uiStore';
 import { cn } from '@/lib/cn';
@@ -19,6 +20,17 @@ interface HeaderProps {
 
 export function Header({ user }: HeaderProps) {
   const openPalette = useUiStore((s) => s.setPaletteOpen);
+
+  // R55 [QA-P2-6] — show platform-correct shortcut hint. SSR returns the
+  // generic "Ctrl K" so the markup is hydration-stable; on mount we flip to
+  // "⌘ K" on Mac. Using `userAgent` because `navigator.platform` is being
+  // deprecated and lies on Apple Silicon Chrome (returns "MacIntel" but…).
+  const [isMac, setIsMac] = React.useState(false);
+  React.useEffect(() => {
+    if (typeof navigator === 'undefined') return;
+    const ua = navigator.userAgent;
+    setIsMac(/Mac|iPhone|iPad|iPod/i.test(ua));
+  }, []);
 
   return (
     <header
@@ -62,8 +74,11 @@ export function Header({ user }: HeaderProps) {
           <Search className="h-4 w-4 text-brand" />
           <span className="flex-1 truncate">도면번호, Rev, 마크업, 이슈 검색...</span>
           <span className="hidden text-xs text-fg-subtle lg:inline">문서·폴더·명령·PDF 내용</span>
-          <kbd className="hidden rounded border border-border bg-bg-subtle px-1.5 py-0.5 text-[10px] font-medium text-fg-muted sm:inline-block">
-            Ctrl K
+          <kbd
+            className="hidden rounded border border-border bg-bg-subtle px-1.5 py-0.5 text-[10px] font-medium text-fg-muted sm:inline-block"
+            aria-label={isMac ? 'Command 키 K' : 'Ctrl 키 K'}
+          >
+            {isMac ? '\u2318 K' : 'Ctrl K'}
           </kbd>
         </button>
       </div>

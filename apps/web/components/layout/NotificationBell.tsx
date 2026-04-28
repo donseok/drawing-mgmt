@@ -246,6 +246,15 @@ export function NotificationBell({ className }: { className?: string }) {
     markAllReadMutation.mutate();
   }, [markAllReadMutation]);
 
+  // R55 [QA-P0-2] — stabilize the load-more callback so the IntersectionObserver
+  // inside <NotificationPanelBody> isn't torn down + re-attached on every
+  // parent render. Previously this was a fresh arrow each render which kept
+  // remounting the IO and was a plausible contributor to the
+  // "Maximum update depth exceeded" warnings users saw on the home page.
+  const handleLoadMore = React.useCallback(() => {
+    void listQuery.fetchNextPage();
+  }, [listQuery]);
+
   const visibleUnread = unreadCountQuery.data ?? 0;
 
   return (
@@ -274,17 +283,36 @@ export function NotificationBell({ className }: { className?: string }) {
           )}
         </button>
       </PopoverTrigger>
-      <PopoverContent align="end" sideOffset={8} className="w-[380px] p-0">
+      {/* R55 [QA-P1-4] — popover background + z-index. PopoverContent already
+          renders portaled with z-50 + bg-popover from the shared component;
+          we restate `bg-bg` + `shadow-lg` here so the panel stays opaque even
+          if a future theme override widens `bg-popover` to a translucent
+          surface. The portal also avoids stacking-context issues with
+          `backdrop-blur` siblings in the header. */}
+      <PopoverContent
+        align="end"
+        sideOffset={8}
+        className="z-50 w-[380px] border border-border bg-bg p-0 shadow-lg"
+      >
         <NotificationPanelBody
           filter={filter}
           onFilterChange={setFilter}
           pages={listQuery.data?.pages.map((p) => p.data) ?? []}
           unreadCount={visibleUnread}
-          isPending={listQuery.isPending && open}
+          // R55 [QA-P1-4] — only show the skeleton while we're *actually*
+          // fetching for the first time. `isPending` is true even while the
+          // query is disabled (`enabled={open}`) which kept the panel in
+          // skeleton-forever when the BE returned an error or an empty list
+          // before the user re-opened. Falling back to `fetchStatus !== 'idle'`
+          // makes the skeleton vanish as soon as we have a real (or errored)
+          // response, so the EmptyState / error banner can render.
+          isPending={
+            listQuery.isPending && listQuery.fetchStatus !== 'idle' && open
+          }
           isError={listQuery.isError}
           hasNextPage={listQuery.hasNextPage}
           isFetchingNextPage={listQuery.isFetchingNextPage}
-          onLoadMore={() => listQuery.fetchNextPage()}
+          onLoadMore={handleLoadMore}
           onItemClick={handleItemClick}
           onMarkAllRead={handleMarkAllRead}
         />

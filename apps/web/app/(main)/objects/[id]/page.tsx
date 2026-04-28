@@ -696,15 +696,23 @@ export default function ObjectDetailPage() {
 
   // Loading / error gates land AFTER all hooks. The fetch error code drives
   // 404 vs generic-error UI; the data-shaped path runs on success.
-  if (detailQuery.isPending) {
-    return <DetailSkeleton />;
-  }
-
-  if (detailQuery.isError || !obj) {
+  //
+  // R55 [QA-P1-5] — when the BE has already responded with 404 we no longer
+  // want to keep painting the skeleton (TanStack reports `isPending` then
+  // briefly flips to `isError`, but the previous code branched on the
+  // skeleton first which made the page flash the loading layout for ~one
+  // tick after the response landed). We branch on the error first so a 404
+  // surfaces the inline NotFound immediately. The skeleton only remains for
+  // the genuinely-still-loading case.
+  if (detailQuery.isError || (!detailQuery.isPending && !obj)) {
     const err = detailQuery.error;
     const notFound =
       err instanceof ApiError && (err.code === 'E_NOT_FOUND' || err.status === 404);
     return <DetailError notFound={notFound} message={err?.message} />;
+  }
+
+  if (detailQuery.isPending || !obj) {
+    return <DetailSkeleton />;
   }
 
   // From here `obj` is non-null.
@@ -1583,6 +1591,11 @@ function DD({ children, mono }: { children: React.ReactNode; mono?: boolean }) {
 // data via React Query's cache, so this only flashes on first navigation.
 // ─────────────────────────────────────────────────────────────────────────
 function DetailSkeleton() {
+  // R55 [QA-P1-5] — render a real, visible "불러오는 중" caption above the
+  // animated boxes so users on a slow network read intent before the
+  // skeleton resolves. The previous version used only the sr-only label,
+  // which left sighted users with ~2s of unexplained shimmer when the BE
+  // ultimately returned 404.
   return (
     <div
       role="status"
@@ -1596,9 +1609,8 @@ function DetailSkeleton() {
         <div className="ml-auto h-7 w-7 animate-pulse rounded bg-bg-muted" />
       </div>
       <div className="border-b border-border bg-bg px-6 py-5">
-        <div className="h-3 w-24 animate-pulse rounded bg-bg-muted" />
-        <div className="mt-2 h-6 w-72 animate-pulse rounded bg-bg-muted" />
-        <div className="mt-2 h-3 w-96 animate-pulse rounded bg-bg-muted" />
+        <div className="app-kicker text-fg-subtle">자료 상세</div>
+        <p className="mt-1 text-sm text-fg-muted">자료를 불러오는 중입니다…</p>
         <div className="mt-3 flex gap-1.5">
           <div className="h-8 w-20 animate-pulse rounded bg-bg-muted" />
           <div className="h-8 w-24 animate-pulse rounded bg-bg-muted" />

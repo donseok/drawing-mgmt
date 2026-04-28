@@ -1238,9 +1238,12 @@ export default function SearchPage() {
       <section className="flex min-w-0 flex-1 flex-col overflow-hidden bg-bg">
         <div className="border-b border-border bg-bg/90 px-5 py-3 backdrop-blur">
           <div className="flex items-center justify-between gap-4">
-            <div className="min-w-0">
-              <div className="app-kicker">Document Control Grid</div>
-              <h1 className="mt-1 text-xl font-semibold text-fg">자료 검색</h1>
+            {/* R55 [QA-P0-1/P2-7] — `break-keep` keeps Korean phrases like
+                "자료 검색" / "검색 결과" from collapsing into one-character-per-line
+                when the column squeezes (e.g. while the sidebar is open at 800px). */}
+            <div className="min-w-0 break-keep">
+              <div className="app-kicker break-keep">Document Control Grid</div>
+              <h1 className="mt-1 break-keep text-xl font-semibold text-fg">자료 검색</h1>
             </div>
             <div className="hidden items-center gap-2 lg:flex">
               <Metric icon={<FolderOpen className="h-4 w-4" />} label="현재 폴더" value={selectedFolder?.name ?? '전체'} />
