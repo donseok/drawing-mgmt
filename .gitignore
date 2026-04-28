@@ -61,3 +61,12 @@ apps/web/playwright-report/
 # Local screenshots from manual verification
 /login.png
 /main.png
+
+# R52 — migration package runtime artifacts.
+# `migration-reports/` collects per-run JSON reports (one per dry-run/verify).
+# `migration-storage/` is the local FILE_STORAGE_ROOT used by `full` mode.
+# Both are wiped between rehearsals, so we don't want them in the repo.
+migration-reports/
+migration-storage/
+packages/migration/migration-reports/
+packages/migration/migration-storage/
