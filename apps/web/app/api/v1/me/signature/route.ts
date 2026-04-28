@@ -10,6 +10,7 @@ import path from 'node:path';
 import { prisma } from '@/lib/prisma';
 import { requireUser } from '@/lib/auth-helpers';
 import { ok, error, ErrorCode } from '@/lib/api-response';
+import { withApi } from '@/lib/api-helpers';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -38,7 +39,7 @@ function extForMime(mime: string): string {
 // ─────────────────────────────────────────────────────────────
 // POST /api/v1/me/signature — upload signature
 // ─────────────────────────────────────────────────────────────
-export async function POST(req: Request): Promise<NextResponse> {
+export const POST = withApi({ rateLimit: 'api' }, async (req: Request) => {
   let session;
   try {
     session = await requireUser();
@@ -117,12 +118,12 @@ export async function POST(req: Request): Promise<NextResponse> {
     undefined,
     { status: 201 },
   );
-}
+});
 
 // ─────────────────────────────────────────────────────────────
 // DELETE /api/v1/me/signature — remove signature
 // ─────────────────────────────────────────────────────────────
-export async function DELETE(): Promise<NextResponse> {
+export const DELETE = withApi({ rateLimit: 'api' }, async () => {
   let session;
   try {
     session = await requireUser();
@@ -152,4 +153,4 @@ export async function DELETE(): Promise<NextResponse> {
   });
 
   return ok({ message: '서명이 삭제되었습니다.' });
-}
+});

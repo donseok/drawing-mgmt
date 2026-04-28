@@ -28,6 +28,7 @@ import {
   loadFolderPermissions,
   toPermissionUser,
 } from '@/lib/permissions';
+import { withApi } from '@/lib/api-helpers';
 import { ok, error, ErrorCode } from '@/lib/api-response';
 import { ensureLobbyDemoSeed } from '@/lib/demo-seed';
 import { extractRequestMeta, logActivity } from '@/lib/audit';
@@ -109,7 +110,7 @@ const postSchema = z.object({
   folderId: z.string().min(1).optional(),
 });
 
-export async function POST(req: Request): Promise<NextResponse> {
+export const POST = withApi({ rateLimit: 'api' }, async (req: Request) => {
   let user;
   try {
     user = await requireUser();
@@ -307,7 +308,7 @@ export async function POST(req: Request): Promise<NextResponse> {
     undefined,
     { status: 201 },
   );
-}
+});
 
 // Quiet the unused-warning when the typecheck pass elides Prisma. We keep the
 // import for the WhereInput type used in GET above.

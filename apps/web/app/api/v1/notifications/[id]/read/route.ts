@@ -11,35 +11,36 @@ import { NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { requireUser } from '@/lib/auth-helpers';
 import { ok, error, ErrorCode } from '@/lib/api-response';
+import { withApi } from '@/lib/api-helpers';
 
-export async function POST(
-  _req: Request,
-  { params }: { params: { id: string } },
-): Promise<NextResponse> {
-  let user;
-  try {
-    user = await requireUser();
-  } catch (err) {
-    if (err instanceof Response) return err as NextResponse;
-    throw err;
-  }
+export const POST = withApi<{ params: { id: string } }>(
+  { rateLimit: 'api' },
+  async (_req, { params }) => {
+    let user;
+    try {
+      user = await requireUser();
+    } catch (err) {
+      if (err instanceof Response) return err as NextResponse;
+      throw err;
+    }
 
-  const notification = await prisma.notification.findUnique({
-    where: { id: params.id },
-    select: { id: true, userId: true, readAt: true },
-  });
-  if (!notification) return error(ErrorCode.E_NOT_FOUND);
-  if (notification.userId !== user.id) return error(ErrorCode.E_FORBIDDEN);
+    const notification = await prisma.notification.findUnique({
+      where: { id: params.id },
+      select: { id: true, userId: true, readAt: true },
+    });
+    if (!notification) return error(ErrorCode.E_NOT_FOUND);
+    if (notification.userId !== user.id) return error(ErrorCode.E_FORBIDDEN);
 
-  if (notification.readAt) {
-    return ok({ id: notification.id, readAt: notification.readAt });
-  }
+    if (notification.readAt) {
+      return ok({ id: notification.id, readAt: notification.readAt });
+    }
 
-  const updated = await prisma.notification.update({
-    where: { id: notification.id },
-    data: { readAt: new Date() },
-    select: { id: true, readAt: true },
-  });
+    const updated = await prisma.notification.update({
+      where: { id: notification.id },
+      data: { readAt: new Date() },
+      select: { id: true, readAt: true },
+    });
 
-  return ok(updated);
-}
+    return ok(updated);
+  },
+);

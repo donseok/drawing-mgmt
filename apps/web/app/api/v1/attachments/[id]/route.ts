@@ -25,6 +25,7 @@ import {
 import { ok, error, ErrorCode } from '@/lib/api-response';
 import type { ApiErrorCode } from '@/lib/api-errors';
 import { extractRequestMeta, logActivity } from '@/lib/audit';
+import { withApi } from '@/lib/api-helpers';
 
 export const runtime = 'nodejs';
 
@@ -105,10 +106,9 @@ async function gateEdit(
   return null;
 }
 
-export async function PATCH(
-  req: Request,
-  { params }: { params: { id: string } },
-): Promise<NextResponse> {
+export const PATCH = withApi<{ params: { id: string } }>(
+  { rateLimit: 'api' },
+  async (req, { params }) => {
   let user;
   try {
     user = await requireUser();
@@ -209,12 +209,12 @@ export async function PATCH(
   });
 
   return ok({ id: att.id, isMaster });
-}
+  },
+);
 
-export async function DELETE(
-  req: Request,
-  { params }: { params: { id: string } },
-): Promise<NextResponse> {
+export const DELETE = withApi<{ params: { id: string } }>(
+  { rateLimit: 'api' },
+  async (req, { params }) => {
   let user;
   try {
     user = await requireUser();
@@ -271,7 +271,8 @@ export async function DELETE(
   });
 
   return ok({ id: att.id });
-}
+  },
+);
 
 class GuardError extends Error {
   constructor(

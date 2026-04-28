@@ -35,6 +35,7 @@ import { enqueueVirusScan } from '@/lib/scan-queue';
 // R34 V-INF-1 — storage abstraction. Default LOCAL keeps the on-disk layout
 // from R21; STORAGE_DRIVER=s3 switches to MinIO/S3 with no caller change.
 import { getStorage } from '@/lib/storage';
+import { withApi } from '@/lib/api-helpers';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -43,10 +44,9 @@ const MAX_BYTES = Number(
   process.env.ATTACHMENT_MAX_BYTES ?? 200 * 1024 * 1024,
 );
 
-export async function POST(
-  req: Request,
-  { params }: { params: { id: string } },
-): Promise<NextResponse> {
+export const POST = withApi<{ params: { id: string } }>(
+  { rateLimit: 'api' },
+  async (req, { params }) => {
   let user;
   try {
     user = await requireUser();
@@ -298,7 +298,8 @@ export async function POST(
     ext === '.dwg' ? { conversionEnqueued } : undefined,
     { status: 201 },
   );
-}
+  },
+);
 
 function guessMime(ext: string): string {
   switch (ext) {

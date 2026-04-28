@@ -18,6 +18,7 @@ import { requireUser } from '@/lib/auth-helpers';
 import { ok, error, ErrorCode } from '@/lib/api-response';
 import { extractRequestMeta, logActivity } from '@/lib/audit';
 import { enqueueNotification } from '@/lib/notifications';
+import { withApi } from '@/lib/api-helpers';
 
 const postSchema = z.object({
   comment: z.string().min(1).max(2000),
@@ -100,10 +101,9 @@ export async function GET(
   });
 }
 
-export async function POST(
-  req: Request,
-  { params }: { params: { id: string } },
-): Promise<NextResponse> {
+export const POST = withApi<{ params: { id: string } }>(
+  { rateLimit: 'api' },
+  async (req, { params }) => {
   let user;
   try {
     user = await requireUser();
@@ -215,4 +215,5 @@ export async function POST(
     undefined,
     { status: 201 },
   );
-}
+  },
+);

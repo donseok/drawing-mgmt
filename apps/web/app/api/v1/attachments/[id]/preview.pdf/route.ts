@@ -18,9 +18,8 @@ import { NextResponse } from 'next/server';
 import { promises as fs, createReadStream } from 'node:fs';
 import path from 'node:path';
 import { Readable } from 'node:stream';
-import { auth } from '@/auth';
-// R36 V-INF-3 — INFECTED attachments must not stream the rendered PDF.
-import { blockIfInfected } from '@/lib/scan-guard';
+// R47 / FIND-003 — auth + folder VIEW + scan gate.
+import { requireAttachmentView } from '@/lib/attachment-auth';
 
 const STORAGE_ROOT = path.resolve(process.env.FILE_STORAGE_ROOT ?? './.data/files');
 
@@ -28,17 +27,14 @@ export async function GET(
   req: Request,
   ctx: { params: { id: string } },
 ): Promise<Response> {
-  await auth().catch(() => null);
+  const gate = await requireAttachmentView(req, ctx.params.id);
+  if (gate instanceof Response) return gate;
   const { id } = ctx.params;
 
   const filePath = resolvePreviewPath(id);
   if (!filePath) {
     return new NextResponse('Bad Request', { status: 400 });
   }
-
-  // R36 V-INF-3 — INFECTED short-circuit before any fs/stream work.
-  const blocked = await blockIfInfected(id);
-  if (blocked) return blocked;
 
   let stat;
   try {
@@ -97,14 +93,15 @@ export async function GET(
 }
 
 export async function HEAD(
-  _req: Request,
+  req: Request,
   ctx: { params: { id: string } },
 ): Promise<Response> {
-  await auth().catch(() => null);
+  const gate = await requireAttachmentView(req, ctx.params.id);
+  if (gate instanceof Response) {
+    return new NextResponse(null, { status: gate.status });
+  }
   const filePath = resolvePreviewPath(ctx.params.id);
   if (!filePath) return new NextResponse(null, { status: 400 });
-  const blocked = await blockIfInfected(ctx.params.id);
-  if (blocked) return new NextResponse(null, { status: 403 });
   try {
     const stat = await fs.stat(filePath);
     return new NextResponse(null, {

@@ -15,6 +15,7 @@ import { prisma } from '@/lib/prisma';
 import { requireUser } from '@/lib/auth-helpers';
 import { ok, error, ErrorCode } from '@/lib/api-response';
 import { extractRequestMeta, logActivity } from '@/lib/audit';
+import { withApi } from '@/lib/api-helpers';
 
 function isAdmin(role: string): boolean {
   return role === 'SUPER_ADMIN' || role === 'ADMIN';
@@ -28,10 +29,9 @@ const patchSchema = z.object({
   sortOrder: z.number().int().min(0).max(9999).optional(),
 });
 
-export async function PATCH(
-  req: Request,
-  { params }: { params: { id: string; attributeId: string } },
-): Promise<NextResponse> {
+export const PATCH = withApi<{ params: { id: string; attributeId: string } }>(
+  { rateLimit: 'api' },
+  async (req, { params }) => {
   let user;
   try {
     user = await requireUser();
@@ -105,12 +105,12 @@ export async function PATCH(
   });
 
   return ok(updated);
-}
+  },
+);
 
-export async function DELETE(
-  req: Request,
-  { params }: { params: { id: string; attributeId: string } },
-): Promise<NextResponse> {
+export const DELETE = withApi<{ params: { id: string; attributeId: string } }>(
+  { rateLimit: 'api' },
+  async (req, { params }) => {
   let user;
   try {
     user = await requireUser();
@@ -149,4 +149,5 @@ export async function DELETE(
   });
 
   return ok({ id: attribute.id });
-}
+  },
+);

@@ -16,6 +16,7 @@ import { requireUser } from '@/lib/auth-helpers';
 import { ok, error, ErrorCode } from '@/lib/api-response';
 import { extractRequestMeta, logActivity } from '@/lib/audit';
 import { enqueueNotification } from '@/lib/notifications';
+import { withApi } from '@/lib/api-helpers';
 
 const bodySchema = z.object({
   comment: z.string().max(2000).optional(),
@@ -23,7 +24,13 @@ const bodySchema = z.object({
   signatureFile: z.string().max(500).optional(),
 });
 
-export async function POST(
+/**
+ * Inner handler — exported unwrapped so `approvals/[id]/action/route.ts` can
+ * forward without re-running the CSRF + rate-limit gate (the wrapped POST
+ * runs them once at the outer entry; an inner forward would double-fire and
+ * the synthetic forward Request has no Origin header → CSRF would reject).
+ */
+export async function approveHandler(
   req: Request,
   { params }: { params: { id: string } },
 ): Promise<NextResponse> {
@@ -188,3 +195,8 @@ export async function POST(
     objectState: result.objectState,
   });
 }
+
+export const POST = withApi<{ params: { id: string } }>(
+  { rateLimit: 'api' },
+  approveHandler,
+);

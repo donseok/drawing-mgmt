@@ -19,13 +19,12 @@
 
 import { NextResponse } from 'next/server';
 import path from 'node:path';
-import { auth } from '@/auth';
 import { getStorage } from '@/lib/storage';
 import { StorageNotFoundError } from '@drawing-mgmt/shared/storage';
-// R36 V-INF-3 — block downloads of INFECTED attachments. Other scan states
-// (PENDING/SCANNING/CLEAN/SKIPPED/FAILED) keep serving so the legacy ingest
-// path and admin smoke tests stay functional.
-import { blockIfInfected } from '@/lib/scan-guard';
+// R47 / FIND-003 — auth + folder permission + virus scan gate. Replaces the
+// pre-R47 `auth().catch(() => null)` opt-in that left these routes effectively
+// public.
+import { requireAttachmentView } from '@/lib/attachment-auth';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -38,20 +37,13 @@ interface Sidecar {
 }
 
 export async function GET(
-  _req: Request,
+  req: Request,
   ctx: { params: { id: string } },
 ): Promise<Response> {
-  // DEV/DEMO: auth optional so viewer can demo without DB. TODO: production gate.
-  await auth().catch(() => null);
+  // R47 / FIND-003 — gate on auth + folder VIEW permission + scan status.
+  const gate = await requireAttachmentView(req, ctx.params.id);
+  if (gate instanceof Response) return gate;
   const { id } = ctx.params;
-
-  if (!/^[A-Za-z0-9_\-]+$/.test(id)) {
-    return new NextResponse('Bad Request', { status: 400 });
-  }
-
-  // R36 V-INF-3 — INFECTED attachments are blocked at the download edge.
-  const blocked = await blockIfInfected(id);
-  if (blocked) return blocked;
 
   const storage = getStorage();
   const sidecar = await readSidecar(storage, id);
@@ -94,18 +86,18 @@ export async function GET(
 }
 
 export async function HEAD(
-  _req: Request,
+  req: Request,
   ctx: { params: { id: string } },
 ): Promise<Response> {
-  await auth().catch(() => null);
-  const { id } = ctx.params;
-  if (!/^[A-Za-z0-9_\-]+$/.test(id)) {
-    return new NextResponse(null, { status: 400 });
+  // R47 / FIND-003 — same gate as GET. HEAD probes must not leak existence
+  // of a row the caller can't view (or one that's infected).
+  const gate = await requireAttachmentView(req, ctx.params.id);
+  if (gate instanceof Response) {
+    // Strip the body so HEAD stays semantically correct; the status code
+    // (401/403/404) is preserved.
+    return new NextResponse(null, { status: gate.status });
   }
-  // R36 V-INF-3 — INFECTED short-circuit. Mirror GET so HEAD probes don't
-  // leak existence/size of a quarantined file.
-  const blocked = await blockIfInfected(id);
-  if (blocked) return new NextResponse(null, { status: 403 });
+  const { id } = ctx.params;
   const storage = getStorage();
   const sidecar = await readSidecar(storage, id);
   const sourceKey = await resolveSource(storage, id, sidecar);

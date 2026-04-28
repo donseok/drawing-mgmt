@@ -10,11 +10,11 @@ import { NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { requireUser } from '@/lib/auth-helpers';
 import { ok, error, ErrorCode } from '@/lib/api-response';
+import { withApi } from '@/lib/api-helpers';
 
-export async function DELETE(
-  _req: Request,
-  { params }: { params: { id: string } },
-): Promise<NextResponse> {
+export const DELETE = withApi<{ params: { id: string } }>(
+  { rateLimit: 'api' },
+  async (_req, { params }) => {
   let user;
   try {
     user = await requireUser();
@@ -48,4 +48,5 @@ export async function DELETE(
     return ok({ id: objectPin.id, kind: 'object' as const });
   }
   return error(ErrorCode.E_NOT_FOUND, '핀을 찾을 수 없습니다.');
-}
+  },
+);

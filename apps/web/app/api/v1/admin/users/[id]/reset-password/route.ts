@@ -24,6 +24,7 @@ import { requireUser } from '@/lib/auth-helpers';
 import { ok, error, ErrorCode } from '@/lib/api-response';
 import { extractRequestMeta, logActivity } from '@/lib/audit';
 import { enqueueNotification } from '@/lib/notifications';
+import { withApi } from '@/lib/api-helpers';
 
 const BCRYPT_ROUNDS = 12;
 
@@ -46,10 +47,9 @@ function generateTempPassword(): string {
     .slice(0, 16);
 }
 
-export async function POST(
-  req: Request,
-  { params }: { params: { id: string } },
-): Promise<NextResponse> {
+export const POST = withApi<{ params: { id: string } }>(
+  { rateLimit: 'api' },
+  async (req, { params }) => {
   let actor;
   try {
     actor = await requireUser();
@@ -132,4 +132,5 @@ export async function POST(
     return ok({ tempPassword });
   }
   return ok({});
-}
+  },
+);

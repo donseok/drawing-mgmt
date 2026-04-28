@@ -22,6 +22,7 @@ import os from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { auth } from '@/auth';
+import { withApi } from '@/lib/api-helpers';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -38,7 +39,7 @@ const STORAGE_ROOT = path.isAbsolute(process.env.FILE_STORAGE_ROOT ?? '')
       process.env.FILE_STORAGE_ROOT ?? './.data/files',
     );
 
-export async function POST(req: Request): Promise<Response> {
+export const POST = withApi({ rateLimit: 'api' }, async (req) => {
   await auth().catch(() => null);
 
   const ct = req.headers.get('content-type') ?? '';
@@ -152,7 +153,7 @@ export async function POST(req: Request): Promise<Response> {
     conversion: 'success',
     durationMs,
   });
-}
+});
 
 function runWorkerConvert(input: string, outDir: string): Promise<void> {
   return new Promise((resolve, reject) => {

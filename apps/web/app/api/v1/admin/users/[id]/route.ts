@@ -17,6 +17,7 @@ import { prisma } from '@/lib/prisma';
 import { requireUser } from '@/lib/auth-helpers';
 import { ok, error, ErrorCode } from '@/lib/api-response';
 import { extractRequestMeta, logActivity } from '@/lib/audit';
+import { withApi } from '@/lib/api-helpers';
 
 function lockStatusFor(lockedUntil: Date | null): 'LOCKED' | 'NONE' {
   if (!lockedUntil) return 'NONE';
@@ -88,10 +89,9 @@ const patchSchema = z
   })
   .refine((v) => Object.keys(v).length > 0, { message: '변경할 필드가 없습니다.' });
 
-export async function PATCH(
-  req: Request,
-  { params }: { params: { id: string } },
-): Promise<NextResponse> {
+export const PATCH = withApi<{ params: { id: string } }>(
+  { rateLimit: 'api' },
+  async (req, { params }) => {
   let actor;
   try {
     actor = await requireUser();
@@ -201,12 +201,12 @@ export async function PATCH(
   });
 
   return ok({ ...updated, lockStatus: lockStatusFor(updated.lockedUntil) });
-}
+  },
+);
 
-export async function DELETE(
-  req: Request,
-  { params }: { params: { id: string } },
-): Promise<NextResponse> {
+export const DELETE = withApi<{ params: { id: string } }>(
+  { rateLimit: 'api' },
+  async (req, { params }) => {
   let actor;
   try {
     actor = await requireUser();
@@ -257,4 +257,5 @@ export async function DELETE(
   });
 
   return ok(updated);
-}
+  },
+);

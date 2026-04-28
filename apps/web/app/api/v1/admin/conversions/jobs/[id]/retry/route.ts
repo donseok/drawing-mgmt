@@ -16,14 +16,14 @@ import { requireUser } from '@/lib/auth-helpers';
 import { ok, error, ErrorCode } from '@/lib/api-response';
 import { extractRequestMeta, logActivity } from '@/lib/audit';
 import { requeueConversion } from '@/lib/conversion-queue';
+import { withApi } from '@/lib/api-helpers';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
-export async function POST(
-  req: Request,
-  { params }: { params: { id: string } },
-): Promise<NextResponse> {
+export const POST = withApi<{ params: { id: string } }>(
+  { rateLimit: 'api' },
+  async (req, { params }) => {
   let user;
   try {
     user = await requireUser();
@@ -105,4 +105,5 @@ export async function POST(
   });
 
   return ok({ jobId: job.id, status: 'PENDING' as const });
-}
+  },
+);

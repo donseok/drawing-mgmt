@@ -10,8 +10,9 @@ import { NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { requireUser } from '@/lib/auth-helpers';
 import { ok } from '@/lib/api-response';
+import { withApi } from '@/lib/api-helpers';
 
-export async function POST(): Promise<NextResponse> {
+export const POST = withApi({ rateLimit: 'api' }, async () => {
   let user;
   try {
     user = await requireUser();
@@ -26,4 +27,4 @@ export async function POST(): Promise<NextResponse> {
   });
 
   return ok({ updatedCount: result.count });
-}
+});

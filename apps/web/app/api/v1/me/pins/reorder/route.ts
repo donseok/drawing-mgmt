@@ -17,13 +17,14 @@ import { z } from 'zod';
 import { prisma } from '@/lib/prisma';
 import { requireUser } from '@/lib/auth-helpers';
 import { ok, error, ErrorCode } from '@/lib/api-response';
+import { withApi } from '@/lib/api-helpers';
 
 const bodySchema = z.object({
   type: z.enum(['folder', 'object']),
   ids: z.array(z.string().min(1)).min(1).max(200),
 });
 
-export async function PATCH(req: Request): Promise<NextResponse> {
+export const PATCH = withApi({ rateLimit: 'api' }, async (req: Request) => {
   let user;
   try {
     user = await requireUser();
@@ -100,4 +101,4 @@ export async function PATCH(req: Request): Promise<NextResponse> {
   }
 
   return ok({ type, count: uniqueIds.length });
-}
+});
