@@ -1,0 +1,20 @@
+# R51 — TLS certificates are environment-specific secrets and never go to git.
+# Drop server.crt + server.key into ./certs/ on the host. The compose file
+# mounts ./certs/ read-only into the nginx container at /etc/nginx/certs.
+#
+# Issue via:
+#   - Let's Encrypt: certbot certonly --webroot -w ./certs -d <fqdn>
+#     (then symlink /etc/letsencrypt/live/<fqdn>/{fullchain,privkey}.pem
+#      → ./certs/server.{crt,key})
+#   - Internal CA: openssl req + sign with company root, drop PEMs in.
+#   - Self-signed (dev only):
+#       openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
+#         -keyout certs/server.key -out certs/server.crt \
+#         -subj "/CN=localhost"
+
+certs/*.crt
+certs/*.key
+certs/*.pem
+
+# Keep the directory itself tracked so the bind-mount target exists pre-cert.
+!certs/.gitkeep
