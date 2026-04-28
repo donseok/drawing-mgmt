@@ -42,6 +42,25 @@ const BOX_META: { key: BoxKey; label: string; icon: React.ComponentType<{ classN
   { key: 'recall', label: '회수', icon: Archive },
 ];
 
+// R56 / QA P2 — 빈 상태 안내 텍스트 보강. 박스별로 어떤 행동이 필요한지 한 줄로
+// 안내해 사용자 혼동을 줄임.
+function emptyStateTitle(box: BoxKey): string {
+  switch (box) {
+    case 'waiting': return '대기 중인 결재가 없습니다.';
+    case 'done':    return '아직 처리한 결재가 없습니다.';
+    case 'sent':    return '아직 상신한 결재가 없습니다.';
+    case 'recall':  return '회수한 결재가 없습니다.';
+  }
+}
+function emptyStateDescription(box: BoxKey): string {
+  switch (box) {
+    case 'waiting': return '내가 결재해야 할 항목이 들어오면 여기 표시됩니다.';
+    case 'done':    return '결재를 승인 또는 반려하면 여기에 누적됩니다.';
+    case 'sent':    return '자료 상세에서 [결재 상신]을 누르면 여기 표시됩니다.';
+    case 'recall':  return '내가 상신한 결재를 회수했을 때 보관되는 곳입니다.';
+  }
+}
+
 // ── BE shapes (mirrors /api/v1/approvals baseInclude) ─────────────────────
 interface ApproverDTO {
   id: string;
@@ -318,7 +337,8 @@ export default function ApprovalPage() {
           ) : rows.length === 0 ? (
             <EmptyState
               icon={Clock4}
-              title="해당 결재함에 항목이 없습니다."
+              title={emptyStateTitle(box)}
+              description={emptyStateDescription(box)}
               className="m-6 min-h-80"
             />
           ) : (

@@ -21,6 +21,22 @@ const BOX_META: BoxMeta[] = [
   { key: 'expired', label: '만료된 로비함', icon: Clock4 },
 ];
 
+// R56 / QA P2 — 빈 상태 안내 텍스트 보강.
+function emptyTitle(box: BoxKey): string {
+  switch (box) {
+    case 'received': return '받은 로비 패키지가 없습니다.';
+    case 'sent':     return '보낸 로비 패키지가 없습니다.';
+    case 'expired':  return '만료된 로비 패키지가 없습니다.';
+  }
+}
+function emptyDescription(box: BoxKey): string {
+  switch (box) {
+    case 'received': return '협력업체로부터 검토 요청이 들어오면 여기 표시됩니다.';
+    case 'sent':     return '검색 화면에서 자료를 선택해 [트랜스미털]로 협력업체에 발송하면 표시됩니다.';
+    case 'expired':  return '만료일이 지난 로비 패키지가 30일간 보관됩니다.';
+  }
+}
+
 // MOCK lobby cards — TODO api.get('/api/v1/lobbies?box=...')
 const MOCK_LOBBIES = [
   {
@@ -139,7 +155,12 @@ export default function LobbyPage() {
 
         <div className="min-h-0 flex-1 overflow-auto">
           {rows.length === 0 ? (
-            <EmptyState icon={Inbox} title="해당 로비함에 항목이 없습니다." className="min-h-80" />
+            <EmptyState
+              icon={Inbox}
+              title={emptyTitle(box)}
+              description={emptyDescription(box)}
+              className="min-h-80"
+            />
           ) : (
             <table className="app-table">
               <thead>

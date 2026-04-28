@@ -1,5 +1,6 @@
 'use client';
 
+import { useSearchParams } from 'next/navigation';
 import { useQuery } from '@tanstack/react-query';
 import { Settings } from 'lucide-react';
 
@@ -54,7 +55,19 @@ interface MeResponse {
   groups: { id: string; name: string }[];
 }
 
+const VALID_TABS = ['profile', 'password', 'security', 'signature', 'notifications'] as const;
+type TabId = (typeof VALID_TABS)[number];
+
 export default function SettingsPage() {
+  const searchParams = useSearchParams();
+  // R56 / QA P1-4 — `/settings?tab=notifications` 같이 외부에서(알림 패널 footer 등)
+  // 진입할 때 해당 탭이 바로 열리도록. 잘못된 값은 기본 'profile'로 fallback.
+  const tabParam = searchParams?.get('tab');
+  const initialTab: TabId =
+    tabParam && (VALID_TABS as readonly string[]).includes(tabParam)
+      ? (tabParam as TabId)
+      : 'profile';
+
   const { data: me, isLoading } = useQuery<MeResponse>({
     queryKey: queryKeys.me(),
     queryFn: () => api.get<MeResponse>('/api/v1/me'),
@@ -102,7 +115,7 @@ export default function SettingsPage() {
       </header>
 
       <div className="mx-auto max-w-2xl p-6">
-        <Tabs defaultValue="profile">
+        <Tabs defaultValue={initialTab}>
           <TabsList>
             <TabsTrigger value="profile">프로필</TabsTrigger>
             <TabsTrigger value="password">비밀번호</TabsTrigger>
