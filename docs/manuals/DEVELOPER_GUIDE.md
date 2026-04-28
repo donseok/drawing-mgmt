@@ -815,6 +815,122 @@ docker compose -f docker-compose.prod.yml ps
 
 ---
 
+## 11. R36~R44 신규 기능 (개발자 catch-up)
+
+> 0~10장은 R35 baseline 기준. 그 이후 라운드의 dev-facing 변경을 한 곳에 모아 둠. 11.x는 임시 catch-up — 다음 manual 리팩터에서 해당 챕터로 흡수 예정.
+
+### 11.1 통합 테스트 인프라 (R36 T-2)
+
+- `apps/web/__tests__/integration/` — `*.int.test.ts` 패턴.
+- `VITEST_INTEGRATION=1`로 분기 — 평소 vitest run에서는 skip.
+- `apps/web/__tests__/integration/setup.ts` — 테스트 DB 시드/cleanup helper.
+- 5개 샘플 spec 동봉(auth/object/folder/approval/lobby).
+- 실행: `VITEST_INTEGRATION=1 pnpm -F web test`.
+
+### 11.2 ClamAV 바이러스 스캔 워커 (R36 V-INF-3)
+
+- 큐: `virus-scan` (BullMQ).
+- Worker: `apps/worker/src/scan-worker.ts` + `apps/worker/src/clamav.ts`.
+- ClamAV는 GPL → subprocess only(`clamscan` 또는 clamd TCP). JS 바인딩 import 금지.
+- Attachment.virusScanStatus enum: PENDING/SCANNING/CLEAN/INFECTED/SKIPPED/FAILED.
+- INFECTED 가드: 5개 라우트(다운로드/미리보기/인쇄/썸네일/뷰어 source)가 자동 차단.
+- 환경 변수: `CLAMAV_ENABLED`, `CLAMAV_BINARY`, `CLAMAV_HOST`, `CLAMAV_PORT`.
+
+### 11.3 SAML SSO + HMAC bridge token (R37 A-2)
+
+- node-saml(MIT) — IdP redirect → ACS endpoint(`/api/v1/auth/saml/acs`) → `auth.ts`의 `samlBridge` 모드.
+- HMAC bridge token: ACS가 사용자 row 프로비저닝 후 5분 ttl HMAC token mint → callback URL의 query로 전달 → Auth.js v5 Credentials provider가 `{ samlBridge }` 모드로 verify.
+- 마이그 0011 — User.externalId, User.externalIdProvider.
+- 환경 변수: `SAML_ENABLED`, `SAML_IDP_METADATA_URL`, `SAML_SP_ENTITY_ID`, `SAML_SP_CALLBACK_URL`.
+- 관련: `apps/web/lib/saml.ts`, `apps/web/auth.ts`의 `authorizeSamlBridge`.
+
+### 11.4 WCAG 2.1 AA audit (R37 AC-1)
+
+- 13개 핵심 화면 audit 결과 → `docs/_specs/r37_wcag_audit.md`.
+- P0/P1 fix: focus-visible ring 토큰, ARIA role/label, 색대비 4.5:1.
+- 추가된 토큰은 `docs/DESIGN.md` §2.x에 반영.
+
+### 11.5 DXF Line2 + lineWeight (R37 V-2)
+
+- `apps/web/components/DwgViewer/scene.ts` — Line2(three.js examples).
+- DXF 그룹 코드 370 인식 + 디바이스 픽셀 비율 보정.
+- 10건 vitest case 동봉.
+
+### 11.6 SMS / 카카오 채널 (R38 N-2)
+
+- 큐: `sms`, `kakao`(BullMQ, 채널 독립).
+- Worker: `apps/worker/src/sms-worker.ts` + `apps/worker/src/sms.ts`(Twilio Apache 2.0 lazy import 또는 NCP SENS native fetch). `apps/worker/src/kakao.ts`(템플릿 기반, native fetch).
+- enqueueNotification fan-out: notifyByEmail/Sms/Kakao 토글에 따라 각각 enqueue.
+- 환경 변수: `SMS_ENABLED`, `SMS_DRIVER`(twilio|ncp|noop), `KAKAO_ENABLED`.
+- 마이그 0012 — User.phoneNumber, User.notifyBySms, User.notifyByKakao.
+
+### 11.7 MFA TOTP + 비밀번호 정책 (R39 + R40)
+
+- `apps/web/lib/totp.ts` — otpauth(MIT) wrapping. mintMfaBridgeToken/verifyMfaBridgeToken HMAC pair.
+- `apps/web/lib/mfa-bridge.ts` — re-export at contract path.
+- `apps/web/lib/password-policy.ts` — 강도 검사, 만료 산정.
+- `apps/web/auth.ts` — credentials provider가 `{ username, password }` / `{ samlBridge }` / `{ mfaBridge }` 3 모드.
+- `MfaRequiredError` 클래스 — code = `mfa_required:<bridgeToken>`. FE login-form은 콜론 split → /login/mfa 라우팅.
+- `/api/v1/auth/mfa/verify` — 6자리 또는 복구 코드 검증 → 신규 bridge token mint.
+- 마이그 0013 — User.totpSecret, totpEnabledAt, passwordChangedAt, passwordPrev1Hash, passwordPrev2Hash, recoveryCodesHash.
+
+### 11.8 PDF 본문 전문 검색 (R40 S-1, R42, R43)
+
+- 마이그 0014 — Attachment.contentText TEXT + content_tsv tsvector GENERATED + GIN index.
+- 워커: `apps/worker/src/pdf-extract-worker.ts` + `pdf-extract.ts`(pdfjs-dist Apache 2.0).
+- 메인 dwg-conversion 워커가 ConversionJob DONE 후 PDF 산출이 있으면 pdf-extract 큐에 enqueue.
+- 검색 라우트(`apps/web/app/api/v1/objects/route.ts`):
+  - trgm + FTS OR-union(R40)
+  - ts_rank + FTS_WEIGHT=1.5로 unified ranking + matchSource 노출(R42)
+  - candidateIds idxMap position 페이징(R43) — q+!sortBy일 때 모든 페이지에서 ranking 일관 유지
+  - ts_headline MaxFragments=3 + FragmentDelimiter=` … `
+- 마이그 0015 — Attachment.pdfExtractStatus enum + pdfExtractAt + pdfExtractError. backfill로 contentText 있는 row를 DONE으로 회수.
+- `apps/web/lib/pdf-extract-queue.ts` — BullMQ Queue 헬퍼(웹 측 enqueue용).
+
+### 11.9 의존성 보안 페이지 (R40 + R41)
+
+- `/api/v1/admin/security/audit` — `pnpm audit --json` spawn + tolerant parser(JSON blob과 JSONL 양쪽).
+- 15분 in-memory 캐시. POST는 캐시 무효화 + 재실행.
+- R41: parseAuditDetail로 advisories 배열까지 노출(severity/package/title/versionRange/url).
+- CI `.github/workflows/ci.yml` — audit job(continue-on-error: true). 권고 단계, 머지 차단 안 함.
+
+### 11.10 PDF 추출 admin 페이지 (R41)
+
+- `/api/v1/admin/pdf-extracts`(GET 리스트 + 카운트) + `/api/v1/admin/pdf-extracts/[id]/retry`(POST 재 enqueue, 상태 가드 FAILED/SKIPPED).
+- 5초 폴링 + optimistic PENDING flip + ConfirmDialog 재시도.
+- VulnerabilitiesTable 컴포넌트 — severity 정렬 + 50건 [더 보기] threshold + 외부 링크 보안 가드.
+- count card 클릭 → URL `?status=` / `?severity=` 동기화(R42).
+
+### 11.11 E2E 시나리오 5건 (R44, WBS 4.4.1)
+
+- `apps/web/e2e/`:
+  - `login.spec.ts`(R26 T-3)
+  - `search.spec.ts`(R26 T-3)
+  - `object-lifecycle.spec.ts`(R44, 신규)
+  - `approval.spec.ts`(R44, 신규)
+  - `lobby-transmittal.spec.ts`(R44, 신규)
+- 실행: `pnpm -F web exec playwright test`(dev server + DB seed 가정).
+- CI 자동 트리거는 비용으로 미적용 — manual 또는 별 워크플로.
+
+### 11.12 라이선스 정책 누적 (R36~R44)
+
+신규 모든 deps는 다음만 허용:
+- MIT / Apache 2.0 / BSD / ISC / 0BSD
+- LGPL은 dynamic link 시 OK이나 가능하면 회피
+- GPL/AGPL은 **subprocess 격리만**(LibreDWG, ClamAV) — 직접 link 금지
+
+R36~R44에 추가된 deps 라이선스:
+- ClamAV(GPL) → subprocess only ✅
+- node-saml(MIT) ✅
+- twilio(Apache 2.0) ✅
+- otpauth(MIT) ✅
+- pdfjs-dist(Apache 2.0) ✅
+- Line2(BSD via three.js) ✅
+
+GPL/AGPL 직접 link 0건 유지.
+
+---
+
 ## 부록 A. 기여 워크플로우 (PR을 보내기 전)
 
 ```bash
@@ -848,3 +964,4 @@ git push origin feat/r36-xxx
 | 날짜 | 변경 |
 |---|---|
 | 2026-04-27 | R35 1차 본문 작성 (DOC-4). 0~10 + 부록 A. |
+| 2026-04-28 | R45 catch-up: 11장 신설 (R36~R44 dev-facing — 통합 테스트 인프라/ClamAV/SAML/WCAG/Line2/SMS·카카오/MFA·비밀번호/PDF FTS/admin 페이지/E2E 5건/라이선스 누적). 기존 챕터 통합 반영은 다음 리팩터에서. |

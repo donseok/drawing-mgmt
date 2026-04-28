@@ -932,6 +932,100 @@ DWG/DXF는 자체 DXF 엔진으로 렌더된다. DWG는 워커가 LibreDWG subpr
 
 ---
 
+## 챕터 12. R36~R44 신규 기능 요약 (v0.2 catch-up)
+
+> R35 본문(v0.1) 작성 이후 추가된 기능을 사용자 관점에서 요약. 기존 챕터에 통합 반영은 v0.3 일괄 리팩터에서 진행.
+
+### 12.1 보안 / 인증 강화
+
+#### 12.1.1 SAML SSO (R37 A-2)
+- 운영 환경 변수 `NEXT_PUBLIC_SAML_ENABLED=1` + IdP 메타데이터 설정 시 로그인 페이지 상단에 [SAML로 계속] 버튼 노출.
+- 키즈 + Keycloak(R33)과 같은 패널에서 "또는" divider 아래 일반 로그인 폼 유지.
+- 코드 hint: `apps/web/auth.ts` SAML 모드, `apps/web/app/api/v1/auth/saml/*`.
+
+#### 12.1.2 2단계 인증 (MFA TOTP, R39 + R40)
+- **활성화**: `/settings` → 보안 탭 → [2단계 인증 설정] → QR 코드 스캔(Google Authenticator/Authy 등) → 6자리 입력 → 복구 코드 10개 안전한 곳에 저장.
+- **로그인 흐름**: 1단계 비밀번호 통과 후 자동으로 `/login/mfa`로 이동 → 6자리 입력(자동 submit) 또는 [복구 코드 사용] 토글.
+- **5회 실패** → 계정 일시 잠금 + `/login`으로 강제 이동.
+- **복구 코드 재발급**: `/settings` → 보안 → [복구 코드 재발급] → 비밀번호 또는 6자리 재인증 → 신규 10개 표시(체크 후 닫기).
+- **비활성화**: `/settings` → 보안 → [2단계 비활성화] → 비밀번호 또는 6자리 재인증.
+- 코드 hint: `apps/web/components/settings/MfaSection.tsx`, `apps/web/app/(auth)/login/mfa/page.tsx`.
+
+#### 12.1.3 비밀번호 정책 (R39 A-4)
+- 변경 시 정책 검사: 8자 이상, 영문 + 숫자 + 특수문자 1개 이상, 직전 2개 비밀번호 재사용 금지, 공백 금지.
+- 변경 폼은 강도 미터 + 체크리스트 실시간 갱신.
+- 만료 90일(`PASSWORD_EXPIRY_DAYS` 환경 변수). 만료 7일 전부터 페이지 상단 배너로 알림. 만료 후엔 `/settings?tab=password`로 강제 이동, 다른 페이지 접근 차단.
+- 관리자가 강제 만료시킬 수 있음(`/admin/users` 상세 → [비밀번호 만료]).
+
+#### 12.1.4 SMS / 카카오 알림톡 (R38 N-2)
+- `/settings` → 알림 채널에서 메일/SMS/카카오 토글. SMS·카카오는 `phoneNumber` 입력 필요.
+- 메일: nodemailer SMTP. SMS: Twilio 또는 NCP SENS. 카카오: Bizmessage 알림톡(템플릿 사전 등록 필요).
+- 운영 환경 변수: `MAIL_ENABLED`, `SMS_ENABLED`, `KAKAO_ENABLED` 각자 0/1.
+
+### 12.2 검색 강화
+
+#### 12.2.1 PDF 본문 전문 검색 (R40 S-1)
+- 자료 첨부에 PDF가 있으면 본문 텍스트가 자동 추출되어 검색에 포함.
+- 검색 결과 행에 매칭된 본문 단편이 `<mark>강조된 부분</mark>`으로 노출 (1줄, 자동 truncate).
+- 검색 placeholder가 "도면번호, 자료명, **PDF 내용** 검색…"으로 갱신됨.
+
+#### 12.2.2 검색 ranking 통합 (R42)
+- 자료번호/이름/설명(trgm) + PDF 본문(FTS) 매칭 점수를 통합해 가장 관련도 높은 결과가 위로.
+- PDF 본문 매칭에 약간 가중치(`FTS_WEIGHT=1.5`) 부여 — 본문에 정확히 있는 키워드가 메타에 약하게 있는 것보다 우선.
+- 결과 행 옆 작은 칩으로 매치 출처 표시: **"본문"** / **"본문+메타"** / 메타만은 미표시.
+
+#### 12.2.3 멀티 fragment 스니펫 (R43)
+- 긴 PDF에서 매칭이 여러 곳에 있을 때 최대 3개의 컨텍스트 단편이 ` … ` 구분자로 연결되어 노출.
+- 각 fragment는 15단어 안팎으로 짧게 — 한 줄에 충분한 다양한 컨텍스트 노출.
+
+#### 12.2.4 정확한 cursor 페이지네이션 (R43)
+- "더 보기" 페이지로 이동해도 ranking이 일관 유지(이전엔 첫 페이지만 ranking 적용).
+- 깊은 페이지 진입 시 권한 필터 후에도 가능한 한 limit만큼 결과 보장.
+
+### 12.3 관리자 페이지 신규
+
+#### 12.3.1 의존성 보안 (`/admin/security`, R40 + R41)
+- 진입: 좌측 관리자 메뉴 → "의존성 보안".
+- **카운트 카드 4종**: Critical / High / Moderate / Low. 마지막 검사 시각(KST) 표시.
+- **[지금 검사]** 버튼: `pnpm audit`을 즉시 재실행(15분 캐시 무효화). 검사 중에는 spinner + "최대 1분" 안내.
+- **카드 클릭 → 필터**: 클릭한 severity로 하단 취약점 테이블 필터링. URL `?severity=high` 형태로 동기화 — 새로고침/공유 시 필터 복원.
+- **취약점 테이블**: 패키지 / 제목 / 영향 받는 버전 / 외부 advisory 링크 (target=_blank, rel=noopener). severity 우선 정렬, 같은 severity 안에서는 알파벳.
+- 50건 초과 시 [더 보기] 버튼으로 추가 노출.
+
+#### 12.3.2 PDF 본문 추출 모니터 (`/admin/pdf-extracts`, R41)
+- 진입: 좌측 관리자 메뉴 → "PDF 본문 추출".
+- **카운트 카드 5종**: PENDING / EXTRACTING / DONE / FAILED / SKIPPED.
+- **카드 클릭 → 필터**: URL `?status=FAILED` 동기화.
+- **테이블**: 자료번호 / 파일명 / 상태 / 마지막 시도 시각 / 오류 메시지 / [재시도] 버튼.
+- **재시도**: FAILED 또는 SKIPPED 행만 활성. ConfirmDialog로 확인 후 큐에 재 enqueue. optimistic으로 PENDING 표시 후 5초 폴링으로 갱신.
+
+#### 12.3.3 바이러스 스캔 모니터 (`/admin/scans`, R36)
+- 진입: 좌측 관리자 메뉴 → "파일 검사".
+- 카운트 카드 6종: PENDING / SCANNING / CLEAN / INFECTED / SKIPPED / FAILED.
+- INFECTED 첨부는 다운로드/미리보기/인쇄/썸네일 자동 차단(서버측 강제) — 사용자에게는 "감염 의심으로 차단" 안내.
+- [재검사] 버튼으로 ClamAV 재실행. 환경 변수 `CLAMAV_ENABLED=0`이면 SKIPPED 처리.
+
+### 12.4 뷰어 / 측정
+
+#### 12.4.1 측정 도구 정밀도 (R39 V-5)
+- 거리/면적 측정 시 단위(`$INSUNITS`) 인식 + ts소수점 정확도 보강.
+- 측정 결과는 도면 좌표 기반 — 화면 줌 레벨과 무관하게 동일.
+
+#### 12.4.2 선 가중치 정확 표현 (R37 V-2)
+- DXF 그룹 코드 370(LineWeight)을 Line2로 정확 렌더링. 인쇄/PDF 출력에 동일 두께 반영.
+
+### 12.5 접근성 (R37 AC-1)
+
+- 13개 핵심 화면 WCAG 2.1 AA audit 후 P0/P1 수정 적용.
+- focus-visible ring + ARIA role/label + 색대비 4.5:1 충족.
+- 스크린 리더 호환 강화 — `<dl>` 시맨틱, `<mark>`/`<th aria-sort>` 등.
+
+### 12.6 알림 채널 채울 (R38 + 후속)
+
+알림 받기 채널이 다양화됨 — 사용자 설정에서 메일/SMS/카카오 중 원하는 채널을 토글.
+
+---
+
 ## 부록 A. 단축키 일람
 
 > 출처: `apps/web/components/ShortcutsDialog.tsx` (`?` 단축키로 항상 호출)
@@ -1058,3 +1152,4 @@ DWG/DXF는 자체 DXF 엔진으로 렌더된다. DWG는 워커가 LibreDWG subpr
 | 날짜 | 변경 |
 |---|---|
 | 2026-04-27 | R35 1차 본문 작성 (DOC-2). 챕터 0~11 + 부록 A~E. 스크린샷 placeholder. |
+| 2026-04-28 | R45 catch-up: 챕터 12 신설 (R36~R44 신규 기능 — SAML/MFA/비밀번호정책/SMS·카카오/PDF 본문 검색/검색 ranking/멀티 fragment/cursor 페이지네이션/관리자 의존성 보안/PDF 추출 모니터/바이러스 스캔 모니터/측정 정밀도/선 가중치/접근성). 기존 챕터 통합 반영은 v0.3에서. |
