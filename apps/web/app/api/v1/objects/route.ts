@@ -118,7 +118,30 @@ type ObjectSummary = {
    * NEVER via `dangerouslySetInnerHTML`.
    */
   pdfSnippet: string | null;
+  /**
+   * R42 — which match source produced this row. `null` when no `q` was
+   * searched. `'meta'` for trgm hits on number/name/description, `'pdf'`
+   * for PDF body FTS hits, `'both'` when the object matched on both
+   * channels. Used by the FE to render a small "본문" / "메타" chip.
+   */
+  matchSource: 'meta' | 'pdf' | 'both' | null;
 };
+
+/**
+ * R42 — internal candidate hit when `q` is present. `score` is the unified
+ * ranking key used to sort rows on the first page (no cursor / no explicit
+ * sortBy). trgm `similarity` and ts_rank are both roughly 0..1 ranges, so
+ * `FTS_WEIGHT` slightly biases PDF body matches above weak meta matches.
+ */
+type Hit = {
+  id: string;
+  score: number;
+  source: 'meta' | 'pdf' | 'both';
+  snippet: string | null;
+};
+
+/** Multiplier applied to `ts_rank` before max-merging with trgm similarity. */
+const FTS_WEIGHT = 1.5;
 
 export async function GET(req: Request): Promise<NextResponse> {
   let user;
@@ -189,39 +212,51 @@ export async function GET(req: Request): Promise<NextResponse> {
   // wins; multiple PDFs per object collapse to the first hit). null
   // entries are not inserted; absence in the map means "trgm path".
   const pdfSnippetById = new Map<string, string>();
+  // R42 — object_id → which match source produced this row. Populated
+  // alongside the unified hit map below; queried at response-assembly
+  // time so the FE can show a "본문" / "메타" chip.
+  const matchSourceById = new Map<string, 'meta' | 'pdf' | 'both'>();
   if (q.q) {
     const term = q.q.trim();
 
     // 1) pg_trgm similarity on number/name/description; threshold 0.1
-    //    to be permissive. Existing R39 behavior — preserved verbatim.
-    const trgmRows = await prisma.$queryRaw<Array<{ id: string }>>`
-      SELECT id
+    //    to be permissive. R42 — exposes the GREATEST() result as
+    //    `score` so we can max-merge with FTS rank below.
+    const trgmRows = await prisma.$queryRaw<
+      Array<{ id: string; score: number }>
+    >`
+      SELECT
+        id,
+        GREATEST(
+          similarity("number", ${term}),
+          similarity("name", ${term}),
+          COALESCE(similarity("description", ${term}), 0)
+        ) AS score
       FROM "ObjectEntity"
       WHERE (
         similarity("number", ${term}) > 0.1
         OR similarity("name", ${term}) > 0.1
         OR ("description" IS NOT NULL AND similarity("description", ${term}) > 0.1)
       )
-      ORDER BY GREATEST(
-        similarity("number", ${term}),
-        similarity("name", ${term}),
-        COALESCE(similarity("description", ${term}), 0)
-      ) DESC
+      ORDER BY score DESC
       LIMIT 500
     `;
 
-    // 2) R40 S-1 — PDF body FTS. The `content_tsv` GENERATED column
-    //    (migration 0014) lets us hit a GIN index for O(log N) lookups.
-    //    `plainto_tsquery` is intentional: user input is unsanitized
-    //    free text and `to_tsquery` would syntax-error on punctuation.
-    //    `ts_headline` gives us a `<b>...</b>`-marked excerpt the FE
-    //    renders via JSX <mark> (NEVER dangerouslySetInnerHTML — see
-    //    contract §8 risk row 2).
+    // 2) R40 S-1 + R42 — PDF body FTS. The `content_tsv` GENERATED
+    //    column (migration 0014) lets us hit a GIN index for O(log N)
+    //    lookups. `plainto_tsquery` is intentional: user input is
+    //    unsanitized free text and `to_tsquery` would syntax-error on
+    //    punctuation. `ts_headline` gives us a `<b>...</b>`-marked
+    //    excerpt the FE renders via JSX <mark> (NEVER
+    //    dangerouslySetInnerHTML — see contract §8 risk row 2). R42
+    //    adds `ts_rank` so the unified merge below can compare strong
+    //    PDF body hits against trgm similarity.
     const ftsRows = await prisma.$queryRaw<
-      Array<{ object_id: string; snippet: string | null }>
+      Array<{ object_id: string; rank: number; snippet: string | null }>
     >`
       SELECT
         o.id AS object_id,
+        ts_rank(a."content_tsv", plainto_tsquery('simple', ${term})) AS rank,
         ts_headline(
           'simple',
           a."contentText",
@@ -233,37 +268,51 @@ export async function GET(req: Request): Promise<NextResponse> {
       JOIN "Revision"     r ON r.id = v."revisionId"
       JOIN "ObjectEntity" o ON o.id = r."objectId"
       WHERE a."content_tsv" @@ plainto_tsquery('simple', ${term})
+      ORDER BY rank DESC
       LIMIT 500
     `;
 
-    // Build the snippet map. The first non-null snippet per object wins;
-    // subsequent matches are dropped to keep response payloads small.
-    for (const row of ftsRows) {
-      if (row.snippet && !pdfSnippetById.has(row.object_id)) {
-        pdfSnippetById.set(row.object_id, row.snippet);
+    // R42 — unified hit map. trgm seeds with `meta` source; FTS rows
+    // either upgrade an existing entry to `both` (taking max score) or
+    // create a fresh `pdf` entry. Final ordering is by descending
+    // unified score, breaking ties by trgm-then-FTS arrival order
+    // (Map iteration order matches insertion order in JS).
+    const hitMap = new Map<string, Hit>();
+    for (const r of trgmRows) {
+      hitMap.set(r.id, {
+        id: r.id,
+        score: r.score,
+        source: 'meta',
+        snippet: null,
+      });
+    }
+    for (const r of ftsRows) {
+      const weighted = (r.rank ?? 0) * FTS_WEIGHT;
+      const existing = hitMap.get(r.object_id);
+      if (existing) {
+        existing.score = Math.max(existing.score, weighted);
+        existing.source = 'both';
+        if (existing.snippet === null) existing.snippet = r.snippet;
+      } else {
+        hitMap.set(r.object_id, {
+          id: r.object_id,
+          score: weighted,
+          source: 'pdf',
+          snippet: r.snippet,
+        });
       }
     }
 
-    // OR-union: trgm-rank order is preserved for trgm-matched ids;
-    // PDF-only matches append after (with their relative DB-row order).
-    const trgmIds = trgmRows.map((r) => r.id);
-    const ftsIds = ftsRows.map((r) => r.object_id);
-    const seen = new Set<string>();
-    const merged: string[] = [];
-    for (const id of trgmIds) {
-      if (!seen.has(id)) {
-        seen.add(id);
-        merged.push(id);
-      }
-    }
-    for (const id of ftsIds) {
-      if (!seen.has(id)) {
-        seen.add(id);
-        merged.push(id);
-      }
+    const merged = [...hitMap.values()].sort((a, b) => b.score - a.score);
+
+    // Build the snippet + matchSource maps from the unified hits so
+    // they share a single source of truth.
+    for (const h of merged) {
+      if (h.snippet) pdfSnippetById.set(h.id, h.snippet);
+      matchSourceById.set(h.id, h.source);
     }
 
-    candidateIds = merged;
+    candidateIds = merged.map((h) => h.id);
     if (candidateIds.length === 0) {
       return ok<ObjectSummary[]>([], { nextCursor: null, hasMore: false });
     }
@@ -298,9 +347,14 @@ export async function GET(req: Request): Promise<NextResponse> {
     cursor,
     skip: cursor ? 1 : 0,
     take: limit + 1, // fetch one extra to detect hasMore
-    orderBy: q.q
-      ? undefined // already ordered by similarity above; preserve that order client-side
-      : orderBy,
+    orderBy:
+      // R42 — when `q` is present and the caller did not pin a `sortBy`,
+      // skip DB ordering entirely; we re-impose the unified-ranking
+      // order client-side (see below). When the caller did pin a
+      // sortBy, ranking is intentionally ignored — explicit sort wins.
+      q.q && !q.sortBy
+        ? undefined
+        : orderBy,
     select: {
       id: true,
       number: true,
@@ -359,12 +413,18 @@ export async function GET(req: Request): Promise<NextResponse> {
     ).allowed,
   );
 
-  // If we used similarity, restore similarity order.
+  // R42 — restore unified-ranking order when:
+  //   (a) `q` was provided (we have candidateIds), AND
+  //   (b) the caller did not pin an explicit `sortBy` (otherwise their
+  //       sort intent wins), AND
+  //   (c) we are on the first page (`!cursor`).
+  // For deeper pages we fall back to createdAt/id ordering — accurate
+  // cursor-rank pagination is deferred per contract §2.5.
   let ordered = allowed;
-  if (candidateIds && candidateIds.length > 0) {
-    const rank = new Map(candidateIds.map((id, i) => [id, i] as const));
+  if (q.q && !q.sortBy && !cursor && candidateIds && candidateIds.length > 0) {
+    const idxMap = new Map(candidateIds.map((id, i) => [id, i] as const));
     ordered = [...allowed].sort(
-      (a, b) => (rank.get(a.id) ?? 1e9) - (rank.get(b.id) ?? 1e9),
+      (a, b) => (idxMap.get(a.id) ?? 1e9) - (idxMap.get(b.id) ?? 1e9),
     );
   }
 
@@ -399,6 +459,9 @@ export async function GET(req: Request): Promise<NextResponse> {
       // number/name/description only (trgm path). pdfSnippetById is
       // populated solely from the attachment-FTS query above.
       pdfSnippet: pdfSnippetById.get(r.id) ?? null,
+      // R42 — null when no `q` was searched. Otherwise reflects whether
+      // this object hit on meta (trgm) only, pdf body (FTS) only, or both.
+      matchSource: matchSourceById.get(r.id) ?? null,
     };
   });
 
