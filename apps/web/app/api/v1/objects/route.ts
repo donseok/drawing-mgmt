@@ -261,7 +261,7 @@ export async function GET(req: Request): Promise<NextResponse> {
           'simple',
           a."contentText",
           plainto_tsquery('simple', ${term}),
-          'StartSel=<b>,StopSel=</b>,MaxFragments=1,MaxWords=20,MinWords=5'
+          'StartSel=<b>,StopSel=</b>,MaxFragments=3,MaxWords=15,MinWords=4,FragmentDelimiter= … '
         ) AS snippet
       FROM "Attachment"   a
       JOIN "Version"      v ON v.id = a."versionId"
@@ -342,95 +342,159 @@ export async function GET(req: Request): Promise<NextResponse> {
     { id: sortDir },
   ];
 
-  const rows = await prisma.objectEntity.findMany({
-    where,
-    cursor,
-    skip: cursor ? 1 : 0,
-    take: limit + 1, // fetch one extra to detect hasMore
-    orderBy:
-      // R42 — when `q` is present and the caller did not pin a `sortBy`,
-      // skip DB ordering entirely; we re-impose the unified-ranking
-      // order client-side (see below). When the caller did pin a
-      // sortBy, ranking is intentionally ignored — explicit sort wins.
-      q.q && !q.sortBy
-        ? undefined
-        : orderBy,
-    select: {
-      id: true,
-      number: true,
-      name: true,
-      description: true,
-      folderId: true,
-      classId: true,
-      securityLevel: true,
-      state: true,
-      ownerId: true,
-      currentRevision: true,
-      currentVersion: true,
-      lockedById: true,
-      createdAt: true,
-      updatedAt: true,
-      class: { select: { code: true, name: true } },
-      owner: { select: { fullName: true } },
-      revisions: {
-        orderBy: { rev: 'desc' },
-        take: 1,
-        select: {
-          versions: {
-            orderBy: { ver: 'desc' },
-            take: 1,
-            select: {
-              attachments: {
-                where: { isMaster: true },
-                select: { id: true },
-                take: 1,
-              },
+  // R43 — accurate cursor+ranking pagination for q + !sortBy mode. Instead
+  // of relying on Prisma's createdAt/id cursor (which loses unified-rank
+  // ordering on page 2+), we paginate the candidateIds array by position.
+  // Cursor is interpreted as "the last id of the previous page"; we look
+  // up its position in idxMap and slice from position+1. If the cursor id
+  // isn't in candidateIds anymore (q changed, dataset mutated), fall back
+  // to first page (position 0). Per-page over-fetch buffer is `limit*2`
+  // (capped at 100) to compensate for permission-denied rows; remaining
+  // gaps roll forward via nextCursor.
+  const useRankedPagination =
+    q.q !== undefined && !q.sortBy && candidateIds !== null && candidateIds.length > 0;
+
+  const selectShape = {
+    id: true,
+    number: true,
+    name: true,
+    description: true,
+    folderId: true,
+    classId: true,
+    securityLevel: true,
+    state: true,
+    ownerId: true,
+    currentRevision: true,
+    currentVersion: true,
+    lockedById: true,
+    createdAt: true,
+    updatedAt: true,
+    class: { select: { code: true, name: true } },
+    owner: { select: { fullName: true } },
+    revisions: {
+      orderBy: { rev: 'desc' as const },
+      take: 1,
+      select: {
+        versions: {
+          orderBy: { ver: 'desc' as const },
+          take: 1,
+          select: {
+            attachments: {
+              where: { isMaster: true },
+              select: { id: true },
+              take: 1,
             },
           },
         },
       },
     },
-  });
+  } satisfies Prisma.ObjectEntitySelect;
 
-  // Permission filter — pre-load folder permissions for the union of folder ids.
-  const folderIds = Array.from(new Set(rows.map((r) => r.folderId)));
-  const [pUser, perms] = await Promise.all([
-    toPermissionUser(fullUser),
-    loadFolderPermissions(folderIds),
-  ]);
+  let page: Array<Prisma.ObjectEntityGetPayload<{ select: typeof selectShape }>>;
+  let nextCursor: string | null;
+  let hasMore: boolean;
 
-  const allowed = rows.filter((r) =>
-    canAccess(
-      pUser,
-      {
-        id: r.id,
-        folderId: r.folderId,
-        ownerId: r.ownerId,
-        securityLevel: r.securityLevel,
-      },
-      perms,
-      'VIEW',
-    ).allowed,
-  );
+  if (useRankedPagination) {
+    // candidateIds is non-null & non-empty here per useRankedPagination guard.
+    const ids = candidateIds!;
+    const idxMap = new Map(ids.map((id, i) => [id, i] as const));
 
-  // R42 — restore unified-ranking order when:
-  //   (a) `q` was provided (we have candidateIds), AND
-  //   (b) the caller did not pin an explicit `sortBy` (otherwise their
-  //       sort intent wins), AND
-  //   (c) we are on the first page (`!cursor`).
-  // For deeper pages we fall back to createdAt/id ordering — accurate
-  // cursor-rank pagination is deferred per contract §2.5.
-  let ordered = allowed;
-  if (q.q && !q.sortBy && !cursor && candidateIds && candidateIds.length > 0) {
-    const idxMap = new Map(candidateIds.map((id, i) => [id, i] as const));
-    ordered = [...allowed].sort(
-      (a, b) => (idxMap.get(a.id) ?? 1e9) - (idxMap.get(b.id) ?? 1e9),
+    // Resolve start position from cursor; missing cursor (or stale id not
+    // in current candidateIds) falls back to the first page.
+    let startPos = 0;
+    if (q.cursor) {
+      const pos = idxMap.get(q.cursor);
+      startPos = pos !== undefined ? pos + 1 : 0;
+    }
+
+    // Over-fetch buffer to absorb permission-denied rows. Capped to keep
+    // a single round-trip cheap; gaps roll forward via nextCursor.
+    const bufferSize = Math.min(limit * 2, 100);
+    const sliceEnd = Math.min(ids.length, startPos + bufferSize);
+    const idSlice = ids.slice(startPos, sliceEnd);
+
+    if (idSlice.length === 0) {
+      page = [];
+      nextCursor = null;
+      hasMore = false;
+    } else {
+      // Pull the row payloads. We do NOT pass cursor/take/orderBy here —
+      // ordering is reasserted client-side via idxMap because the slice
+      // is already in unified-ranking order.
+      const rows = await prisma.objectEntity.findMany({
+        where: { ...where, id: { in: idSlice } },
+        select: selectShape,
+      });
+
+      // Permission filter on the buffered slice.
+      const folderIds = Array.from(new Set(rows.map((r) => r.folderId)));
+      const [pUser, perms] = await Promise.all([
+        toPermissionUser(fullUser),
+        loadFolderPermissions(folderIds),
+      ]);
+      const allowed = rows.filter((r) =>
+        canAccess(
+          pUser,
+          {
+            id: r.id,
+            folderId: r.folderId,
+            ownerId: r.ownerId,
+            securityLevel: r.securityLevel,
+          },
+          perms,
+          'VIEW',
+        ).allowed,
+      );
+
+      // Restore unified-ranking order: rows came back in arbitrary DB
+      // order, idxMap re-sorts them by candidateIds position.
+      allowed.sort(
+        (a, b) => (idxMap.get(a.id) ?? 1e9) - (idxMap.get(b.id) ?? 1e9),
+      );
+
+      page = allowed.slice(0, limit);
+      // hasMore is true if either:
+      //   (a) more candidate ids exist past our buffered window, OR
+      //   (b) within the buffered window we still had >limit allowed rows
+      //       (i.e. the page was capped by `limit`, not exhausted).
+      hasMore = sliceEnd < ids.length || allowed.length > limit;
+      nextCursor = hasMore && page.length > 0 ? page[page.length - 1]!.id : null;
+    }
+  } else {
+    // Non-ranked path: q absent, OR q+sortBy (explicit sort wins). Uses
+    // Prisma's native cursor + take + orderBy. Behavior unchanged from R42.
+    const rows = await prisma.objectEntity.findMany({
+      where,
+      cursor,
+      skip: cursor ? 1 : 0,
+      take: limit + 1, // fetch one extra to detect hasMore
+      orderBy,
+      select: selectShape,
+    });
+
+    const folderIds = Array.from(new Set(rows.map((r) => r.folderId)));
+    const [pUser, perms] = await Promise.all([
+      toPermissionUser(fullUser),
+      loadFolderPermissions(folderIds),
+    ]);
+    const allowed = rows.filter((r) =>
+      canAccess(
+        pUser,
+        {
+          id: r.id,
+          folderId: r.folderId,
+          ownerId: r.ownerId,
+          securityLevel: r.securityLevel,
+        },
+        perms,
+        'VIEW',
+      ).allowed,
     );
-  }
 
-  const hasMore = ordered.length > limit;
-  const page = hasMore ? ordered.slice(0, limit) : ordered;
-  const nextCursor = hasMore && page.length > 0 ? page[page.length - 1]!.id : null;
+    hasMore = allowed.length > limit;
+    page = hasMore ? allowed.slice(0, limit) : allowed;
+    nextCursor = hasMore && page.length > 0 ? page[page.length - 1]!.id : null;
+  }
 
   // Normalize Decimal -> string + flatten nested includes for the client.
   const data: ObjectSummary[] = page.map((r) => {
