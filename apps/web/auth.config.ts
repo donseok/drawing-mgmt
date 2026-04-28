@@ -17,6 +17,16 @@ export const authConfig = {
   // No providers here — the full Credentials provider is added in `auth.ts`.
   // For middleware, only `callbacks.authorized` runs and that needs no providers.
   providers: [],
+  // R49 / FIND-009 — explicit `trustHost` so Auth.js v5 honors the configured
+  // `NEXTAUTH_URL` (and request `Host` header) when running behind a reverse
+  // proxy. Without this, v5 may reject requests whose host doesn't match an
+  // inferred default and produce confusing 4xx in production.
+  trustHost: true,
+  // R49 / FIND-009 — only emit `Secure` cookies in production (HTTPS). In dev
+  // (localhost http) Secure cookies would be silently dropped by browsers,
+  // breaking sign-in. The flag matches what middleware/rewrites expect when
+  // running behind a TLS-terminating proxy.
+  useSecureCookies: process.env.NODE_ENV === 'production',
   session: {
     strategy: 'jwt',
     // 8h — TRD §5.1

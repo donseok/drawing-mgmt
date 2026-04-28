@@ -31,6 +31,11 @@ import * as OTPAuth from 'otpauth';
 import QRCode from 'qrcode';
 import bcrypt from 'bcryptjs';
 import crypto from 'node:crypto';
+// R49 / FIND-008 — TOTP secrets stored at rest are AES-256-GCM-encrypted
+// (envelope format described in lib/crypto.ts). `verifyTotp` transparently
+// decrypts so callers don't have to know the storage format. Pre-R49
+// plaintext rows pass through unchanged.
+import { decryptSecret, isEncryptedSecret } from '@/lib/crypto';
 
 // ── TOTP primitives ────────────────────────────────────────────────────────
 
@@ -91,9 +96,22 @@ export function verifyTotp(secret: string, code: string): boolean {
   const normalized = code.replace(/[\s-]/g, '');
   if (!/^\d{6}$/.test(normalized)) return false;
 
+  // R49 / FIND-008 — `secret` may be an AES-256-GCM ciphertext envelope
+  // (current write format) or a pre-R49 base32 plaintext. `decryptSecret`
+  // returns the input unchanged when it doesn't see the version prefix, so
+  // both branches end up with a usable base32 string here. We catch the
+  // decrypt error explicitly (tampered/rotated key) and fail closed: a
+  // corrupted secret should never authenticate.
+  let plaintext: string;
+  try {
+    plaintext = isEncryptedSecret(secret) ? decryptSecret(secret) : secret;
+  } catch {
+    return false;
+  }
+
   let secretObj: OTPAuth.Secret;
   try {
-    secretObj = OTPAuth.Secret.fromBase32(secret);
+    secretObj = OTPAuth.Secret.fromBase32(plaintext);
   } catch {
     return false;
   }

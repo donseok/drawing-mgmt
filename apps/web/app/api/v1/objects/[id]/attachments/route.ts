@@ -36,6 +36,8 @@ import { enqueueVirusScan } from '@/lib/scan-queue';
 // from R21; STORAGE_DRIVER=s3 switches to MinIO/S3 with no caller change.
 import { getStorage } from '@/lib/storage';
 import { withApi } from '@/lib/api-helpers';
+// R49 / FIND-012 — chunked + multipart routes share the same MIME allow-list.
+import { isAllowedMimeType } from '@/lib/mime-allowed';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -141,6 +143,18 @@ export const POST = withApi<{ params: { id: string } }>(
   const buf = Buffer.from(await file.arrayBuffer());
   const checksum = createHash('sha256').update(buf).digest('hex');
   const mimeType = file.type || guessMime(ext);
+  // R49 / FIND-012 — allow-list gate. `file.type` comes from the multipart
+  // header, controlled by the client; reject anything outside the supported
+  // formats before we persist a row + enqueue jobs. ClamAV still validates
+  // content-level safety once the bytes are at rest.
+  if (!isAllowedMimeType(mimeType)) {
+    return error(
+      ErrorCode.E_VALIDATION,
+      `허용되지 않는 파일 형식입니다 (${mimeType}).`,
+      400,
+      { code: 'MIME_NOT_ALLOWED', mimeType },
+    );
+  }
 
   // R34 — storage abstraction. LOCAL writes to disk under FILE_STORAGE_ROOT;
   // S3 puts to the configured bucket with the same key.

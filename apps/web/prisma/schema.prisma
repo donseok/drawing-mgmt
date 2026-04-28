@@ -68,10 +68,15 @@ model User {
   notifyByKakao    Boolean        @default(false)
   // R39 / A-3 — TOTP MFA enrollment.
   //
-  // `totpSecret` holds the base32-encoded TOTP secret. Populated at /enroll
-  // (before confirmation) so the user can scan the QR; cleared at /disable.
-  // Should be encrypted at rest in production (KMS / column-level crypto);
-  // for now stored plaintext — env-driven encryption will land in a follow-up.
+  // `totpSecret` holds the user's TOTP secret. R49 / FIND-008 — encrypted
+  // at rest with AES-256-GCM via `lib/crypto.ts` (`encryptSecret`). The
+  // stored format is `v1:<iv-b64url>:<tag-b64url>:<cipher-b64url>`. Pre-R49
+  // plaintext rows (no `v1:` prefix) are auto-detected by
+  // `isEncryptedSecret` and read transparently by `verifyTotp`; they are
+  // re-saved in the encrypted form on the user's next /enroll, so the
+  // plaintext footprint shrinks naturally without a forced backfill.
+  // Populated at /enroll (before confirmation) so the user can scan the QR;
+  // cleared at /disable.
   //
   // `totpEnabledAt` is the source of truth for "MFA is on for this user".
   // Null while still in the enroll-but-not-confirmed window. The login flow

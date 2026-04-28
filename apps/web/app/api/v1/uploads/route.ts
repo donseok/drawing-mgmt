@@ -24,6 +24,9 @@ import {
   RECOMMENDED_CHUNK_SIZE,
   MAX_UPLOAD_BYTES,
 } from '@/lib/upload-store';
+// R49 / FIND-012 — narrow accepted client-claimed MIME types to the list
+// the system actually serves; ClamAV (R36) still owns content-level safety.
+import { ALLOWED_MIME_TYPES } from '@/lib/mime-allowed';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -33,7 +36,10 @@ const UPLOAD_TTL_MS = 24 * 60 * 60 * 1000;
 
 const bodySchema = z.object({
   filename: z.string().min(1).max(512),
-  mimeType: z.string().min(1).max(255),
+  // R49 / FIND-012 — enum gate. Free-form `z.string()` previously let any
+  // claimed type through; now the request fails fast for unsupported types
+  // before the temp file is reserved.
+  mimeType: z.enum(ALLOWED_MIME_TYPES),
   totalBytes: z
     .union([z.number(), z.string()])
     .transform((v) => (typeof v === 'string' ? Number(v) : v))
