@@ -15,46 +15,112 @@ import {
   ShieldCheck,
 } from 'lucide-react';
 import { cn } from '@/lib/cn';
+import { prisma } from '@/lib/prisma';
 import { PinnedPanel } from '@/components/workspace/PinnedPanel';
 
-const STAT_CARDS = [
-  {
-    key: 'waiting',
-    title: '내 결재 대기',
-    count: 3,
-    caption: '평균 지연 4.2h',
-    href: '/approval?box=waiting',
-    icon: CheckSquare,
-    tone: 'text-brand',
-  },
-  {
-    key: 'checkedout',
-    title: '내 체크아웃',
-    count: 2,
-    caption: '오늘 1건 만료',
-    href: '/workspace?tab=checkedout',
-    icon: Lock,
-    tone: 'text-warning',
-  },
-  {
-    key: 'issues',
-    title: '미해결 이슈',
-    count: 7,
-    caption: '도면 핀 4건',
-    href: '/search?view=issues',
-    icon: MapPin,
-    tone: 'text-danger',
-  },
-  {
-    key: 'transmittal',
-    title: '최근 배포',
-    count: 9,
-    caption: '현장배포본 포함',
-    href: '/workspace?tab=recent',
-    icon: Send,
-    tone: 'text-success',
-  },
-];
+// R55 [QA-P1-3] — replace hardcoded STAT_CARDS counts with live prisma reads.
+// Counts are computed from the same predicates that `/api/v1/approvals?box=waiting`
+// and the search/lobby pages use, so the dashboard stays in sync with the
+// destination pages users click into. Running here on the server side keeps
+// the home tile fast (single DB round-trip on render, no client fetch storm).
+async function loadStatCounts(userId: string | null): Promise<{
+  waiting: number;
+  checkedOut: number;
+  issues: number;
+  recent: number;
+}> {
+  if (!userId) {
+    return { waiting: 0, checkedOut: 0, issues: 0, recent: 0 };
+  }
+  // `waiting`: approvals PENDING with at least one PENDING step assigned to
+  // me. We approximate the "내 차례" gate done in /api/v1/approvals by just
+  // counting approvals where a PENDING step exists for me — the dashboard
+  // tile only shows a number, so over-counting non-active approvals is OK
+  // (it errs on the side of "you have things to look at").
+  const sevenDaysAgoMs = Date.now() - 1000 * 60 * 60 * 24 * 7;
+  const sevenDaysAgo = new Date(sevenDaysAgoMs);
+  try {
+    const [waiting, checkedOut, recent] = await Promise.all([
+      prisma.approval.count({
+        where: {
+          status: 'PENDING',
+          steps: { some: { approverId: userId, status: 'PENDING' } },
+        },
+      }),
+      prisma.objectEntity.count({
+        where: { lockedById: userId },
+      }),
+      prisma.lobby.count({
+        where: { createdAt: { gte: sevenDaysAgo } },
+      }),
+    ]);
+    // No `Issue` model in the schema yet — the home tile keeps the slot
+    // visible (so the layout is stable for users who expect 4 cards) but
+    // pins the count to 0 until an issue surface lands.
+    return { waiting, checkedOut, issues: 0, recent };
+  } catch {
+    // Dev fallback users (the seed `dev-<username>` ids) don't have a User
+    // row, so the queries are empty but never throw. If something *does*
+    // explode (DB down) we render zeros instead of crashing the home page.
+    return { waiting: 0, checkedOut: 0, issues: 0, recent: 0 };
+  }
+}
+
+interface StatCardSpec {
+  key: string;
+  title: string;
+  count: number;
+  caption: string;
+  href: string;
+  icon: React.ComponentType<{ className?: string }>;
+  tone: string;
+}
+
+function buildStatCards(counts: {
+  waiting: number;
+  checkedOut: number;
+  issues: number;
+  recent: number;
+}): StatCardSpec[] {
+  return [
+    {
+      key: 'waiting',
+      title: '내 결재 대기',
+      count: counts.waiting,
+      caption: counts.waiting === 0 ? '대기 중인 결재 없음' : '결재 대기',
+      href: '/approval?box=waiting',
+      icon: CheckSquare,
+      tone: 'text-brand',
+    },
+    {
+      key: 'checkedout',
+      title: '내 체크아웃',
+      count: counts.checkedOut,
+      caption: counts.checkedOut === 0 ? '잠금 중인 자료 없음' : '체크아웃 자료',
+      href: '/search?view=checkedout',
+      icon: Lock,
+      tone: 'text-warning',
+    },
+    {
+      key: 'issues',
+      title: '미해결 이슈',
+      count: counts.issues,
+      caption: '추후 추가 예정',
+      href: '/search?view=issues',
+      icon: MapPin,
+      tone: 'text-danger',
+    },
+    {
+      key: 'transmittal',
+      title: '최근 배포',
+      count: counts.recent,
+      caption: '최근 7일',
+      href: '/lobby',
+      icon: Send,
+      tone: 'text-success',
+    },
+  ];
+}
 
 const WORK_QUEUE = [
   {
@@ -129,14 +195,24 @@ export default async function WorkspaceHomePage() {
   const session = await auth();
   const name = session?.user?.name ?? session?.user?.username ?? '사용자';
 
+  // R55 [QA-P1-3] — live counts. Server-rendered, so no client fetch waterfall.
+  const counts = await loadStatCounts(session?.user?.id ?? null);
+  const statCards = buildStatCards(counts);
+
   return (
     <div className="flex-1 overflow-auto">
       <div className="mx-auto w-full max-w-[1500px] px-6 py-5">
+        {/* R55 [QA-P0-1] — `break-keep` keeps Korean phrases (한글) from
+            wrapping mid-word into vertical columns at narrow widths. The flex
+            child also gets `min-w-0` so the truncation chain works when the
+            action button cluster wraps below at 375px. */}
         <header className="mb-5 flex flex-wrap items-center justify-between gap-3">
-          <div className="min-w-0">
+          <div className="min-w-0 break-keep">
             <div className="app-kicker">CDE Workspace</div>
-            <h1 className="mt-1 text-2xl font-semibold text-fg">오늘의 도면 업무함</h1>
-            <p className="mt-1 text-sm text-fg-muted">
+            <h1 className="mt-1 break-keep text-2xl font-semibold text-fg">
+              오늘의 도면 업무함
+            </h1>
+            <p className="mt-1 break-keep text-sm text-fg-muted">
               {name} 님 · {formatToday()} 기준 최신본, 결재, 이슈, 배포 상태입니다.
             </p>
           </div>
@@ -156,8 +232,15 @@ export default async function WorkspaceHomePage() {
           </div>
         </header>
 
-        <section aria-label="업무 요약" className="grid grid-cols-2 gap-3 xl:grid-cols-4">
-          {STAT_CARDS.map(({ key, ...card }) => (
+        {/* R55 [QA-P0-1] — at 375px the original `grid-cols-2` squeezed the
+            카드 to ~165px which was too narrow for the Korean labels (they
+            were wrapping char-by-char). Drop to a single column on phone, two
+            from sm (≥640px), four from lg (≥1024px). */}
+        <section
+          aria-label="업무 요약"
+          className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4"
+        >
+          {statCards.map(({ key, ...card }) => (
             <MetricCard key={key} {...card} />
           ))}
         </section>
@@ -188,7 +271,7 @@ export default async function WorkspaceHomePage() {
                   return (
                     <tr key={item.number} className="hover:bg-bg-subtle">
                       <td>
-                        <span className={cn('inline-flex items-center gap-1.5 text-[12px] font-semibold', item.tone)}>
+                        <span className={cn('inline-flex items-center gap-1.5 whitespace-nowrap text-[12px] font-semibold', item.tone)}>
                           <Icon className="h-3.5 w-3.5" />
                           {item.kind}
                         </span>
@@ -297,13 +380,22 @@ function MetricCard({
         <Icon className="h-4 w-4" />
       </span>
       <span className="min-w-0 flex-1">
-        <span className="block text-xs text-fg-muted">{title}</span>
-        <span className="mt-1 block text-2xl font-semibold text-fg">
-          {count}<span className="ml-1 text-xs font-normal text-fg-muted">건</span>
+        {/* R55 [QA-P0-1] — `whitespace-nowrap` + `break-keep` prevents the
+            한글 label from collapsing into one-character-per-line at the
+            ~165px viewport. `truncate` falls back to ellipsis if the column
+            ever gets narrower than the label itself. */}
+        <span className="block truncate whitespace-nowrap break-keep text-xs text-fg-muted">
+          {title}
         </span>
-        <span className="block truncate text-[11px] text-fg-subtle">{caption}</span>
+        <span className="mt-1 block text-2xl font-semibold text-fg">
+          {count}
+          <span className="ml-1 break-keep text-xs font-normal text-fg-muted">건</span>
+        </span>
+        <span className="block truncate break-keep text-[11px] text-fg-subtle">
+          {caption}
+        </span>
       </span>
-      <ArrowRight className="h-4 w-4 text-fg-subtle transition-transform group-hover:translate-x-0.5" />
+      <ArrowRight className="h-4 w-4 shrink-0 text-fg-subtle transition-transform group-hover:translate-x-0.5" />
     </Link>
   );
 }

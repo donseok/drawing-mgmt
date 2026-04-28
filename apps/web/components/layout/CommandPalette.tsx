@@ -47,14 +47,16 @@ export function CommandPalette() {
 
   const [query, setQuery] = React.useState('');
 
-  // ⌘K / Ctrl+K listener — also wired in useKeyboardShortcuts but keeping here for resilience.
-  // ESC also closes (Command's internal handling can be flaky when query is empty).
+  // R55 [QA-P2-6] — ⌘K / Ctrl+K is owned by `useKeyboardShortcuts` (mounted
+  // once in <AppShellClient>). Previously we registered a *second* keydown
+  // listener here which raced the first: both called `setPaletteOpen`/`!open`
+  // back-to-back, net-zero, so the palette never appeared on Mac (and
+  // double-toggled on Windows/Linux when the listeners disagreed about the
+  // current state). Now this component only watches ESC for the modal close.
   React.useEffect(() => {
+    if (!open) return;
     const onKey = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
-        e.preventDefault();
-        setOpen(!open);
-      } else if (e.key === 'Escape' && open) {
+      if (e.key === 'Escape') {
         e.preventDefault();
         setOpen(false);
       }

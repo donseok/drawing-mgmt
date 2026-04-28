@@ -99,7 +99,17 @@ export function NotificationPanelBody({
 
   // Auto-load on scroll: the sentinel near the bottom triggers `onLoadMore`
   // once visible. Cheap IntersectionObserver — no library.
+  // R55 [QA-P0-2] — the previous version listed `onLoadMore` directly in the
+  // deps. Callers commonly pass a fresh arrow each render (`() => fetchNextPage()`)
+  // which made the effect tear-down + re-attach the IO on every parent
+  // render. Stash the latest callback in a ref and call through it so the
+  // effect only re-runs when the actual signal flags (`hasNextPage`,
+  // `isFetchingNextPage`) change.
   const sentinelRef = React.useRef<HTMLDivElement | null>(null);
+  const loadMoreRef = React.useRef(onLoadMore);
+  React.useEffect(() => {
+    loadMoreRef.current = onLoadMore;
+  }, [onLoadMore]);
   React.useEffect(() => {
     const el = sentinelRef.current;
     if (!el || !hasNextPage || isFetchingNextPage) return;
@@ -107,7 +117,7 @@ export function NotificationPanelBody({
       (entries) => {
         for (const entry of entries) {
           if (entry.isIntersecting) {
-            onLoadMore();
+            loadMoreRef.current();
             break;
           }
         }
@@ -116,7 +126,7 @@ export function NotificationPanelBody({
     );
     io.observe(el);
     return () => io.disconnect();
-  }, [hasNextPage, isFetchingNextPage, onLoadMore]);
+  }, [hasNextPage, isFetchingNextPage]);
 
   return (
     <div
