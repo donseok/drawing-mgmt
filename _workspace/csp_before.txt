@@ -1,6 +1,0 @@
-# CSP — before R-CSP (main feb6822, apps/web/middleware.ts:127-138)
-#
-# Static string, identical for every request. `'unsafe-inline'` +
-# `'unsafe-eval'` in script-src weaken the XSS first line of defence.
-
-default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'; worker-src 'self' blob:; frame-ancestors 'none'; base-uri 'self'; form-action 'self'
