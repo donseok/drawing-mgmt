@@ -430,3 +430,50 @@ export const PdfExtractResultSchema = z.object({
 });
 
 export type PdfExtractResult = z.infer<typeof PdfExtractResultSchema>;
+
+// ─────────────────────────────────────────────────────────────
+// R-AUDIT-TREND — Security audit snapshot queue (FIND-016 mitigated).
+//
+// Persists `pnpm audit --json` results to a SecurityAuditSnapshot row on
+// a daily schedule so the admin security page can plot trend over time.
+// The legacy `audit/route.ts` keeps a 15-min in-memory cache for the
+// "current state" card; this queue is the long-running baseline so an
+// instance restart doesn't lose history.
+//
+// Two job sources:
+//   - 'cron'   : daily repeatable enrolled by the worker when
+//                SECURITY_AUDIT_CRON_ENABLED=1 (default 02:30 UTC,
+//                separated from the backup cron's 02:00 to avoid IO
+//                competition on a single-host box).
+//   - 'manual' : SUPER_ADMIN-triggered via
+//                POST /api/v1/admin/security/audit/snapshot. Writes a
+//                row tagged source='manual' so the trend chart can
+//                filter it out as noise.
+//
+// License posture: the worker's `pnpm audit` runs as a child_process —
+// no JS bindings, no GPL transitive imports.
+// ─────────────────────────────────────────────────────────────
+
+export const SECURITY_AUDIT_QUEUE_NAME = 'security-audit';
+
+export const SecurityAuditJobPayloadSchema = z.object({
+  /**
+   * Origin of the snapshot. 'cron' = automatic daily repeatable, 'manual'
+   * = admin-triggered ad-hoc run. Stored on the row's `source` column so
+   * trend queries can filter by either.
+   */
+  source: z.enum(['cron', 'manual']).default('cron'),
+});
+export type SecurityAuditJobPayload = z.infer<
+  typeof SecurityAuditJobPayloadSchema
+>;
+
+export const SecurityAuditResultSchema = z.object({
+  /** Snapshot row id (cuid) — the worker returns this so callers can lookup. */
+  snapshotId: z.string(),
+  /** Sum of critical+high+moderate+low. Persisted on the row's `total` col. */
+  total: z.number().int().nonnegative(),
+  /** Subprocess wallclock — useful for spotting registry slowdown trends. */
+  durationMs: z.number().int().nonnegative(),
+});
+export type SecurityAuditResult = z.infer<typeof SecurityAuditResultSchema>;

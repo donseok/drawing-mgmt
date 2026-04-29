@@ -12,7 +12,8 @@
     "./permissions": "./src/permissions.ts",
     "./conversion": "./src/conversion.ts",
     "./chat": "./src/chat.ts",
-    "./storage": "./src/storage.ts"
+    "./storage": "./src/storage.ts",
+    "./pnpm-audit-parser": "./src/pnpm-audit-parser.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
