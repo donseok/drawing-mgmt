@@ -23,6 +23,11 @@ import type { FolderNode } from '@/components/folder-tree/types';
 import { ObjectTable, type ObjectRow, type ObjectState } from '@/components/object-list/ObjectTable';
 import { PrintDialog } from '@/components/print/PrintDialog';
 import {
+  BulkPdfMergeDialog,
+  type BulkPdfMergeFormValues,
+  type BulkPdfMergeCompletion,
+} from '@/components/print/BulkPdfMergeDialog';
+import {
   ObjectTableToolbar,
   type FilterFormValue,
 } from '@/components/object-list/ObjectTableToolbar';
@@ -1021,6 +1026,102 @@ export default function SearchPage() {
     }
   }, [selectedIds, findRow]);
 
+  // R-PDF-MERGE (백로그 P-2) — bulk PDF merge dialog. Mirrors the ZIP path
+  // structurally (selection capture + grouped per-row failure toast for
+  // pre-validation rejects) but routes through a single BE worker that
+  // returns one merged PDF per job.
+  const [bulkPdfMergeOpen, setBulkPdfMergeOpen] = React.useState(false);
+  const [bulkPdfMergeIds, setBulkPdfMergeIds] = React.useState<string[]>([]);
+
+  const handleBulkPdfMerge = React.useCallback(() => {
+    if (selectedIds.length === 0) return;
+    if (selectedIds.length > 50) {
+      // Match the BE cap from contract §2.2. Telling the user up-front skips
+      // a round-trip just to be told "1..50건이어야 합니다."
+      toast.warning('PDF 병합은 한 번에 최대 50건까지 가능합니다.', {
+        description: `현재 ${selectedIds.length}건이 선택되어 있습니다. 50건 이하로 줄여 주세요.`,
+      });
+      return;
+    }
+    // Snapshot the ids at open time — the dialog's polling phase shouldn't
+    // be affected by the user toggling row checkboxes underneath.
+    setBulkPdfMergeIds(selectedIds);
+    setBulkPdfMergeOpen(true);
+  }, [selectedIds]);
+
+  const handleBulkPdfMergeSubmit = React.useCallback(
+    async (
+      form: BulkPdfMergeFormValues,
+    ): Promise<{ jobId: string; objectCount: number } | null> => {
+      try {
+        const res = await api.post<{
+          jobId: string;
+          status: 'QUEUED' | 'PENDING' | 'PROCESSING' | 'DONE' | 'FAILED';
+          objectCount: number;
+        }>('/api/v1/objects/bulk-pdf-merge', {
+          ids: bulkPdfMergeIds,
+          ctb: form.ctb,
+          pageSize: form.pageSize,
+        });
+        return { jobId: res.jobId, objectCount: res.objectCount };
+      } catch (err) {
+        if (err instanceof ApiError && err.code === 'E_VALIDATION') {
+          // Pre-validation rejection. Surface grouped per-row failures here
+          // (R4b/R3c-3 pattern) so the user knows *why* their selection was
+          // bounced. The dialog closes (returns null) so they can re-select.
+          const details = err.details as
+            | { failures?: { id: string; code: string; message: string }[] }
+            | undefined;
+          const failures = details?.failures ?? [];
+          if (failures.length > 0) {
+            const description = failures
+              .map((f) => {
+                const row = findRow(f.id);
+                const num = row?.number ?? f.id;
+                return `${num}: ${friendlyMergeFailure(f.code, f.message)}`;
+              })
+              .join('\n');
+            toast.error('PDF 병합이 불가한 자료가 있습니다.', {
+              description,
+            });
+            return null;
+          }
+        }
+        // Re-throw so the dialog's queueing branch catches it and shows the
+        // failed state with errorMessage.
+        throw err;
+      }
+    },
+    [bulkPdfMergeIds, findRow],
+  );
+
+  const handleBulkPdfMergeComplete = React.useCallback(
+    (summary: BulkPdfMergeCompletion) => {
+      // status=DONE arrived. The dialog already triggered the download +
+      // closed itself. Toast the partial-failure breakdown when relevant so
+      // the user knows which rows didn't make it into the merged PDF.
+      const { successCount, failureCount, failures } = summary;
+      if (failureCount === 0) {
+        toast.success(
+          `${successCount}건을 단일 PDF로 다운로드했습니다.`,
+        );
+        return;
+      }
+      const description = failures
+        .map((f) => {
+          const row = findRow(f.objectId);
+          const num = row?.number ?? f.objectId;
+          return `${num}: ${f.reason}`;
+        })
+        .join('\n');
+      toast.error(
+        `${successCount}건 성공, ${failureCount}건 실패`,
+        { description },
+      );
+    },
+    [findRow],
+  );
+
   // R17 — bulk move/copy. The toolbar placeholders are now real: open the
   // move dialog with the current selection, route to /bulk-move or /bulk-copy
   // depending on mode, and surface partial failures the same grouped-toast
@@ -1299,6 +1400,7 @@ export default function SearchPage() {
           // R3c-3 #5 — bulk actions wired to the selection.
           onDelete={handleBulkDelete}
           onDownload={handleBulkDownload}
+          onBulkPdfMerge={handleBulkPdfMerge}
           onMove={handleBulkMoveOpen}
           onCopy={handleBulkCopyOpen}
           onSubmitApproval={handleBulkSubmitApproval}
@@ -1441,6 +1543,21 @@ export default function SearchPage() {
           contextLabel={`R${printTarget.revision} v${printTarget.version}`}
         />
       ) : null}
+
+      {/* R-PDF-MERGE (백로그 P-2) — selection-driven bulk PDF merge dialog.
+          The dialog owns its own polling lifecycle; we just hand it the
+          selection snapshot, the mutation closure, and a completion callback
+          that toasts partial-failure breakdowns. */}
+      <BulkPdfMergeDialog
+        open={bulkPdfMergeOpen}
+        onOpenChange={(open) => {
+          setBulkPdfMergeOpen(open);
+          if (!open) setBulkPdfMergeIds([]);
+        }}
+        selectedIds={bulkPdfMergeIds}
+        onSubmit={handleBulkPdfMergeSubmit}
+        onComplete={handleBulkPdfMergeComplete}
+      />
     </div>
   );
 }
@@ -1480,6 +1597,27 @@ function friendlyDeleteFailure(err: ApiError): string {
       return '유효성 오류';
     default:
       return err.message ?? '오류';
+  }
+}
+
+// R-PDF-MERGE — pre-validation envelope from POST /objects/bulk-pdf-merge
+// surfaces failures[] with `code` + `message`. We map the contract's known
+// codes (§2.2) to short Korean strings so a 12-row toast stays readable;
+// unknown codes fall through to the BE's message verbatim.
+function friendlyMergeFailure(code: string, message: string): string {
+  switch (code) {
+    case 'E_FORBIDDEN':
+      return 'PRINT 권한이 없습니다';
+    case 'E_NOT_FOUND':
+      return '마스터 첨부가 없습니다';
+    case 'E_INFECTED':
+      return '감염 의심 첨부입니다';
+    case 'E_UNSUPPORTED':
+      return '지원하지 않는 파일 형식입니다';
+    case 'E_DXF_CACHE_MISSING':
+      return 'DXF 변환 캐시가 없습니다 — 자료 상세 진입 후 재시도해주세요';
+    default:
+      return message || '오류';
   }
 }
 

@@ -15,6 +15,7 @@ import {
   Layers3,
   GitCompare,
   Archive,
+  FileText,
   X,
 } from 'lucide-react';
 import { toast } from 'sonner';
@@ -55,6 +56,12 @@ interface ObjectTableToolbarProps {
   onMove?: () => void;
   onCopy?: () => void;
   onDownload?: () => void;
+  /**
+   * R-PDF-MERGE (백로그 P-2) — open the BulkPdfMergeDialog with the current
+   * selection. Distinct from `onDownload` (ZIP bundle); this builds a single
+   * merged PDF on the worker and streams it back as one download.
+   */
+  onBulkPdfMerge?: () => void;
   /**
    * Bulk delete. Toolbar guards this behind a ConfirmDialog (DESIGN §9.3) — caller
    * just performs the actual mutation and may throw on failure for a toast.
@@ -99,6 +106,7 @@ export function ObjectTableToolbar({
   onMove,
   onCopy,
   onDownload,
+  onBulkPdfMerge,
   onDelete,
   onSubmitApproval,
   onTransmittal,
@@ -341,6 +349,7 @@ export function ObjectTableToolbar({
           <ToolbarAction icon={<Copy className="h-3.5 w-3.5" />} label="복사" onClick={onCopy} />
           <ToolbarAction icon={<GitCompare className="h-3.5 w-3.5" />} label="리비전 비교" />
           <ToolbarAction icon={<Download className="h-3.5 w-3.5" />} label="다운로드" onClick={onDownload} />
+          <ToolbarAction icon={<FileText className="h-3.5 w-3.5" />} label="PDF 병합" onClick={onBulkPdfMerge} />
           <ToolbarAction icon={<Send className="h-3.5 w-3.5" />} label="결재상신" onClick={onSubmitApproval} />
           <ToolbarAction icon={<Archive className="h-3.5 w-3.5" />} label="트랜스미털" onClick={onTransmittal} />
           <ToolbarAction
