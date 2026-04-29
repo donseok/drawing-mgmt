@@ -20,6 +20,7 @@
     "db:studio": "prisma studio",
     "ingest": "tsx scripts/ingest-dwg.ts",
     "seed:previews": "tsx scripts/generate-seed-previews.ts",
+    "chat:index": "tsx scripts/chat-build-corpus.ts",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:integration": "VITEST_INTEGRATION=1 vitest run",
