@@ -44,7 +44,9 @@ import { startScanWorker } from './scan-worker.js';
 import { startSmsWorker } from './sms-worker.js';
 import { startKakaoWorker } from './kakao-worker.js';
 import { startPdfExtractWorker } from './pdf-extract-worker.js';
+import { startPdfMergeWorker } from './pdf-merge-worker.js';
 import { startSecurityAuditWorker } from './security-audit-worker.js';
+import { PDF_MERGE_QUEUE_NAME } from '@drawing-mgmt/shared/conversion';
 import { getStorage, type Storage } from './storage.js';
 
 const log = pino({
@@ -816,11 +818,29 @@ const securityAuditWorkerHandle = startSecurityAuditWorker({
   log,
 });
 
+// ─────────────────────────────────────────────────────────────────────────
+// R-PDF-MERGE — pdf-merge queue worker.
+//
+// Backlog P-2 As-Is parity. Bulk merge of N attachments (≤50) into a
+// single PDF the user downloads from the search results toolbar. Reuses
+// the ConversionJob row (metadata.kind='PDF_MERGE') for status tracking
+// so the same admin/status surface works without a second model. Uses
+// pdf-lib (MIT) only — GPL/AGPL direct link 0.
+// ─────────────────────────────────────────────────────────────────────────
+
+const pdfMergeWorkerHandle = startPdfMergeWorker({
+  connection,
+  prisma,
+  log,
+  storage,
+});
+
 const shutdown = async (sig: string) => {
   log.info({ sig }, 'worker shutting down');
   await Promise.all([
     worker.close(),
     pdfPrintWorker.close(),
+    pdfMergeWorkerHandle.close(),
     backupWorkerHandle.close(),
     scanWorkerHandle.close(),
     // Optional channel workers — disabled when their ENABLED env is off.
@@ -846,6 +866,7 @@ log.info(
     queues: [
       CONVERSION_QUEUE_NAME,
       PDF_PRINT_QUEUE_NAME,
+      PDF_MERGE_QUEUE_NAME,
       'backup',
       'virus-scan',
       ...(mailWorkerHandle ? ['mail'] : []),
