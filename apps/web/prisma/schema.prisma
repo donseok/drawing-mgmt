@@ -127,6 +127,12 @@ model User {
   // file is cleaned up by the cleanup worker / cancel endpoint, but a row
   // without an owner would just leak).
   uploads            Upload[]
+  // R-MARKUP / V-6 — measurement markups owned by this user. Cascade-delete
+  // mirrors the simplification chosen for V-6 step 1: wiping a user also
+  // wipes their saved markups (including ones they had shared with the team).
+  // A future revision could flip ownerId to nullable + "삭제된 사용자" label
+  // to preserve shared markups; out of scope for this round.
+  markups            Markup[]
 
   @@index([organizationId])
   @@index([role])
@@ -425,6 +431,10 @@ model Attachment {
 
   version        Version         @relation(fields: [versionId], references: [id], onDelete: Cascade)
   conversionJobs ConversionJob[]
+  // R-MARKUP / V-6 — saved measurement markups for this attachment.
+  // Cascade-delete so detaching/removing the attachment wipes its markups
+  // (no orphan rows pointing at a vanished file).
+  markups        Markup[]
 
   @@index([versionId])
   @@index([conversionStatus])
@@ -810,6 +820,51 @@ model SecurityAuditSnapshot {
 
   @@index([takenAt])
   @@index([source, takenAt])
+}
+
+// ─────────────────────────────────────────────────────────────
+// MARKUP (측정 마크업) — R-MARKUP / V-6
+// ─────────────────────────────────────────────────────────────
+//
+// Persisted measurement markups for an attachment. Until V-6 step 1 the
+// viewer kept measurement state in memory only — closing the page wiped
+// every annotation. This model adds a save/share/load flow:
+//
+//   - One row per saved markup. `payload` is the full set of measurements
+//     (Measurement[]) plus a small envelope (`schemaVersion`, `mode`,
+//     `unitLabel`) so the FE can replay them on load without ambiguity.
+//   - `isShared = false` (default) → the markup is private to ownerId.
+//     `isShared = true` → any user with VIEW on the parent attachment can
+//     see/load it. Editing/deleting still requires owner OR admin.
+//   - The shape of `payload` is validated by `MarkupPayloadSchema` in
+//     `@drawing-mgmt/shared/markup`; size cap (≤ 256KB serialized) plus
+//     measurements ≤ 500 + points ≤ 200 are enforced server-side.
+//   - INFECTED attachments are blocked at every endpoint via
+//     `blockIfInfected`, identical to the download/preview/print path.
+//
+// Free-hand drawing (line/rect/freehand strokes) is NOT covered by this
+// model — that is deferred to the R-MARKUP-DRAW round. Adding it later
+// will likely extend `payload` (still JSONB, no schema break) rather
+// than introduce a new table.
+model Markup {
+  id           String   @id @default(cuid())
+  attachmentId String
+  ownerId      String
+  // Display name. 1..200 chars, must not be empty (validated by zod).
+  name         String
+  // MarkupPayload — see packages/shared/src/markup.ts. Must include
+  // schemaVersion=1, mode ('pdf'|'dxf'), unitLabel, and measurements[].
+  payload      Json
+  isShared     Boolean  @default(false)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  attachment Attachment @relation(fields: [attachmentId], references: [id], onDelete: Cascade)
+  owner      User       @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+
+  @@index([attachmentId, isShared])
+  @@index([attachmentId, ownerId])
+  @@index([ownerId])
 }
 
 // ─────────────────────────────────────────────────────────────

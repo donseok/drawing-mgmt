@@ -922,3 +922,284 @@ registry.registerPath({
     },
   },
 });
+
+// ---------------------------------------------------------------------------
+// R-MARKUP / V-6 — measurement markups (save / share / list / load)
+// ---------------------------------------------------------------------------
+//
+// The shapes here mirror `packages/shared/src/markup.ts` exactly. We
+// re-declare them in zod-for-openapi rather than importing so the
+// route's runtime path stays decoupled from doc generation (same
+// convention as the rest of this file).
+
+const MarkupMode = z.enum(['pdf', 'dxf']);
+const MarkupSpace = z.enum(['pdf-page', 'dxf-world']);
+const MarkupKind = z.enum(['distance', 'polyline', 'area']);
+
+const MarkupWorldPoint = registerSchema(
+  'MarkupWorldPoint',
+  z.object({
+    x: z.number(),
+    y: z.number(),
+    space: MarkupSpace,
+    page: z.number().int().positive().optional(),
+  }),
+);
+
+const MarkupMeasurement = registerSchema(
+  'MarkupMeasurement',
+  z.object({
+    id: z.string().min(1).max(64),
+    kind: MarkupKind,
+    points: z.array(MarkupWorldPoint).min(2).max(200),
+    value: z.number(),
+    perimeter: z.number().optional(),
+    unitLabel: z.string().min(1).max(16),
+    createdAt: z.number().int(),
+  }),
+);
+
+const MarkupPayload = registerSchema(
+  'MarkupPayload',
+  z.object({
+    schemaVersion: z.literal(1),
+    mode: MarkupMode,
+    unitLabel: z.string().min(1).max(16),
+    measurements: z.array(MarkupMeasurement).max(500),
+  }),
+);
+
+const MarkupRow = registerSchema(
+  'MarkupRow',
+  z.object({
+    id: z.string(),
+    attachmentId: z.string(),
+    ownerId: z.string(),
+    ownerName: z.string(),
+    name: z.string().min(1).max(200),
+    isShared: z.boolean(),
+    measurementCount: z.number().int().nonnegative(),
+    mode: MarkupMode,
+    createdAt: z.string(),
+    updatedAt: z.string(),
+  }),
+);
+
+const MarkupDetail = registerSchema(
+  'MarkupDetail',
+  MarkupRow.extend({ payload: MarkupPayload }),
+);
+
+const MarkupListResponse = registerSchema(
+  'MarkupListResponse',
+  z.object({
+    data: z.object({
+      attachmentId: z.string(),
+      mine: z.array(MarkupRow),
+      shared: z.array(MarkupRow),
+    }),
+  }),
+);
+
+const MarkupCreateRequest = registerSchema(
+  'MarkupCreateRequest',
+  z.object({
+    name: z.string().min(1).max(200),
+    isShared: z.boolean().default(false),
+    payload: MarkupPayload,
+  }),
+);
+
+const MarkupUpdateRequest = registerSchema(
+  'MarkupUpdateRequest',
+  z
+    .object({
+      name: z.string().min(1).max(200).optional(),
+      isShared: z.boolean().optional(),
+      payload: MarkupPayload.optional(),
+    })
+    .openapi({
+      description:
+        '모든 필드 옵션이지만 최소 1개 제공 필수 (name / isShared / payload)',
+    }),
+);
+
+const MarkupDetailResponse = registerSchema(
+  'MarkupDetailResponse',
+  z.object({ data: MarkupDetail }),
+);
+
+const MarkupDeleteResponse = registerSchema(
+  'MarkupDeleteResponse',
+  z.object({ data: z.object({ deleted: z.literal(true) }) }),
+);
+
+registry.registerPath({
+  method: 'get',
+  path: '/api/v1/attachments/{id}/markups',
+  tags: ['Markup'],
+  summary: '저장된 마크업 목록',
+  description:
+    'R-MARKUP / V-6 — 첨부에 저장된 측정 마크업 목록. 본인 소유 + 공유된 ' +
+    'row를 `mine` / `shared` 두 배열로 분리해 반환. payload는 list 응답에 ' +
+    '포함하지 않고 measurementCount/mode 같은 메타만 노출. 첨부 VIEW 권한 ' +
+    '필요, INFECTED 첨부는 차단.',
+  security: [{ bearerAuth: [] }],
+  request: {
+    params: z.object({
+      id: z.string().openapi({ description: 'Attachment id' }),
+    }),
+  },
+  responses: {
+    200: {
+      description: '목록 응답',
+      content: { 'application/json': { schema: MarkupListResponse } },
+    },
+    401: {
+      description: '인증 필요',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+    403: {
+      description: 'VIEW 권한 없음 또는 INFECTED 차단',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+    404: {
+      description: '첨부 없음',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+  },
+});
+
+registry.registerPath({
+  method: 'post',
+  path: '/api/v1/attachments/{id}/markups',
+  tags: ['Markup'],
+  summary: '마크업 저장',
+  description:
+    'R-MARKUP / V-6 — 측정 세트를 저장. 본인 소유로 생성되며 isShared 토글로 ' +
+    '공유 여부를 정함. payload는 schemaVersion=1 + mode + unitLabel + ' +
+    'measurements[]. 측정 수 ≤500 / 점 수 ≤200 / 직렬화 후 ≤256KB. ' +
+    '첨부 VIEW 권한 필요, INFECTED 차단, CSRF/Rate Limit 적용.',
+  security: [{ bearerAuth: [] }],
+  request: {
+    params: z.object({
+      id: z.string().openapi({ description: 'Attachment id' }),
+    }),
+    body: {
+      content: {
+        'application/json': { schema: MarkupCreateRequest },
+      },
+    },
+  },
+  responses: {
+    200: {
+      description: '저장된 마크업 (payload 포함)',
+      content: { 'application/json': { schema: MarkupDetailResponse } },
+    },
+    400: {
+      description: '검증 실패 (이름 빈 값, 측정 수/크기 초과 등)',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+    401: {
+      description: '인증 필요',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+    403: {
+      description: 'VIEW 권한 없음 또는 INFECTED 차단',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+    404: {
+      description: '첨부 없음',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+    429: {
+      description: '레이트 리밋 초과',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+  },
+});
+
+registry.registerPath({
+  method: 'patch',
+  path: '/api/v1/markups/{markupId}',
+  tags: ['Markup'],
+  summary: '마크업 갱신',
+  description:
+    'R-MARKUP / V-6 — name / isShared / payload 일부 또는 전부를 갱신. ' +
+    '본인 또는 admin/super_admin만 가능. 모든 필드 옵션이지만 최소 1개 ' +
+    '필수. payload 갱신 시 zod 캡 + 256KB 가드 동일 적용.',
+  security: [{ bearerAuth: [] }],
+  request: {
+    params: z.object({
+      markupId: z.string().openapi({ description: 'Markup id' }),
+    }),
+    body: {
+      content: {
+        'application/json': { schema: MarkupUpdateRequest },
+      },
+    },
+  },
+  responses: {
+    200: {
+      description: '갱신된 마크업 (payload 포함)',
+      content: { 'application/json': { schema: MarkupDetailResponse } },
+    },
+    400: {
+      description: '검증 실패 / 빈 body',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+    401: {
+      description: '인증 필요',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+    403: {
+      description: '본인 또는 admin만 가능 / VIEW 권한 없음 / INFECTED',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+    404: {
+      description: '마크업 없음',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+    429: {
+      description: '레이트 리밋 초과',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+  },
+});
+
+registry.registerPath({
+  method: 'delete',
+  path: '/api/v1/markups/{markupId}',
+  tags: ['Markup'],
+  summary: '마크업 삭제',
+  description:
+    'R-MARKUP / V-6 — 마크업 1건 삭제. 본인 또는 admin/super_admin만 가능.',
+  security: [{ bearerAuth: [] }],
+  request: {
+    params: z.object({
+      markupId: z.string().openapi({ description: 'Markup id' }),
+    }),
+  },
+  responses: {
+    200: {
+      description: '삭제 완료',
+      content: { 'application/json': { schema: MarkupDeleteResponse } },
+    },
+    401: {
+      description: '인증 필요',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+    403: {
+      description: '본인 또는 admin만 가능',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+    404: {
+      description: '마크업 없음',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+    429: {
+      description: '레이트 리밋 초과',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+  },
+});
