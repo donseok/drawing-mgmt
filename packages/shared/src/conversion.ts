@@ -477,3 +477,76 @@ export const SecurityAuditResultSchema = z.object({
   durationMs: z.number().int().nonnegative(),
 });
 export type SecurityAuditResult = z.infer<typeof SecurityAuditResultSchema>;
+
+// ─────────────────────────────────────────────────────────────
+// R-PDF-MERGE — bulk PDF merge queue.
+//
+// Backlog P-2 As-Is parity: search results "PDF 병합" — let users select N
+// drawings (≤50) and download a single merged PDF.
+//
+// Reuses the existing `ConversionJob` row (with `metadata.kind='PDF_MERGE'`)
+// for status tracking — no schema change. Anchor `attachmentId` is the first
+// row's master attachment so the FK constraint stays satisfied.
+//
+// Pipeline:
+//   1) Backend POST /api/v1/objects/bulk-pdf-merge
+//        - per-row pre-validate (PRINT perm + INFECTED + mimeType + DWG-cache)
+//        - one fail → 400 envelope with failures[]
+//        - all OK → ConversionJob row + push to `pdf-merge` queue
+//   2) Worker (apps/worker/src/pdf-merge-worker.ts)
+//        - per-attachment 30s cap
+//        - PDF: passthrough; DXF: generatePdfFromDxf; DWG: preview.dxf cache;
+//          JPG/PNG: pdf-lib embed → 1-page A4
+//        - pdf-lib copyPages → single PDFDocument → storage.put `<jobId>/merged.pdf`
+//        - failures bubble into metadata.failures[] (partial-success allowed;
+//          all-fail → status=FAILED)
+//   3) Frontend polls GET /api/v1/print-jobs/{jobId}/status until DONE,
+//      then GET /api/v1/print-jobs/{jobId}/merged.pdf for the download.
+//
+// License posture: pdf-lib (MIT) only. GPL/AGPL direct link 0 (LibreDWG
+// stays subprocess-isolated; we read its already-produced preview.dxf via
+// the storage abstraction).
+// ─────────────────────────────────────────────────────────────
+
+export const PDF_MERGE_QUEUE_NAME = 'pdf-merge';
+
+export const PdfMergeJobPayloadSchema = z.object({
+  /**
+   * ConversionJob row id used as the anchor for status updates. Reused as
+   * the BullMQ job id so the worker can update by row id directly.
+   */
+  aggregateJobId: z.string().min(1),
+  /**
+   * Master attachment ids in selection order. The worker processes each
+   * sequentially under a per-attachment 30s cap and stitches the resulting
+   * PDFs in this order. Length 1..50 mirrors the route validator.
+   */
+  attachmentIds: z.array(z.string().min(1)).min(1).max(50),
+  /** Plot style — `mono` forces black/white, `color-a3` keeps ACI colors. */
+  ctb: z.enum(['mono', 'color-a3']),
+  /** Output page size for DXF→PDF + image-embed pages. */
+  pageSize: z.enum(['A4', 'A3']),
+});
+export type PdfMergeJobPayload = z.infer<typeof PdfMergeJobPayloadSchema>;
+
+/** Per-row failure surfaced in `metadata.failures[]` (worker side). */
+export const PdfMergeFailureSchema = z.object({
+  /** Object id whose attachment failed (matches the request id). */
+  objectId: z.string(),
+  /** Korean reason, ready to display in the FE failures toast. */
+  reason: z.string(),
+});
+export type PdfMergeFailure = z.infer<typeof PdfMergeFailureSchema>;
+
+export const PdfMergeResultSchema = z.object({
+  /** ConversionJob row id (= aggregateJobId). */
+  jobId: z.string(),
+  totalCount: z.number().int().nonnegative(),
+  successCount: z.number().int().nonnegative(),
+  failureCount: z.number().int().nonnegative(),
+  failures: z.array(PdfMergeFailureSchema),
+  /** Storage key of the merged PDF. Empty when every attachment failed. */
+  pdfPath: z.string().optional(),
+  durationMs: z.number().int().nonnegative().optional(),
+});
+export type PdfMergeResult = z.infer<typeof PdfMergeResultSchema>;

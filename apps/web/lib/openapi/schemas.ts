@@ -778,3 +778,147 @@ registry.registerPath({
     },
   },
 });
+
+// ---------------------------------------------------------------------------
+// R-PDF-MERGE — bulk PDF merge (P-2 As-Is parity)
+// ---------------------------------------------------------------------------
+
+const BulkPdfMergeRequest = registerSchema(
+  'BulkPdfMergeRequest',
+  z.object({
+    ids: z
+      .array(z.string().min(1))
+      .min(1)
+      .max(50)
+      .openapi({ description: '병합할 자료 id 1..50건' }),
+    ctb: z
+      .enum(['mono', 'color-a3'])
+      .optional()
+      .openapi({ description: '플롯 스타일 (default mono)' }),
+    pageSize: z
+      .enum(['A4', 'A3'])
+      .optional()
+      .openapi({ description: '출력 용지 크기 (default A4)' }),
+  }),
+);
+
+const BulkPdfMergeFailureRow = registerSchema(
+  'BulkPdfMergeFailureRow',
+  z.object({
+    id: z.string(),
+    code: z
+      .enum([
+        'E_NOT_FOUND',
+        'E_FORBIDDEN',
+        'E_INFECTED',
+        'E_UNSUPPORTED',
+        'E_DXF_CACHE_MISSING',
+      ])
+      .openapi({ description: '사전 검증 실패 사유' }),
+    message: z.string().openapi({ description: '한글 표시용 메시지' }),
+  }),
+);
+
+const BulkPdfMergeResponse = registerSchema(
+  'BulkPdfMergeResponse',
+  z.object({
+    data: z.object({
+      jobId: z.string().openapi({ description: 'ConversionJob row id' }),
+      status: z.literal('QUEUED'),
+      objectCount: z.number().int().nonnegative(),
+    }),
+  }),
+);
+
+registry.registerPath({
+  method: 'post',
+  path: '/api/v1/objects/bulk-pdf-merge',
+  tags: ['Objects'],
+  summary: '다중 자료 PDF 병합',
+  description:
+    'R-PDF-MERGE — 검색 결과에서 1..50건 선택 후 단일 PDF로 병합. ' +
+    '권한/감염/mimeType 사전 검증을 통과하면 ConversionJob 행과 BullMQ ' +
+    '`pdf-merge` 잡이 등록되고, FE는 `/api/v1/print-jobs/{jobId}/status`로 ' +
+    '폴링 후 `/api/v1/print-jobs/{jobId}/merged.pdf`에서 합본을 다운로드한다. ' +
+    '한 row라도 사전 검증을 통과 못하면 모든 실패를 details.failures[]로 한 번에 반환.',
+  security: [{ bearerAuth: [] }],
+  request: {
+    body: {
+      content: {
+        'application/json': { schema: BulkPdfMergeRequest },
+      },
+    },
+  },
+  responses: {
+    200: {
+      description: '병합 작업 등록 성공',
+      content: { 'application/json': { schema: BulkPdfMergeResponse } },
+    },
+    400: {
+      description: '검증 실패 (failures 배열 포함)',
+      content: {
+        'application/json': {
+          schema: z.object({
+            error: z.object({
+              code: z.literal('E_VALIDATION'),
+              message: z.string(),
+              details: z.object({
+                failures: z.array(BulkPdfMergeFailureRow),
+              }),
+            }),
+          }),
+        },
+      },
+    },
+    401: {
+      description: '인증 필요',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+    429: {
+      description: '레이트 리밋 초과',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+    500: {
+      description: '큐 푸시 실패',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+  },
+});
+
+registry.registerPath({
+  method: 'get',
+  path: '/api/v1/print-jobs/{jobId}/merged.pdf',
+  tags: ['Objects'],
+  summary: '병합 PDF 다운로드',
+  description:
+    'R-PDF-MERGE — `metadata.kind=PDF_MERGE`이면서 `status=DONE`인 ' +
+    'ConversionJob의 합본 PDF를 스트리밍 다운로드. requestedBy 또는 ' +
+    'admin/super_admin만 접근 가능. Content-Disposition은 ' +
+    '`drawings-YYYY-MM-DD.pdf`.',
+  security: [{ bearerAuth: [] }],
+  request: {
+    params: z.object({
+      jobId: z.string().openapi({ description: 'ConversionJob row id' }),
+    }),
+  },
+  responses: {
+    200: {
+      description: 'PDF 바이트 스트림',
+      content: {
+        'application/pdf': { schema: z.string().openapi({ format: 'binary' }) },
+      },
+    },
+    401: {
+      description: '인증 필요',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+    403: {
+      description: '본인 또는 admin만 접근 가능',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+    404: {
+      description: '잡 없음 / 아직 준비 안 됨 / 전체 실패',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+  },
+});
