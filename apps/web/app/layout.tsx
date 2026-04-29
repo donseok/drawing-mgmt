@@ -23,7 +23,12 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   // to next-themes so its inline bootstrap script carries `nonce={...}` that
   // matches the CSP `'nonce-...'` token. Calling `headers()` makes this
   // layout dynamic, but it already is via `auth()` callsites downstream.
-  const nonce = headers().get('x-nonce') ?? undefined;
+  // BUG-15 — coerce empty string to undefined so next-themes either gets a
+  // real nonce (CSP enabled) or omits the attribute entirely. Mixing in an
+  // empty string was the source of the "Server: \"\" Client: <token>"
+  // hydration mismatch the QA report flagged.
+  const nonceHeader = headers().get('x-nonce');
+  const nonce = nonceHeader && nonceHeader.length > 0 ? nonceHeader : undefined;
   return (
     <html lang="ko" suppressHydrationWarning>
       <head>

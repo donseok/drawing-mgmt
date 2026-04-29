@@ -134,6 +134,13 @@ export function NewObjectDialog({
   folderId,
   onSubmit,
 }: NewObjectDialogProps): JSX.Element {
+  // Stabilize the initial form values across renders — RHF reads
+  // defaultValues by reference, and the open→close lifecycle should not
+  // re-mount the form just because the parent passed a fresh inline object.
+  const initialValuesRef = React.useRef<FormShape>({
+    ...DEFAULTS,
+    folderId: folderId ?? '',
+  });
   const {
     register,
     handleSubmit,
@@ -142,14 +149,19 @@ export function NewObjectDialog({
     formState: { errors, isSubmitting },
   } = useForm<FormShape>({
     resolver: zodResolver(schema),
-    defaultValues: { ...DEFAULTS, folderId: folderId ?? '' },
+    defaultValues: initialValuesRef.current,
   });
 
-  // Reset when dialog opens with a (possibly new) default folder.
+  // Reset only on the open transition (false→true); guarding by a ref keeps
+  // the effect from firing on render churn (e.g. parent re-render with the
+  // same `open=true`) which previously chained into Radix Dialog's presence
+  // logic and produced "Maximum update depth exceeded".
+  const wasOpenRef = React.useRef(false);
   React.useEffect(() => {
-    if (open) {
+    if (open && !wasOpenRef.current) {
       reset({ ...DEFAULTS, folderId: folderId ?? '' });
     }
+    wasOpenRef.current = open;
   }, [open, folderId, reset]);
 
   const submit = handleSubmit(async (raw) => {

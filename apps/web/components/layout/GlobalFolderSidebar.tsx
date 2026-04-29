@@ -102,11 +102,16 @@ export function GlobalFolderSidebar() {
   // in sync with the search page without coupling the two via store state.
   const selectedFolderId = searchParams?.get('folder') ?? undefined;
 
+  // BUG-16 — folder tree should not flash on every page transition. Keeping
+  // the data fresh for 5 min and the cache around for 30 min lets navigation
+  // between /search, /approval, /workspace render the sidebar instantly from
+  // cache instead of dipping back through `isPending`.
   const foldersQuery = useQuery<ServerFolderNode[], ApiError>({
     queryKey: queryKeys.folders.tree(),
     queryFn: () => api.get<ServerFolderNode[]>('/api/v1/folders'),
-    staleTime: 60_000,
-    enabled: open, // don't fetch when collapsed — saves the round-trip
+    staleTime: 5 * 60_000,
+    gcTime: 30 * 60_000,
+    enabled: open,
   });
 
   const pinsQuery = useQuery<{ items: PinFolderItem[] }, ApiError>({
@@ -115,7 +120,8 @@ export function GlobalFolderSidebar() {
       api.get<{ items: PinFolderItem[] }>('/api/v1/me/pins', {
         query: { type: 'folder' },
       }),
-    staleTime: 60_000,
+    staleTime: 5 * 60_000,
+    gcTime: 30 * 60_000,
     enabled: open,
   });
 

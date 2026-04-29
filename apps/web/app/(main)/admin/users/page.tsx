@@ -438,12 +438,15 @@ export default function UsersAdminPage(): JSX.Element {
         </div>
 
         <div className="flex items-start justify-between gap-4 border-b border-border px-6 py-5">
-          <div>
+          <div className="min-w-0">
             <div className="app-kicker">Admin Console</div>
             <h1 className="mt-1 text-2xl font-semibold text-fg">사용자</h1>
             <p className="mt-1 text-sm text-fg-muted">계정·역할·서명 관리</p>
           </div>
-          <Button onClick={() => setCreateOpen(true)}>
+          <Button
+            onClick={() => setCreateOpen(true)}
+            className="shrink-0 whitespace-nowrap"
+          >
             <Plus className="h-4 w-4" />
             사용자 추가
           </Button>

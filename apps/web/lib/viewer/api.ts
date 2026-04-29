@@ -44,8 +44,21 @@ export async function previewExists(
 }
 
 /**
- * Fetch attachment metadata. Falls back to a dummy stub if the server returns
- * 404 (so the viewer can still render the title bar in dev).
+ * BUG-04 — explicit opt-in for the dev fixture fallback. Without this guard
+ * any production user who lands on `/viewer/<unknown-id>` would see the
+ * synthetic "CGL-DEV-2026-00001 / 샘플 도면" payload and could misread it as
+ * a real document.
+ *
+ * Set `NEXT_PUBLIC_USE_FIXTURES=1` in the dev shell to re-enable.
+ */
+export function fixturesEnabled(): boolean {
+  return process.env.NEXT_PUBLIC_USE_FIXTURES === '1';
+}
+
+/**
+ * Fetch attachment metadata. Falls back to a dummy stub only when the
+ * `NEXT_PUBLIC_USE_FIXTURES` flag is on; otherwise a 404 propagates so the
+ * viewer can render a real "not found" state.
  */
 export async function fetchAttachmentMeta(
   attachmentId: string,
@@ -58,9 +71,17 @@ export async function fetchAttachmentMeta(
     return (await res.json()) as AttachmentMeta;
   }
   if (res.status === 404) {
-    return makeFallbackMeta(attachmentId);
+    if (fixturesEnabled()) return makeFallbackMeta(attachmentId);
+    throw new AttachmentNotFoundError(attachmentId);
   }
   throw new Error(`Failed to load attachment meta (${res.status})`);
+}
+
+export class AttachmentNotFoundError extends Error {
+  constructor(public readonly attachmentId: string) {
+    super(`Attachment ${attachmentId} not found`);
+    this.name = 'AttachmentNotFoundError';
+  }
 }
 
 /** Synthetic metadata for when the API has nothing for this id (dev mode). */

@@ -388,7 +388,7 @@ export default function SearchPage() {
     ],
   );
 
-  const { data } = useQuery({
+  const { data, isPending: isListPending } = useQuery({
     queryKey: queryKeys.objects.list(listKeyParams),
     queryFn: () =>
       fetchSearchData({
@@ -607,6 +607,7 @@ export default function SearchPage() {
 
   const closeNewDialog = React.useCallback(() => {
     const sp = new URLSearchParams(searchParams?.toString() ?? '');
+    if (!sp.has('action')) return; // BUG-01 — no-op when already closed
     sp.delete('action');
     const qs = sp.toString();
     router.replace(qs ? `/search?${qs}` : '/search');
@@ -1342,11 +1343,11 @@ export default function SearchPage() {
             {/* R55 [QA-P0-1/P2-7] — `break-keep` keeps Korean phrases like
                 "자료 검색" / "검색 결과" from collapsing into one-character-per-line
                 when the column squeezes (e.g. while the sidebar is open at 800px). */}
-            <div className="min-w-0 break-keep">
-              <div className="app-kicker break-keep">Document Control Grid</div>
-              <h1 className="mt-1 break-keep text-xl font-semibold text-fg">자료 검색</h1>
+            <div className="min-w-0 flex-1 break-keep">
+              <div className="app-kicker break-keep truncate">Document Control Grid</div>
+              <h1 className="mt-1 break-keep truncate text-xl font-semibold text-fg">자료 검색</h1>
             </div>
-            <div className="hidden items-center gap-2 lg:flex">
+            <div className="hidden shrink-0 items-center gap-2 lg:flex">
               <Metric icon={<FolderOpen className="h-4 w-4" />} label="현재 폴더" value={selectedFolder?.name ?? '전체'} />
               <Metric icon={<Layers3 className="h-4 w-4" />} label="검색 결과" value={`${filtered.length.toLocaleString()}건`} />
               <Link href="/search?action=new" className="app-action-button-primary h-9">
@@ -1424,6 +1425,7 @@ export default function SearchPage() {
               onReleaseRow={handleReleaseRow}
               onDeleteRow={handleDeleteRow}
               onPrintRow={handlePrintRow}
+              isLoading={isListPending}
             />
             {filtered.length > 0 && (
               <div className="flex items-center justify-center border-t border-border bg-bg-subtle py-3">

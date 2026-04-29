@@ -163,12 +163,10 @@ export function ObjectTableToolbar({
           <button
             type="button"
             aria-pressed="false"
-            onClick={() =>
-              toast('시트 세트 보기 준비 중', {
-                description: '도면 시트 세트 보기는 다음 라운드에서 제공됩니다.',
-              })
-            }
-            className="inline-flex items-center gap-1 rounded px-2 text-[12px] font-medium text-fg-muted hover:bg-bg-muted hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            disabled
+            aria-label="시트 세트 보기 (준비 중)"
+            title="시트 세트 보기는 다음 라운드에서 제공됩니다."
+            className="inline-flex items-center gap-1 rounded px-2 text-[12px] font-medium text-fg-subtle disabled:cursor-not-allowed disabled:opacity-60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           >
             시트 세트
           </button>
@@ -203,6 +201,9 @@ export function ObjectTableToolbar({
             align="start"
             sideOffset={6}
             className="w-80 space-y-3 p-3"
+            onEscapeKeyDown={() => setFilterOpen(false)}
+            onPointerDownOutside={() => setFilterOpen(false)}
+            onInteractOutside={() => setFilterOpen(false)}
           >
             <div className="flex items-center justify-between">
               <h3 className="text-sm font-semibold text-fg">필터 조건</h3>

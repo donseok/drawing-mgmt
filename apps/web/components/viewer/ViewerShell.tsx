@@ -22,7 +22,9 @@ import { useRouter } from 'next/navigation';
 import { ViewerStoreProvider, useViewerStore } from '@/lib/viewer/use-viewer-state';
 import { useViewerKeyboard } from '@/lib/viewer/keyboard';
 import {
+  AttachmentNotFoundError,
   fetchAttachmentMeta,
+  fixturesEnabled,
   previewExists,
   previewUrl,
 } from '@/lib/viewer/api';
@@ -112,15 +114,25 @@ function ViewerShellInner({ attachmentId }: ViewerShellProps) {
           pdf: pdfOk ? { url: previewUrl(attachmentId, 'pdf') } : null,
           dxf: dxfOk ? { url: previewUrl(attachmentId, 'dxf') } : null,
         };
-        // Dev fallback: if neither exists, embed sample fixtures so the viewer
-        // is testable. The flag (we always fall back) keeps dev cycles fast.
-        if (!next.pdf && !next.dxf) {
-          next.pdf = { data: getSamplePdfBytes() };
-          next.dxf = { text: SAMPLE_DXF_TEXT };
-        } else if (!next.pdf) {
-          next.pdf = { data: getSamplePdfBytes() };
-        } else if (!next.dxf) {
-          next.dxf = { text: SAMPLE_DXF_TEXT };
+        // BUG-04 — fixture fallback now opt-in via NEXT_PUBLIC_USE_FIXTURES=1.
+        // Without the flag a missing preview surfaces as an error instead of
+        // silently substituting the synthetic CGL-DEV sample.
+        if (fixturesEnabled()) {
+          if (!next.pdf && !next.dxf) {
+            next.pdf = { data: getSamplePdfBytes() };
+            next.dxf = { text: SAMPLE_DXF_TEXT };
+          } else if (!next.pdf) {
+            next.pdf = { data: getSamplePdfBytes() };
+          } else if (!next.dxf) {
+            next.dxf = { text: SAMPLE_DXF_TEXT };
+          }
+        } else if (!next.pdf && !next.dxf) {
+          if (cancelled) return;
+          setError({
+            message: '미리보기가 아직 생성되지 않았습니다.',
+            detail: '도면 변환이 완료된 뒤 다시 시도해 주세요.',
+          });
+          return;
         }
         if (cancelled) return;
         setSource(next);
@@ -132,6 +144,14 @@ function ViewerShellInner({ attachmentId }: ViewerShellProps) {
         else setMode('pdf');
         setResolved(true);
       } catch (err) {
+        if (cancelled) return;
+        if (err instanceof AttachmentNotFoundError) {
+          setError({
+            message: '존재하지 않는 자료입니다.',
+            detail: '삭제되었거나 권한이 없는 자료일 수 있습니다.',
+          });
+          return;
+        }
         const e = err as Error;
         setError({
           message: '도면 정보를 불러올 수 없습니다.',

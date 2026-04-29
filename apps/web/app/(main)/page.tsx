@@ -32,20 +32,26 @@ async function loadStatCounts(userId: string | null): Promise<{
   if (!userId) {
     return { waiting: 0, checkedOut: 0, issues: 0, recent: 0 };
   }
-  // `waiting`: approvals PENDING with at least one PENDING step assigned to
-  // me. We approximate the "내 차례" gate done in /api/v1/approvals by just
-  // counting approvals where a PENDING step exists for me — the dashboard
-  // tile only shows a number, so over-counting non-active approvals is OK
-  // (it errs on the side of "you have things to look at").
+  // BUG-02 — `waiting` must match the `/approval?box=waiting` definition:
+  // the user has the *active* (lowest-order PENDING) step on a PENDING
+  // approval. The earlier shortcut counted any PENDING step and over-counted
+  // approvals where it wasn't yet the user's turn, so the home tile said
+  // "1건" while the inbox showed 0.
   const sevenDaysAgoMs = Date.now() - 1000 * 60 * 60 * 24 * 7;
   const sevenDaysAgo = new Date(sevenDaysAgoMs);
   try {
-    const [waiting, checkedOut, recent] = await Promise.all([
-      prisma.approval.count({
+    const [waitingCandidates, checkedOut, recent] = await Promise.all([
+      prisma.approval.findMany({
         where: {
           status: 'PENDING',
           steps: { some: { approverId: userId, status: 'PENDING' } },
         },
+        select: {
+          steps: { select: { approverId: true, order: true, status: true } },
+        },
+        // Bound the read — typical approver inboxes are <50; cap matches
+        // /approval default page size.
+        take: 200,
       }),
       prisma.objectEntity.count({
         where: { lockedById: userId },
@@ -54,6 +60,19 @@ async function loadStatCounts(userId: string | null): Promise<{
         where: { createdAt: { gte: sevenDaysAgo } },
       }),
     ]);
+    const waiting = waitingCandidates.filter((a) => {
+      const pendingOrders = a.steps
+        .filter((s) => s.status === 'PENDING')
+        .map((s) => s.order);
+      if (pendingOrders.length === 0) return false;
+      const minOrder = Math.min(...pendingOrders);
+      return a.steps.some(
+        (s) =>
+          s.order === minOrder &&
+          s.approverId === userId &&
+          s.status === 'PENDING',
+      );
+    }).length;
     // No `Issue` model in the schema yet — the home tile keeps the slot
     // visible (so the layout is stable for users who expect 4 cards) but
     // pins the count to 0 until an issue surface lands.

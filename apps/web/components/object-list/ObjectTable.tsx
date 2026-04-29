@@ -116,6 +116,12 @@ interface ObjectTableProps {
   onReleaseRow?: (row: ObjectRow) => void;
   /** R31 P-1 — open the PrintDialog for the row's master attachment. */
   onPrintRow?: (row: ObjectRow) => void;
+  /**
+   * BUG-09 — when true, the empty-row body renders a skeleton row instead
+   * of the "결과가 없습니다." message. Prevents the brief flash of
+   * "no results" during initial fetch.
+   */
+  isLoading?: boolean;
 }
 
 export function ObjectTable({
@@ -133,6 +139,7 @@ export function ObjectTable({
   onCancelCheckoutRow,
   onReleaseRow,
   onPrintRow,
+  isLoading,
 }: ObjectTableProps) {
   const router = useRouter();
   // Default sort targets a column that actually exists in this table. The
@@ -382,6 +389,15 @@ export function ObjectTable({
     }
   }, [onSelectedCountChange, onSelectedIdsChange, rowSelection, data]);
 
+  // BUG-12 — keep the action column reachable on narrow viewports. Without
+  // this, the ⋮ row menu was the first thing to scroll out of view.
+  const stickyClassFor = (id: string): string => {
+    if (id === 'actions') {
+      return 'sticky right-0 z-[1] bg-bg group-hover:bg-bg-subtle data-[state=selected]:bg-brand/5';
+    }
+    return '';
+  };
+
   return (
     <div className="min-h-0 overflow-auto">
       <ConfirmDialog
@@ -410,7 +426,10 @@ export function ObjectTable({
                   <th
                     key={header.id}
                     style={{ width: header.getSize() ? header.getSize() : undefined }}
-                    className="select-none"
+                    className={cn(
+                      'select-none',
+                      stickyClassFor(header.column.id) && 'sticky right-0 z-[2] bg-bg-subtle',
+                    )}
                   >
                     {header.isPlaceholder ? null : canSort ? (
                       <button
@@ -440,9 +459,23 @@ export function ObjectTable({
         <tbody>
           {table.getRowModel().rows.length === 0 && (
             <tr>
-                  <td colSpan={columns.length} className="px-3 py-12 text-center text-sm text-fg-muted">
-                    결과가 없습니다.
-                  </td>
+              <td
+                colSpan={columns.length}
+                className="px-3 py-12 text-center text-sm text-fg-muted"
+              >
+                {isLoading ? (
+                  <span
+                    role="status"
+                    aria-live="polite"
+                    className="inline-flex items-center gap-2 text-fg-subtle"
+                  >
+                    <span className="h-3 w-3 animate-spin rounded-full border-2 border-current border-t-transparent" />
+                    불러오는 중…
+                  </span>
+                ) : (
+                  '결과가 없습니다.'
+                )}
+              </td>
             </tr>
           )}
           {table.getRowModel().rows.map((row) => {
@@ -476,7 +509,10 @@ export function ObjectTable({
                 )}
               >
                 {row.getVisibleCells().map((cell) => (
-                  <td key={cell.id}>
+                  <td
+                    key={cell.id}
+                    className={cn(stickyClassFor(cell.column.id))}
+                  >
                     {flexRender(cell.column.columnDef.cell, cell.getContext())}
                   </td>
                 ))}
