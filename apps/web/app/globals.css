@@ -79,6 +79,19 @@
 
     /* Radius (DESIGN §2.3) */
     --radius: 0.375rem; /* 6px */
+
+    /* ─── R36 챗봇 토큰 ───
+     * 기존 --brand(파랑)와 보완 관계. 챗봇 영역에서만 사용해 시스템 정체성과
+     * 챗봇 정체성을 분리한다. 일반 UI에서는 사용 X (primary CTA에 쓰지 말 것).
+     */
+    --bot-primary:       212 38% 38%;   /* 메탈릭 블루 본체 (#3D5C7A 근처) */
+    --bot-primary-deep:  212 40% 28%;   /* 그림자/접합부 */
+    --bot-soft:          210 40% 96%;   /* 메시지 풍선 배경 (어시스턴트) / 눈 */
+    --bot-accent:        45 95% 55%;    /* 시그널 옐로 (안테나 dot, 강조 1점) */
+    --bot-faceplate:     215 35% 12%;   /* visor — 거의 검정 청회색 */
+    --bot-fg:            215 30% 18%;   /* 캐릭터 위에 얹는 텍스트(거의 안 씀) */
+    --bot-fg-soft:       215 20% 55%;   /* 안테나 stroke 등 보조선 */
+    --bot-on-brand-fg:   0 0% 100%;     /* FAB 배경(brand) 위 캐릭터용 화이트 */
   }
 
   .dark {
@@ -133,6 +146,16 @@
     --status-approved: 160 70% 50%;
     --status-rejected: 347 77% 60%;
     --status-deleted: 25 5% 55%;
+
+    /* R36 챗봇 토큰 — dark mode (lightness ↑ for legibility) */
+    --bot-primary:       212 45% 56%;
+    --bot-primary-deep:  212 45% 42%;
+    --bot-soft:          212 30% 18%;
+    --bot-accent:        45 90% 62%;
+    --bot-faceplate:     215 35% 8%;
+    --bot-fg:            210 30% 92%;
+    --bot-fg-soft:       215 15% 65%;
+    --bot-on-brand-fg:   0 0% 100%;
   }
 }
 

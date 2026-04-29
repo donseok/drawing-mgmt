@@ -191,7 +191,7 @@ export function CommandPalette() {
                 onSelect: () => setTheme(theme === 'dark' ? 'light' : 'dark'),
               },
               { label: '사이드바 토글 (⌘B)', icon: <Settings className="h-4 w-4" />, onSelect: toggleSidebar },
-              { label: '챗봇 토글 (⌘.)', icon: <HelpCircle className="h-4 w-4" />, onSelect: toggleChat },
+              { label: 'AI 도우미 (⌘.)', icon: <HelpCircle className="h-4 w-4" />, onSelect: toggleChat },
             ];
             const visible = allCommands.filter((c) => commandFilter(c.label));
             // Hide command group entirely when user is in drawings/folders mode

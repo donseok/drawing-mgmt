@@ -6,7 +6,6 @@ import { Building2, Search, ShieldCheck } from 'lucide-react';
 import { useUiStore } from '@/stores/uiStore';
 import { cn } from '@/lib/cn';
 import { NotificationBell } from './NotificationBell';
-import { ChatToggle } from './ChatToggle';
 import { UserMenu } from './UserMenu';
 import { ThemeToggle } from './ThemeToggle';
 
@@ -91,7 +90,6 @@ export function Header({ user }: HeaderProps) {
           </div>
         )}
         <ThemeToggle className="hidden sm:inline-flex" />
-        <ChatToggle variant="header" />
         <NotificationBell />
         <UserMenu user={user} />
       </div>

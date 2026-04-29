@@ -59,6 +59,17 @@ const config: Config = {
         warning: 'hsl(var(--warning))',
         danger: 'hsl(var(--danger))',
         info: 'hsl(var(--info))',
+        // R36 챗봇 — Dolly 캐릭터 + 패널 톤. 시스템 brand와 분리.
+        bot: {
+          primary: 'hsl(var(--bot-primary))',
+          'primary-deep': 'hsl(var(--bot-primary-deep))',
+          soft: 'hsl(var(--bot-soft))',
+          accent: 'hsl(var(--bot-accent))',
+          faceplate: 'hsl(var(--bot-faceplate))',
+          fg: 'hsl(var(--bot-fg))',
+          'fg-soft': 'hsl(var(--bot-fg-soft))',
+          'on-brand-fg': 'hsl(var(--bot-on-brand-fg))',
+        },
       },
       borderRadius: {
         lg: '0.5rem',
@@ -74,10 +85,32 @@ const config: Config = {
           from: { height: 'var(--radix-accordion-content-height)' },
           to: { height: '0' },
         },
+        // R36 — Dolly 로봇 모션. prefers-reduced-motion에서 globals.css의
+        // 글로벌 reset이 모두 정지시킨다.
+        'bot-blink': {
+          '0%, 92%, 100%': { transform: 'scaleY(1)' },
+          '95%, 97%': { transform: 'scaleY(0.1)' },
+        },
+        'bot-antenna-pulse': {
+          '0%, 100%': { opacity: '1' },
+          '50%': { opacity: '0.35' },
+        },
+        'bot-thinking-dot': {
+          '0%, 80%, 100%': { opacity: '0.3', transform: 'translateY(0)' },
+          '40%': { opacity: '1', transform: 'translateY(-2px)' },
+        },
+        'panel-enter': {
+          from: { opacity: '0', transform: 'translateY(8px)' },
+          to: { opacity: '1', transform: 'translateY(0)' },
+        },
       },
       animation: {
         'accordion-down': 'accordion-down 0.2s ease-out',
         'accordion-up': 'accordion-up 0.2s ease-out',
+        'bot-blink': 'bot-blink 4s ease-in-out infinite',
+        'bot-antenna-pulse': 'bot-antenna-pulse 1.2s ease-in-out infinite',
+        'bot-thinking-dot': 'bot-thinking-dot 1.2s ease-in-out infinite',
+        'panel-enter': 'panel-enter 220ms cubic-bezier(0.32, 0.72, 0, 1)',
       },
     },
   },
