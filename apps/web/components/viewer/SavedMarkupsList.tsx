@@ -192,43 +192,46 @@ export function SavedMarkupsList({
     meQuery.data?.role === 'ADMIN' || meQuery.data?.role === 'SUPER_ADMIN';
 
   /**
-   * Read payload from the row. When BE didn't include it, surface a clear
-   * error pointing at the contract drift instead of failing silently.
+   * Resolve payload: list rows omit `payload` to keep the response light, so
+   * we hop to GET /api/v1/markups/[id] for the full detail when needed. Row
+   * may already carry payload (e.g. unit tests, future BE that inlines it),
+   * in which case we use it directly.
    */
-  function readPayloadOrError(row: MarkupRow): MarkupPayload | null {
+  async function resolvePayload(row: MarkupRow): Promise<MarkupPayload | null> {
     if (row.payload) return row.payload;
-    toast.error('마크업을 불러오지 못했습니다', {
-      description:
-        '서버 응답에 payload가 없습니다. 페이지를 새로고침해주세요.',
-    });
-    return null;
+    try {
+      const detail = await api.get<{ payload: MarkupPayload }>(
+        `/api/v1/markups/${row.id}`,
+      );
+      return detail.payload;
+    } catch (err) {
+      const msg =
+        err instanceof ApiError ? err.message : '서버에서 마크업을 가져오지 못했습니다.';
+      toast.error('마크업을 불러오지 못했습니다', { description: msg });
+      return null;
+    }
   }
 
-  function handleLoad(row: MarkupRow) {
+  async function handleLoad(row: MarkupRow) {
     if (row.mode !== mode) {
       toast.warning('다른 모드의 마크업입니다', {
         description: `${row.mode === 'pdf' ? 'PDF' : 'DXF'} 모드로 전환 후 다시 시도해주세요.`,
       });
       return;
     }
-    const payload = readPayloadOrError(row);
-    if (!payload) return;
 
     const current = storeApi.getState().measurements.length;
-    const incoming = payload.measurements.length;
-
-    const proceed = () => {
-      loadMeasurements(payload.measurements);
-      toast.success(`마크업을 불러왔습니다 (측정 ${incoming}건)`);
-    };
-
     if (current > 0) {
       const ok = window.confirm(
         `현재 측정 ${current}건을 덮어씁니다. 계속할까요?`,
       );
       if (!ok) return;
     }
-    proceed();
+
+    const payload = await resolvePayload(row);
+    if (!payload) return;
+    loadMeasurements(payload.measurements);
+    toast.success(`마크업을 불러왔습니다 (측정 ${payload.measurements.length}건)`);
   }
 
   function handleRename(row: MarkupRow) {

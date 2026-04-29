@@ -1120,6 +1120,41 @@ registry.registerPath({
 });
 
 registry.registerPath({
+  method: 'get',
+  path: '/api/v1/markups/{markupId}',
+  tags: ['Markup'],
+  summary: '마크업 상세 (payload 포함)',
+  description:
+    'R-MARKUP / V-6 — 단일 마크업 상세 조회. 리스트 응답은 row만 노출하고 ' +
+    'payload는 본 엔드포인트로 lazy fetch. 가시성: 본인 OR isShared ' +
+    'OR admin. 첨부 VIEW 권한 + INFECTED 가드 동일 적용.',
+  security: [{ bearerAuth: [] }],
+  request: {
+    params: z.object({
+      markupId: z.string().openapi({ description: 'Markup id' }),
+    }),
+  },
+  responses: {
+    200: {
+      description: '마크업 상세 (payload 포함)',
+      content: { 'application/json': { schema: MarkupDetailResponse } },
+    },
+    401: {
+      description: '인증 필요',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+    403: {
+      description: '비공개 마크업이며 본인 또는 admin이 아님 / INFECTED',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+    404: {
+      description: '마크업 없음',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+  },
+});
+
+registry.registerPath({
   method: 'patch',
   path: '/api/v1/markups/{markupId}',
   tags: ['Markup'],

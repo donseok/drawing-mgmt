@@ -1,3 +1,4 @@
+// GET    /api/v1/markups/[markupId]  → detail with payload (for "load")
 // PATCH  /api/v1/markups/[markupId]  → rename / toggle share / replace payload
 // DELETE /api/v1/markups/[markupId]  → remove
 //
@@ -36,6 +37,43 @@ export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 const PAYLOAD_BYTE_LIMIT = 256 * 1024;
+
+// ── GET ──────────────────────────────────────────────────────────────────
+//
+// Returns the full markup row including `payload`. The list endpoint omits
+// `payload` to keep the response small; FE calls this when the user picks
+// a saved markup to load. Visibility = owner OR isShared OR admin.
+
+export async function GET(
+  req: Request,
+  { params }: { params: { markupId: string } },
+): Promise<NextResponse> {
+  const row = await prisma.markup.findUnique({
+    where: { id: params.markupId },
+    include: { owner: { select: { id: true, fullName: true } } },
+  });
+  if (!row) return error(ErrorCode.E_NOT_FOUND);
+
+  const gate = await requireAttachmentView(req, row.attachmentId);
+  if (gate instanceof Response) return gate;
+  const { user } = gate;
+
+  const isOwner = row.ownerId === user.id;
+  const isAdmin = user.role === 'ADMIN' || user.role === 'SUPER_ADMIN';
+  if (!isOwner && !row.isShared && !isAdmin) {
+    return error(ErrorCode.E_FORBIDDEN, '이 마크업에 접근할 수 없습니다.');
+  }
+
+  const parsed = MarkupPayloadSchema.safeParse(row.payload);
+  if (!parsed.success) {
+    return error(
+      ErrorCode.E_INTERNAL,
+      '마크업 데이터 형식이 올바르지 않습니다.',
+    );
+  }
+  const detail: MarkupDetail = { ...rowProjection(row), payload: parsed.data };
+  return ok(detail);
+}
 
 // ── PATCH ────────────────────────────────────────────────────────────────
 
