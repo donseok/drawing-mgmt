@@ -21,12 +21,14 @@
 // Errors in the LLM/embedding/tool path fall back to rule mode rather than
 // 5xx-ing the user.
 
+import { randomUUID } from 'node:crypto';
 import type { ChatRole as PrismaChatRole, Prisma } from '@prisma/client';
 import { prisma } from '@/lib/prisma';
 import type {
   ChatAction,
   ChatSource,
   ChatModeDecision,
+  ChatStreamEvent,
   ChatToolName,
 } from '@drawing-mgmt/shared';
 import { embed, getEmbedderConfig } from './embedder';
@@ -55,75 +57,29 @@ const MAX_HISTORY_TURNS = 6; // 사용자/어시스턴트 합산 메시지 수.
 
 export async function handleChatTurn(input: OrchestratorInput): Promise<OrchestratorOutput> {
   const session = await ensureSession(input.user.id, input.sessionId, input.message);
+  await persistUserMessage(session.id, input.message);
 
-  // 1) Persist the user message immediately. We use a single transaction at
-  //    the end to also bump session.updatedAt + insert assistant; for now
-  //    insert the user row up front so a crash mid-pipeline still leaves a
-  //    record of what they typed.
-  const userMsg = await prisma.chatMessage.create({
-    data: {
-      sessionId: session.id,
-      role: 'USER',
-      content: input.message,
-      mode: 'RULE', // overwritten below; user rows ignore this value in FE.
-    },
-  });
-  void userMsg;
+  const composed = await composeAssistantTurn(input, session.id);
 
-  // 2) Decide mode + retrieve context.
-  const ctx = await tryRetrieveContext(input.message);
-  const useRag =
-    ctx.chunks.length > 0 &&
-    ctx.chunks[0]!.similarity >= getSimilarityThreshold();
-
-  let response: string;
-  let mode: ChatModeDecision;
-  let sources: ChatSource[] = [];
-  let actions: ChatAction[] = [];
-  let llmModel: string | null = null;
-  let tokensIn: number | null = null;
-  let tokensOut: number | null = null;
-  let toolCallsLog: unknown = null;
-  let toolResultsLog: unknown = null;
-
-  if (useRag) {
-    const ragOut = await runRagPipeline(input, ctx.chunks, session.id);
-    response = ragOut.response;
-    mode = 'rag';
-    sources = ragOut.sources;
-    actions = ragOut.actions;
-    llmModel = ragOut.model ?? null;
-    tokensIn = ragOut.tokensIn ?? null;
-    tokensOut = ragOut.tokensOut ?? null;
-    toolCallsLog = ragOut.toolCallsLog ?? null;
-    toolResultsLog = ragOut.toolResultsLog ?? null;
-  } else {
-    const ruled = matchRule(input.message);
-    response = ruled.response;
-    mode = 'rule';
-    sources = [];
-    actions = ruled.actions;
-  }
-
-  // 3) Persist assistant message + bump session.updatedAt.
+  // Persist assistant message + bump session.updatedAt in a single transaction.
   const assistantMsg = await prisma.$transaction(async (tx) => {
     const created = await tx.chatMessage.create({
       data: {
         sessionId: session.id,
         role: 'ASSISTANT',
-        content: response,
-        mode: mode === 'rag' ? 'RAG' : 'RULE',
-        tokensIn: tokensIn ?? undefined,
-        tokensOut: tokensOut ?? undefined,
-        model: llmModel ?? undefined,
-        toolCalls: toolCallsLog as Prisma.InputJsonValue | undefined,
+        content: composed.response,
+        mode: composed.mode === 'rag' ? 'RAG' : 'RULE',
+        tokensIn: composed.tokensIn ?? undefined,
+        tokensOut: composed.tokensOut ?? undefined,
+        model: composed.llmModel ?? undefined,
+        toolCalls: composed.toolCallsLog as Prisma.InputJsonValue | undefined,
         // Stash sources + actions inside toolResults so GET sessions/[id]
         // can faithfully reconstruct them (the schema has no first-class
         // columns for them).
         toolResults: serializeAssistantMeta({
-          sources,
-          actions,
-          tools: toolResultsLog,
+          sources: composed.sources,
+          actions: composed.actions,
+          tools: composed.toolResultsLog,
         }),
       },
     });
@@ -137,11 +93,224 @@ export async function handleChatTurn(input: OrchestratorInput): Promise<Orchestr
   return {
     sessionId: session.id,
     messageId: assistantMsg.id,
-    response,
-    mode,
-    sources: sources.length ? sources : undefined,
-    actions: actions.length ? actions : undefined,
+    response: composed.response,
+    mode: composed.mode,
+    sources: composed.sources.length ? composed.sources : undefined,
+    actions: composed.actions.length ? composed.actions : undefined,
   };
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// R36-polish — Streaming variant.
+//
+// Yields ChatStreamEvent in contract §2.2 order: meta → delta* → sources?
+// → actions? → done. Errors mid-pipeline emit a single `error` then `done`.
+// The assistant ChatMessage is INSERTed just before `done` with `id =
+// messageId` so the meta event's id matches the persisted row.
+// ──────────────────────────────────────────────────────────────────────────
+
+const DELTA_INTERVAL_MS = 200; // 인위 sleep — UX 위해 200ms 간격 발사.
+const DELTA_MIN_CHARS = 8;
+const DELTA_MAX_CHARS = 30;
+
+export async function* handleChatTurnStream(
+  input: OrchestratorInput,
+): AsyncGenerator<ChatStreamEvent, void, unknown> {
+  // Phase A — session ensure + user message persistence. Errors here surface
+  // as SessionNotFoundError (route translates to a `error` event).
+  const session = await ensureSession(input.user.id, input.sessionId, input.message);
+  await persistUserMessage(session.id, input.message);
+
+  // Pre-generate the assistant messageId so meta can include it. Prisma 5
+  // accepts an explicit `id` and skips the cuid default.
+  const messageId = randomUUID();
+
+  // Phase B — retrieval + compose. We don't yield `meta` until the mode is
+  // decided, because the meta event must declare RAG vs RULE up-front (FE
+  // uses it to pick the badge color). Retrieval is the slow step; this is
+  // the only delay before the first emission.
+  let composed: ComposedTurn;
+  try {
+    composed = await composeAssistantTurn(input, session.id);
+  } catch (err) {
+    console.error('[chat/stream] compose failed', err);
+    yield { type: 'error', code: 'E_INTERNAL', message: '챗봇 응답 생성에 실패했습니다.' };
+    yield { type: 'done' };
+    return;
+  }
+
+  // Phase C — meta. First event of the stream.
+  yield {
+    type: 'meta',
+    sessionId: session.id,
+    messageId,
+    mode: composed.mode,
+  };
+
+  // Phase D — delta(s). RULE mode is short text; emit in a single chunk.
+  // RAG mode (which may be multi-paragraph) is split into 8~30 char chunks
+  // with a 200ms gap to give the FE a typing effect.
+  const text = composed.response;
+  if (composed.mode === 'rule' || text.length <= DELTA_MAX_CHARS) {
+    if (text.length > 0) {
+      yield { type: 'delta', text };
+    }
+  } else {
+    const chunks = splitForDelta(text);
+    for (let i = 0; i < chunks.length; i++) {
+      yield { type: 'delta', text: chunks[i]! };
+      if (i < chunks.length - 1) {
+        await sleep(DELTA_INTERVAL_MS);
+      }
+    }
+  }
+
+  // Phase E — sources (RAG-only, non-empty).
+  if (composed.sources.length > 0) {
+    yield { type: 'sources', sources: composed.sources };
+  }
+
+  // Phase F — actions.
+  if (composed.actions.length > 0) {
+    yield { type: 'actions', actions: composed.actions };
+  }
+
+  // Phase G — persist assistant message. Best-effort: if the DB write fails,
+  // we still close out the stream cleanly so the FE renders what it has. The
+  // user's own message is already persisted above.
+  try {
+    await prisma.$transaction(async (tx) => {
+      await tx.chatMessage.create({
+        data: {
+          id: messageId,
+          sessionId: session.id,
+          role: 'ASSISTANT',
+          content: composed.response,
+          mode: composed.mode === 'rag' ? 'RAG' : 'RULE',
+          tokensIn: composed.tokensIn ?? undefined,
+          tokensOut: composed.tokensOut ?? undefined,
+          model: composed.llmModel ?? undefined,
+          toolCalls: composed.toolCallsLog as Prisma.InputJsonValue | undefined,
+          toolResults: serializeAssistantMeta({
+            sources: composed.sources,
+            actions: composed.actions,
+            tools: composed.toolResultsLog,
+          }),
+        },
+      });
+      await tx.chatSession.update({
+        where: { id: session.id },
+        data: { updatedAt: new Date() },
+      });
+    });
+  } catch (err) {
+    console.error('[chat/stream] persistence failed', err);
+    // Don't surface to user — they already saw the answer.
+  }
+
+  // Phase H — done.
+  yield { type: 'done' };
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// Shared helpers between stream and non-stream paths.
+// ──────────────────────────────────────────────────────────────────────────
+
+interface ComposedTurn {
+  response: string;
+  mode: ChatModeDecision;
+  sources: ChatSource[];
+  actions: ChatAction[];
+  llmModel: string | null;
+  tokensIn: number | null;
+  tokensOut: number | null;
+  toolCallsLog: unknown;
+  toolResultsLog: unknown;
+}
+
+async function persistUserMessage(sessionId: string, message: string): Promise<void> {
+  // Insert the user row up front so a crash mid-pipeline still leaves a
+  // record of what they typed.
+  await prisma.chatMessage.create({
+    data: {
+      sessionId,
+      role: 'USER',
+      content: message,
+      mode: 'RULE', // overwritten on assistant turn; user rows ignore this in FE.
+    },
+  });
+}
+
+async function composeAssistantTurn(
+  input: OrchestratorInput,
+  sessionId: string,
+): Promise<ComposedTurn> {
+  const ctx = await tryRetrieveContext(input.message);
+  const useRag =
+    ctx.chunks.length > 0 &&
+    ctx.chunks[0]!.similarity >= getSimilarityThreshold();
+
+  if (useRag) {
+    const ragOut = await runRagPipeline(input, ctx.chunks, sessionId);
+    return {
+      response: ragOut.response,
+      mode: 'rag',
+      sources: ragOut.sources,
+      actions: ragOut.actions,
+      llmModel: ragOut.model ?? null,
+      tokensIn: ragOut.tokensIn ?? null,
+      tokensOut: ragOut.tokensOut ?? null,
+      toolCallsLog: ragOut.toolCallsLog ?? null,
+      toolResultsLog: ragOut.toolResultsLog ?? null,
+    };
+  }
+  const ruled = matchRule(input.message);
+  return {
+    response: ruled.response,
+    mode: 'rule',
+    sources: [],
+    actions: ruled.actions,
+    llmModel: null,
+    tokensIn: null,
+    tokensOut: null,
+    toolCallsLog: null,
+    toolResultsLog: null,
+  };
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Split a Korean/English mixed answer into 8~30 char chunks for streaming.
+ * We tokenize on whitespace + sentence-terminators (`.!?。`) to keep word
+ * boundaries clean, then greedily concatenate tokens up to DELTA_MAX_CHARS.
+ * If the very first token already exceeds DELTA_MAX_CHARS (e.g. a code
+ * block run-on), we still emit it as a single chunk — better than slicing
+ * mid-grapheme.
+ */
+export function splitForDelta(text: string): string[] {
+  if (text.length === 0) return [];
+  // Capture the separators so we don't lose spacing/punctuation.
+  const tokens = text.split(/(\s+|[.!?。]+)/u).filter((t) => t.length > 0);
+  if (tokens.length === 0) return [text];
+  const out: string[] = [];
+  let buf = '';
+  for (const tok of tokens) {
+    if (buf.length === 0) {
+      buf = tok;
+      continue;
+    }
+    if (buf.length + tok.length > DELTA_MAX_CHARS && buf.length >= DELTA_MIN_CHARS) {
+      out.push(buf);
+      buf = tok;
+    } else {
+      buf += tok;
+    }
+  }
+  if (buf.length > 0) out.push(buf);
+  return out;
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -225,12 +394,7 @@ async function runRagPipeline(
   chunks: RetrievedChunk[],
   sessionId: string,
 ): Promise<RagOutput> {
-  const sources: ChatSource[] = chunks.map((c) => ({
-    chunkId: c.chunkId,
-    source: c.source,
-    title: c.title,
-    similarity: round3(c.similarity),
-  }));
+  const sources: ChatSource[] = chunks.map(toChatSource);
 
   const llmCfg = getLlmConfig();
   if (!llmCfg) {
@@ -404,6 +568,22 @@ function roleToLlm(role: PrismaChatRole): LlmMessage['role'] {
 
 function round3(n: number): number {
   return Math.round(n * 1000) / 1000;
+}
+
+// R36-polish — RetrievedChunk → ChatSource 정규화. 본문 600자 cap + trailing
+// whitespace trim. RULE 모드는 sources가 빈 배열이라 호출되지 않는다.
+const EXCERPT_MAX = 600;
+function toChatSource(c: RetrievedChunk): ChatSource {
+  const raw = typeof c.content === 'string' ? c.content : '';
+  const cap = raw.length > EXCERPT_MAX ? raw.slice(0, EXCERPT_MAX) : raw;
+  const excerpt = cap.replace(/\s+$/u, '');
+  return {
+    chunkId: c.chunkId,
+    source: c.source,
+    title: c.title,
+    similarity: round3(c.similarity),
+    ...(excerpt.length > 0 ? { excerpt } : {}),
+  };
 }
 
 interface AssistantMeta {
