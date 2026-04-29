@@ -44,6 +44,7 @@ import { startScanWorker } from './scan-worker.js';
 import { startSmsWorker } from './sms-worker.js';
 import { startKakaoWorker } from './kakao-worker.js';
 import { startPdfExtractWorker } from './pdf-extract-worker.js';
+import { startSecurityAuditWorker } from './security-audit-worker.js';
 import { getStorage, type Storage } from './storage.js';
 
 const log = pino({
@@ -796,6 +797,25 @@ const pdfExtractWorkerHandle = startPdfExtractWorker({
   storage,
 });
 
+// ─────────────────────────────────────────────────────────────────────────
+// R-AUDIT-TREND — security-audit queue worker.
+//
+// Daily snapshot of `pnpm audit --json` results to SecurityAuditSnapshot
+// (FIND-016 mitigation). When SECURITY_AUDIT_CRON_ENABLED=1 the worker
+// also enrolls a repeatable on SECURITY_AUDIT_CRON_PATTERN (default
+// '30 2 * * *' to avoid colliding with the backup cron at 02:00).
+// SUPER_ADMIN-triggered manual snapshots arrive on the same queue.
+//
+// License posture: pnpm audit subprocess only — no JS audit binding,
+// no GPL transitive imports.
+// ─────────────────────────────────────────────────────────────────────────
+
+const securityAuditWorkerHandle = startSecurityAuditWorker({
+  connection,
+  prisma,
+  log,
+});
+
 const shutdown = async (sig: string) => {
   log.info({ sig }, 'worker shutting down');
   await Promise.all([
@@ -808,6 +828,8 @@ const shutdown = async (sig: string) => {
     smsWorkerHandle ? smsWorkerHandle.close() : Promise.resolve(),
     kakaoWorkerHandle ? kakaoWorkerHandle.close() : Promise.resolve(),
     pdfExtractWorkerHandle ? pdfExtractWorkerHandle.close() : Promise.resolve(),
+    // R-AUDIT-TREND — security-audit worker close.
+    securityAuditWorkerHandle.close(),
     // Close the enqueue-side Queue too if we ever opened it during this
     // process's lifetime (lazy-init in `getPdfExtractQueue`).
     pdfExtractQueueSingleton ? pdfExtractQueueSingleton.close() : Promise.resolve(),
@@ -830,6 +852,7 @@ log.info(
       ...(smsWorkerHandle ? ['sms'] : []),
       ...(kakaoWorkerHandle ? ['kakao'] : []),
       ...(pdfExtractWorkerHandle ? [PDF_EXTRACT_QUEUE_NAME] : []),
+      'security-audit',
     ],
     redis: REDIS_URL,
     oda: ODA_CONVERTER_PATH,

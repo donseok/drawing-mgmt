@@ -769,6 +769,50 @@ model ApiKey {
 }
 
 // ─────────────────────────────────────────────────────────────
+// SECURITY AUDIT SNAPSHOT — R-AUDIT-TREND (FIND-016 mitigated)
+// ─────────────────────────────────────────────────────────────
+//
+// Daily snapshot of `pnpm audit --json` results so the admin security page
+// can plot a trend over time. The legacy `audit/route.ts` keeps a 15-min
+// in-memory cache; on instance restart that cache is gone, leaving no
+// baseline to detect new advisories. This model is the persistence
+// backbone — `apps/worker/src/security-audit-worker.ts` writes one row
+// per cron tick, and `GET /api/v1/admin/security/audit/trend` returns the
+// time-series for charting.
+//
+// Field rationale:
+//   - 4 severity counts + total: matches the existing `VulnerabilityCounts`
+//     shape exactly so the helper that parses pnpm output (extracted to
+//     `@drawing-mgmt/shared/pnpm-audit-parser`) can land directly here.
+//   - `source`: 'cron' = daily repeatable, 'manual' = admin-triggered.
+//     The trend query defaults to source='cron' so an admin re-running
+//     the audit during the day doesn't introduce noise on the chart.
+//   - `durationMs`: exposes pnpm audit slowdown over time (registry health
+//     proxy + workspace size growth signal).
+//   - `advisoriesJson`: optional. Capped at 32 KB by the worker; over
+//     budget, it stores `[]` so the counts row is still useful. Used for
+//     post-hoc diff "what advisory appeared between yesterday and today."
+//
+// No FK relationships — this is a pure operational metric, decoupled
+// from user / object models. Retention is enforced by the worker
+// (SECURITY_AUDIT_RETENTION_DAYS) so DB growth is bounded to ~365 rows.
+model SecurityAuditSnapshot {
+  id             String   @id @default(cuid())
+  takenAt        DateTime @default(now())
+  critical       Int      @default(0)
+  high           Int      @default(0)
+  moderate       Int      @default(0)
+  low            Int      @default(0)
+  total          Int      @default(0)
+  source         String   @default("cron")
+  durationMs     Int?
+  advisoriesJson Json?
+
+  @@index([takenAt])
+  @@index([source, takenAt])
+}
+
+// ─────────────────────────────────────────────────────────────
 // ENUMS
 // ─────────────────────────────────────────────────────────────
 enum Role {

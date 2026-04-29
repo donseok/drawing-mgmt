@@ -648,3 +648,133 @@ registry.registerPath({
     },
   },
 });
+
+// ---------------------------------------------------------------------------
+// R-AUDIT-TREND — pnpm audit snapshot trend
+// ---------------------------------------------------------------------------
+
+const SecurityAuditTrendSnapshot = registerSchema(
+  'SecurityAuditTrendSnapshot',
+  z.object({
+    id: z.string(),
+    takenAt: z.string().openapi({ description: 'ISO 8601 timestamp' }),
+    critical: z.number().int().nonnegative(),
+    high: z.number().int().nonnegative(),
+    moderate: z.number().int().nonnegative(),
+    low: z.number().int().nonnegative(),
+    total: z.number().int().nonnegative(),
+    source: z.string().openapi({ description: "'cron' | 'manual'" }),
+    durationMs: z.number().int().nullable().openapi({
+      description: 'pnpm audit subprocess duration in milliseconds',
+    }),
+  }),
+);
+
+const SecurityAuditTrendResponse = registerSchema(
+  'SecurityAuditTrendResponse',
+  z.object({
+    data: z.object({
+      days: z.number().int().min(1).max(365),
+      source: z.enum(['cron', 'manual']),
+      snapshots: z.array(SecurityAuditTrendSnapshot),
+    }),
+  }),
+);
+
+registry.registerPath({
+  method: 'get',
+  path: '/api/v1/admin/security/audit/trend',
+  tags: ['Admin'],
+  summary: 'Security audit snapshot trend',
+  description:
+    'Time-series of `pnpm audit` snapshots (R-AUDIT-TREND, FIND-016 mitigation). ' +
+    'Returns rows sorted by `takenAt` ASC for chart-friendly consumption. ' +
+    'Default source=cron filters out admin manual reruns. Requires ADMIN or SUPER_ADMIN.',
+  security: [{ bearerAuth: [] }],
+  request: {
+    query: z.object({
+      days: z.coerce
+        .number()
+        .int()
+        .min(1)
+        .max(365)
+        .optional()
+        .openapi({ description: 'Window in days (default 30, max 365)' }),
+      source: z
+        .enum(['cron', 'manual'])
+        .optional()
+        .openapi({ description: 'Filter by snapshot source (default cron)' }),
+    }),
+  },
+  responses: {
+    200: {
+      description: 'Snapshot trend',
+      content: { 'application/json': { schema: SecurityAuditTrendResponse } },
+    },
+    400: {
+      description: 'Validation error (days out of range)',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+    401: {
+      description: 'Not authenticated',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+    403: {
+      description: 'Not admin',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+  },
+});
+
+const SecurityAuditSnapshotEnqueueResponse = registerSchema(
+  'SecurityAuditSnapshotEnqueueResponse',
+  z.object({
+    data: z.object({
+      queued: z.literal(true),
+      jobId: z.string(),
+    }),
+  }),
+);
+
+registry.registerPath({
+  method: 'post',
+  path: '/api/v1/admin/security/audit/snapshot',
+  tags: ['Admin'],
+  summary: 'Trigger ad-hoc pnpm audit snapshot',
+  description:
+    'Push a manual snapshot job onto the BullMQ `security-audit` queue (R-AUDIT-TREND). ' +
+    'The worker runs `pnpm audit --json` asynchronously and writes a `SecurityAuditSnapshot` row ' +
+    'tagged source=manual. Requires SUPER_ADMIN (manual snapshots cost a subprocess + a DB row).',
+  security: [{ bearerAuth: [] }],
+  request: {
+    body: {
+      content: {
+        'application/json': {
+          schema: z.object({}).openapi({
+            description: 'Empty body. Reserved for future options (e.g. force).',
+          }),
+        },
+      },
+    },
+  },
+  responses: {
+    200: {
+      description: 'Job queued',
+      content: {
+        'application/json': { schema: SecurityAuditSnapshotEnqueueResponse },
+      },
+    },
+    401: {
+      description: 'Not authenticated',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+    403: {
+      description: 'Not SUPER_ADMIN',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+    503: {
+      description: 'Failed to enqueue (Redis unreachable)',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+  },
+});
