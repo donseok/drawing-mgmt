@@ -44,7 +44,7 @@ async function handleGet(): Promise<NextResponse> {
       id: 'open-approval-inbox',
       label: pendingApprovals > 0 ? `내 결재함 (${pendingApprovals}건 대기)` : '내 결재함',
       kind: 'navigate',
-      href: '/approvals',
+      href: '/approval',
     },
     {
       id: 'show-recent-activity',

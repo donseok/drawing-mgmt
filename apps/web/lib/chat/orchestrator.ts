@@ -530,7 +530,7 @@ function deriveActionsFromTools(results: ToolResult[]): ChatAction[] {
         actions.push({ label: '도면 상세 열기', kind: 'navigate', href: data.href });
       }
     } else if (r.toolName === 'list_my_approvals') {
-      actions.push({ label: '결재함 열기', kind: 'navigate', href: '/approvals' });
+      actions.push({ label: '결재함 열기', kind: 'navigate', href: '/approval' });
     } else if (r.toolName === 'get_recent_activity') {
       const data = r.data as { object?: { id?: string } } | undefined;
       if (data?.object?.id) {

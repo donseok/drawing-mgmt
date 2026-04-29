@@ -253,7 +253,7 @@ async function runListMyApprovals(args: unknown, user: ToolUserCtx): Promise<Too
       status: s.approval.status,
       requestedAt: s.approval.createdAt,
       actedAt: null,
-      href: `/approvals/${s.approval.id}`,
+      href: `/approval?box=${box}`,
     }));
   } else if (box === 'done') {
     const steps = await prisma.approvalStep.findMany({
@@ -268,7 +268,7 @@ async function runListMyApprovals(args: unknown, user: ToolUserCtx): Promise<Too
       status: s.approval.status,
       requestedAt: s.approval.createdAt,
       actedAt: s.actedAt,
-      href: `/approvals/${s.approval.id}`,
+      href: `/approval?box=${box}`,
     }));
   } else if (box === 'sent') {
     const approvals = await prisma.approval.findMany({
@@ -283,7 +283,7 @@ async function runListMyApprovals(args: unknown, user: ToolUserCtx): Promise<Too
       status: a.status,
       requestedAt: a.createdAt,
       actedAt: a.completedAt,
-      href: `/approvals/${a.id}`,
+      href: `/approval?box=${box}`,
     }));
   } else {
     // 'trash' — cancelled approvals authored by user.
@@ -299,7 +299,7 @@ async function runListMyApprovals(args: unknown, user: ToolUserCtx): Promise<Too
       status: a.status,
       requestedAt: a.createdAt,
       actedAt: a.completedAt,
-      href: `/approvals/${a.id}`,
+      href: `/approval?box=${box}`,
     }));
   }
 

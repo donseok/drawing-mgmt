@@ -39,26 +39,26 @@ const PAGE_ENTRIES: PageEntry[] = [
   {
     keyword: /결재함|승인함|결재 함|승인 함/,
     label: '내 결재함 열기',
-    href: '/approvals',
+    href: '/approval',
     reply: '결재함은 좌측 사이드바 또는 아래 버튼으로 열 수 있어요.',
   },
   {
     keyword: /마이페이지|내 정보/,
-    label: '마이페이지 열기',
-    href: '/me',
-    reply: '마이페이지는 우측 상단 프로필 메뉴 또는 아래 버튼으로 열 수 있어요.',
+    label: '환경설정 열기',
+    href: '/settings',
+    reply: '내 정보·서명·비밀번호·보안·알림은 환경설정 페이지에서 관리합니다.',
   },
   {
     keyword: /설정|환경설정|preference/,
     label: '환경설정 열기',
-    href: '/me/preferences',
-    reply: '환경설정은 마이페이지의 알림/보안 탭에서 변경할 수 있어요.',
+    href: '/settings',
+    reply: '환경설정의 프로필/비밀번호/보안/서명/알림 탭에서 변경할 수 있어요.',
   },
   {
     keyword: /알림(\s*(설정|함))?/,
     label: '알림 설정 열기',
-    href: '/me/preferences',
-    reply: '알림 채널(이메일/SMS/카카오톡)은 환경설정에서 토글할 수 있어요.',
+    href: '/settings?tab=notifications',
+    reply: '알림 채널(이메일/SMS/카카오톡)은 환경설정 → 알림 탭에서 토글할 수 있어요.',
   },
   {
     // "검색 페이지", "검색 화면" 같은 navigation 의도만 잡는다. 단순 "검색"

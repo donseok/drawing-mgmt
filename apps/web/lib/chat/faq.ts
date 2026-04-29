@@ -39,15 +39,15 @@ export const FAQ_ENTRIES: FaqEntry[] = [
     answer:
       '내 결재함은 상단 메뉴의 **결재** 또는 좌측 사이드바에서 열 수 있어요. 대기 중인 결재가 있으면 우측 상단 종 모양 알림에도 카운트가 뜹니다.',
     actions: [
-      { label: '내 결재함 열기', kind: 'navigate', href: '/approvals' },
+      { label: '내 결재함 열기', kind: 'navigate', href: '/approval' },
     ],
   },
   {
     id: 'mfa-enable',
     keywords: ['mfa', '2단계', 'otp', 'totp', '이중 인증', '인증 앱'],
     answer:
-      '2단계 인증(TOTP)은 **마이페이지 → 보안** 에서 켤 수 있습니다. QR 코드를 인증 앱에 등록한 뒤 6자리 코드를 입력해 확인하면 활성화됩니다. 분실에 대비해 발급된 복구 코드는 안전한 곳에 보관하세요.',
-    actions: [{ label: '마이페이지 보안 열기', kind: 'navigate', href: '/me/security' }],
+      '2단계 인증(TOTP)은 **환경설정 → 보안** 에서 켤 수 있습니다. QR 코드를 인증 앱에 등록한 뒤 6자리 코드를 입력해 확인하면 활성화됩니다. 분실에 대비해 발급된 복구 코드는 안전한 곳에 보관하세요.',
+    actions: [{ label: '보안 설정 열기', kind: 'navigate', href: '/settings?tab=security' }],
   },
   {
     id: 'shortcuts',
@@ -104,7 +104,7 @@ export const FAQ_ENTRIES: FaqEntry[] = [
     id: 'help',
     keywords: ['도움말', '사용법', '안내', '메뉴얼', '매뉴얼'],
     answer:
-      '도움말은 **마이페이지 → 도움말** 또는 명령 팔레트에서 "도움말" 을 검색하면 열 수 있어요. 더 자세한 가이드가 필요하면 빠른 액션의 "도움말 보기" 를 사용해 주세요.',
+      '명령 팔레트(⌘K)에서 "도움말" 을 검색하거나, 빠른 액션의 "도움말 보기" 를 사용해 주세요. 사용자 매뉴얼은 README/docs/manuals/USER_MANUAL.md에 있습니다.',
     actions: [
       {
         label: '도움말 보기',
@@ -118,8 +118,8 @@ export const FAQ_ENTRIES: FaqEntry[] = [
     id: 'notification',
     keywords: ['알림', '메일', '이메일 알림'],
     answer:
-      '알림 채널(이메일/SMS/카카오톡)은 **마이페이지 → 알림 설정** 에서 켜고 끌 수 있어요. SMS와 카카오톡은 비용이 들기 때문에 기본은 꺼져 있습니다.',
-    actions: [{ label: '알림 설정 열기', kind: 'navigate', href: '/me/preferences' }],
+      '알림 채널(이메일/SMS/카카오톡)은 **환경설정 → 알림** 에서 켜고 끌 수 있어요. SMS와 카카오톡은 비용이 들기 때문에 기본은 꺼져 있습니다.',
+    actions: [{ label: '알림 설정 열기', kind: 'navigate', href: '/settings?tab=notifications' }],
   },
 ];
 

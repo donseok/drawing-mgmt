@@ -3,7 +3,7 @@
 // `matchRule` is the single entry point for the rule-based responder. We
 // verify each layer of the contract §2 ladder:
 //   (a) intent regex     — search intent + (도면|품번)
-//   (b) page keyword     — 결재함 → /approvals
+//   (b) page keyword     — 결재함 → /approval
 //   (c) FAQ dictionary   — 단축키 → shortcuts FAQ
 //   (d) final fallback   — gibberish input
 
@@ -17,10 +17,10 @@ describe('matchRule', () => {
     expect(r.actions.some((a) => a.kind === 'navigate' && a.href === '/search')).toBe(true);
   });
 
-  it('routes "결재함" keyword to /approvals', () => {
+  it('routes "결재함" keyword to /approval', () => {
     const r = matchRule('결재함 어디서 봐?');
-    expect(r.ruleId).toBe('page:/approvals');
-    expect(r.actions[0]?.href).toBe('/approvals');
+    expect(r.ruleId).toBe('page:/approval');
+    expect(r.actions[0]?.href).toBe('/approval');
   });
 
   it('returns the FAQ entry for shortcuts', () => {
