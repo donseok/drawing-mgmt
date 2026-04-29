@@ -2,13 +2,17 @@
 
 import * as React from 'react';
 import { cn } from '@/lib/cn';
-import type { ChatTurn } from '@/lib/chat-types';
+import type { ChatAction, ChatTurn } from '@/lib/chat-types';
 import { MessageBubble } from './MessageBubble';
 
 interface Props {
   turns: ChatTurn[];
   className?: string;
   onRetry?: () => void;
+  /** R36-polish — `prompt`-kind action handler (composer fill). */
+  onSelectPrompt?: (text: string) => void;
+  /** R36-polish — `tool`-kind action handler (synthetic user turn). */
+  onInvokeTool?: (action: ChatAction) => void;
 }
 
 /**
@@ -40,7 +44,13 @@ function formatSeparator(turn: ChatTurn): string {
   }
 }
 
-export function MessageList({ turns, className, onRetry }: Props) {
+export function MessageList({
+  turns,
+  className,
+  onRetry,
+  onSelectPrompt,
+  onInvokeTool,
+}: Props) {
   const scrollRef = React.useRef<HTMLDivElement | null>(null);
   // R36 — pin to the latest turn whenever the list grows.
   React.useEffect(() => {
@@ -79,6 +89,8 @@ export function MessageList({ turns, className, onRetry }: Props) {
               turn={t}
               groupedWithPrev={groupedWithPrev}
               onRetry={t.status === 'error' ? onRetry : undefined}
+              onSelectPrompt={onSelectPrompt}
+              onInvokeTool={onInvokeTool}
             />
           </React.Fragment>
         );

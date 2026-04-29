@@ -5,14 +5,14 @@ import { Menu, X } from 'lucide-react';
 import { useMediaQuery } from '@/hooks/useMediaQuery';
 import { ApiError } from '@/lib/api-client';
 import { cn } from '@/lib/cn';
-import type { ChatTurn } from '@/lib/chat-types';
+import type { ChatAction, ChatToolName, ChatTurn } from '@/lib/chat-types';
 import {
+  useChat,
   useChatHealth,
   useChatSession,
   useChatSessions,
   useDeleteChatSession,
   useQuickActions,
-  useSendChatMessage,
 } from '@/hooks/useChat';
 import { RobotAvatar, type RobotAvatarState } from './RobotAvatar';
 import { ModeBadge, type ChatPanelMode } from './ModeBadge';
@@ -27,6 +27,10 @@ import { SessionSidebar } from './SessionSidebar';
  * Owns the in-memory turn list (so we can render `pending`/`error` ephemeral
  * states) and bridges between TanStack Query (for sessions/health/quick
  * actions) and the local mutation lifecycle.
+ *
+ * R36-polish: switched the send path from a one-shot `useMutation` to the
+ * streaming `useChat()` hook. Each delta event mutates the pending assistant
+ * turn's `content` so the user sees text grow.
  *
  * Layout decisions:
  * - Desktop (≥640): floating panel anchored bottom-right above the FAB.
@@ -43,6 +47,47 @@ function clientMessageId(prefix: string): string {
   return `${prefix}-${Date.now()}-${synthMessageCounter}`;
 }
 
+// R36-polish §4.2 — natural-language mapping for `tool`-kind actions.
+const APPROVAL_BOX_KO: Record<string, string> = {
+  waiting: '대기',
+  done: '처리완료',
+  sent: '상신',
+  trash: '회수',
+};
+
+function toolToPrompt(action: ChatAction): string {
+  const args = (action.toolArgs ?? {}) as Record<string, unknown>;
+  const name = action.toolName as ChatToolName | undefined;
+  switch (name) {
+    case 'search_drawings': {
+      const q = typeof args.q === 'string' && args.q.trim() ? args.q.trim() : '최근';
+      return `${q} 도면을 찾아줘`;
+    }
+    case 'get_drawing': {
+      const number = typeof args.number === 'string' ? args.number : undefined;
+      const id = typeof args.id === 'string' ? args.id : undefined;
+      const ref = number ?? (id ? `(id=${id})` : '');
+      return `도면 ${ref}을(를) 보여줘`.replace(/\s+/g, ' ').trim();
+    }
+    case 'list_my_approvals': {
+      const box = typeof args.box === 'string' ? args.box : 'waiting';
+      const label = APPROVAL_BOX_KO[box] ?? '대기';
+      return `내 결재 ${label}함을 보여줘`;
+    }
+    case 'get_recent_activity': {
+      return '최근 활동을 보여줘';
+    }
+    case 'get_help': {
+      const topic = typeof args.topic === 'string' && args.topic.trim() ? args.topic.trim() : '사용법';
+      return `${topic} 도움말을 보여줘`;
+    }
+    default: {
+      // Unknown tool — fall back to the action label.
+      return action.label;
+    }
+  }
+}
+
 interface ChatPanelProps {
   onRequestClose: () => void;
 }
@@ -54,8 +99,10 @@ export function ChatPanel({ onRequestClose }: ChatPanelProps) {
   const sessionsQuery = useChatSessions();
   const healthQuery = useChatHealth();
   const quickActionsQuery = useQuickActions();
-  const sendMutation = useSendChatMessage();
   const deleteMutation = useDeleteChatSession();
+
+  // Streaming send hook (R36-polish P1).
+  const { sendMessage: sendStream, cancel: cancelStream, phase } = useChat();
 
   // Active session — when undefined we are in "new conversation" mode.
   const [activeSessionId, setActiveSessionId] = React.useState<string | undefined>(undefined);
@@ -67,6 +114,7 @@ export function ChatPanel({ onRequestClose }: ChatPanelProps) {
   const [composerValue, setComposerValue] = React.useState('');
   const [sidebarOpen, setSidebarOpen] = React.useState(false);
   const [rateLimitedUntil, setRateLimitedUntil] = React.useState<number | null>(null);
+  const [isSending, setIsSending] = React.useState(false);
 
   const composerRef = React.useRef<HTMLTextAreaElement | null>(null);
   const panelRef = React.useRef<HTMLDivElement | null>(null);
@@ -114,6 +162,13 @@ export function ChatPanel({ onRequestClose }: ChatPanelProps) {
     return () => window.removeEventListener('keydown', onKey);
   }, [sidebarOpen, onRequestClose]);
 
+  // Cancel any in-flight stream on unmount (panel close).
+  React.useEffect(() => {
+    return () => {
+      cancelStream();
+    };
+  }, [cancelStream]);
+
   // Derived: header mode badge.
   const healthMode: ChatPanelMode | undefined = React.useMemo(() => {
     const h = healthQuery.data;
@@ -129,12 +184,14 @@ export function ChatPanel({ onRequestClose }: ChatPanelProps) {
   const lastTurnMode: ChatPanelMode = lastAssistantTurn?.mode === 'RAG' ? 'rag' : 'rule';
   const headerMode: ChatPanelMode = healthMode ?? lastTurnMode;
 
-  // Avatar state (header).
-  const avatarState: RobotAvatarState = sendMutation.isPending
-    ? 'thinking'
-    : turns.some((t) => t.status === 'error')
-      ? 'error'
-      : 'idle';
+  // Avatar state — driven by streaming phase (P5 — RobotAvatar phase sync).
+  const avatarState: RobotAvatarState = React.useMemo(() => {
+    if (phase === 'thinking') return 'thinking';
+    if (phase === 'speaking') return 'speaking';
+    if (phase === 'error') return 'error';
+    if (turns.some((t) => t.status === 'error')) return 'error';
+    return 'idle';
+  }, [phase, turns]);
 
   // Handlers --------------------------------------------------------------
 
@@ -142,6 +199,7 @@ export function ChatPanel({ onRequestClose }: ChatPanelProps) {
     (text: string) => {
       const trimmed = text.trim().slice(0, 4000);
       if (!trimmed) return;
+      if (isSending) return; // Block double-send while streaming.
 
       const optimisticUser: ChatTurn = {
         id: clientMessageId('u'),
@@ -150,8 +208,9 @@ export function ChatPanel({ onRequestClose }: ChatPanelProps) {
         createdAt: new Date().toISOString(),
         status: 'sent',
       };
+      const pendingAssistantId = clientMessageId('a-pending');
       const optimisticAssistant: ChatTurn = {
-        id: clientMessageId('a-pending'),
+        id: pendingAssistantId,
         role: 'ASSISTANT',
         content: '',
         createdAt: new Date().toISOString(),
@@ -160,30 +219,69 @@ export function ChatPanel({ onRequestClose }: ChatPanelProps) {
 
       setTurns((prev) => [...prev, optimisticUser, optimisticAssistant]);
       setComposerValue('');
+      setIsSending(true);
 
-      sendMutation.mutate(
+      // Track the current id of the pending turn so we can update by it across
+      // the meta event (which swaps the id for the BE-issued messageId).
+      let currentPendingId = pendingAssistantId;
+
+      void sendStream(
         { sessionId: activeSessionId, message: trimmed },
         {
-          onSuccess: (data) => {
-            setActiveSessionId(data.sessionId);
+          onMeta: (meta) => {
+            setActiveSessionId(meta.sessionId);
             setTurns((prev) =>
               prev.map((t) =>
-                t.id === optimisticAssistant.id
+                t.id === currentPendingId
                   ? {
-                      id: data.messageId,
-                      role: 'ASSISTANT',
-                      content: data.response,
-                      mode: data.mode === 'rag' ? 'RAG' : 'RULE',
-                      createdAt: new Date().toISOString(),
-                      sources: data.sources,
-                      actions: data.actions,
-                      status: 'sent',
+                      ...t,
+                      id: meta.messageId,
+                      mode: meta.mode === 'rag' ? 'RAG' : 'RULE',
+                    }
+                  : t,
+              ),
+            );
+            currentPendingId = meta.messageId;
+          },
+          onDelta: (cumulative) => {
+            setTurns((prev) =>
+              prev.map((t) =>
+                t.id === currentPendingId
+                  ? { ...t, content: cumulative }
+                  : t,
+              ),
+            );
+          },
+          onSources: (sources) => {
+            setTurns((prev) =>
+              prev.map((t) =>
+                t.id === currentPendingId ? { ...t, sources } : t,
+              ),
+            );
+          },
+          onActions: (actions) => {
+            setTurns((prev) =>
+              prev.map((t) =>
+                t.id === currentPendingId ? { ...t, actions } : t,
+              ),
+            );
+          },
+          onInlineError: (error) => {
+            const friendly = error.message || '응답을 받지 못했어요. 잠시 후 다시 시도해주세요.';
+            setTurns((prev) =>
+              prev.map((t) =>
+                t.id === currentPendingId
+                  ? {
+                      ...t,
+                      content: t.content || friendly,
+                      status: 'error',
+                      error: { message: friendly, retryable: true },
                     }
                   : t,
               ),
             );
           },
-          onError: (err) => {
+          onTransportError: (err) => {
             const apiErr = err instanceof ApiError ? err : null;
             const isRate = apiErr?.code === 'E_RATE_LIMIT' || apiErr?.status === 429;
             const isAuth = apiErr?.code === 'E_AUTH' || apiErr?.status === 401;
@@ -194,7 +292,6 @@ export function ChatPanel({ onRequestClose }: ChatPanelProps) {
                 : (apiErr?.message ?? '응답을 받지 못했어요. 잠시 후 다시 시도해주세요.');
 
             if (isRate) {
-              // Default 30s if BE doesn't surface retry-after.
               const retryAfter =
                 Number((apiErr?.details as { retryAfterMs?: number } | undefined)?.retryAfterMs) ||
                 30_000;
@@ -204,7 +301,7 @@ export function ChatPanel({ onRequestClose }: ChatPanelProps) {
 
             setTurns((prev) =>
               prev.map((t) =>
-                t.id === optimisticAssistant.id
+                t.id === currentPendingId
                   ? {
                       ...t,
                       content: friendly,
@@ -215,10 +312,25 @@ export function ChatPanel({ onRequestClose }: ChatPanelProps) {
               ),
             );
           },
+          onDone: () => {
+            setIsSending(false);
+            setTurns((prev) =>
+              prev.map((t) => {
+                if (t.id !== currentPendingId) return t;
+                // If we never moved off `pending` (e.g. inline error already
+                // marked it `error`), respect that. Otherwise mark `sent`.
+                if (t.status === 'error') return t;
+                return { ...t, status: 'sent' };
+              }),
+            );
+          },
         },
-      );
+      ).finally(() => {
+        // Safety: ensure isSending is unstuck even if onDone didn't fire.
+        setIsSending(false);
+      });
     },
-    [activeSessionId, sendMutation],
+    [activeSessionId, isSending, sendStream],
   );
 
   const onRetryLastError = React.useCallback(() => {
@@ -246,11 +358,12 @@ export function ChatPanel({ onRequestClose }: ChatPanelProps) {
   }, []);
 
   const onNewSession = React.useCallback(() => {
+    cancelStream();
     setActiveSessionId(undefined);
     setTurns([]);
     setSidebarOpen(false);
     composerRef.current?.focus();
-  }, []);
+  }, [cancelStream]);
 
   const onDeleteSession = React.useCallback(
     (id: string) => {
@@ -263,14 +376,30 @@ export function ChatPanel({ onRequestClose }: ChatPanelProps) {
     [deleteMutation, activeSessionId, onNewSession],
   );
 
-  const onPromptFill = React.useCallback((text: string) => {
+  // R36-polish — composer fill (used by `prompt`-kind actions everywhere).
+  const onSelectPrompt = React.useCallback((text: string) => {
+    setComposerValue(text);
+    composerRef.current?.focus();
+  }, []);
+
+  // R36-polish — `tool`-kind actions in finished bubbles trigger a synthetic
+  // user turn via natural-language prompt (contract §4.2).
+  const onInvokeTool = React.useCallback(
+    (action: ChatAction) => {
+      const prompt = toolToPrompt(action);
+      sendMessage(prompt);
+    },
+    [sendMessage],
+  );
+
+  // Quick-action variants.
+  const onQuickActionPromptFill = React.useCallback((text: string) => {
     setComposerValue((prev) => (prev ? `${prev} ${text}` : text));
     composerRef.current?.focus();
   }, []);
 
-  const onPromptDispatch = React.useCallback(
+  const onQuickActionDispatch = React.useCallback(
     (text: string) => {
-      // Tool-style quick actions: send the label as a synthetic message.
       sendMessage(text);
     },
     [sendMessage],
@@ -319,11 +448,13 @@ export function ChatPanel({ onRequestClose }: ChatPanelProps) {
             Dolly
           </div>
           <div id="chat-panel-desc" className="text-[11px] text-fg-muted">
-            {sendMutation.isPending
+            {phase === 'thinking'
               ? '생각하고 있어요…'
-              : avatarState === 'error'
-                ? '잠시 후 다시 시도해 주세요'
-                : '도면관리 도우미'}
+              : phase === 'speaking'
+                ? '응답하는 중…'
+                : avatarState === 'error'
+                  ? '잠시 후 다시 시도해 주세요'
+                  : '도면관리 도우미'}
           </div>
         </div>
         <ModeBadge mode={headerMode} reason={healthQuery.data?.reason} />
@@ -345,14 +476,19 @@ export function ChatPanel({ onRequestClose }: ChatPanelProps) {
       <div className="relative flex flex-1 flex-col overflow-hidden">
         {isEmpty ? (
           <EmptySession
-            onPromptFill={onPromptFill}
-            onPromptDispatch={onPromptDispatch}
+            onPromptFill={onQuickActionPromptFill}
+            onPromptDispatch={onQuickActionDispatch}
             quickActions={quickActions}
             quickActionsLoading={quickActionsQuery.isLoading}
             mode={headerMode}
           />
         ) : (
-          <MessageList turns={turns} onRetry={onRetryLastError} />
+          <MessageList
+            turns={turns}
+            onRetry={onRetryLastError}
+            onSelectPrompt={onSelectPrompt}
+            onInvokeTool={onInvokeTool}
+          />
         )}
 
         {!isEmpty ? (
@@ -361,7 +497,7 @@ export function ChatPanel({ onRequestClose }: ChatPanelProps) {
               actions={quickActions}
               loading={quickActionsQuery.isLoading}
               layout="row"
-              onPrompt={onPromptDispatch}
+              onPrompt={onQuickActionDispatch}
             />
           </div>
         ) : null}
@@ -384,7 +520,7 @@ export function ChatPanel({ onRequestClose }: ChatPanelProps) {
         onChange={setComposerValue}
         onSubmit={() => sendMessage(composerValue)}
         textareaRef={composerRef}
-        pending={sendMutation.isPending}
+        pending={isSending}
         rateLimitedUntil={rateLimitedUntil ?? undefined}
       />
       <div className="border-t border-border bg-bg/60 px-3 py-1 text-center text-[10px] text-fg-subtle">

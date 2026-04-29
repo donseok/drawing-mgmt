@@ -6,6 +6,13 @@ import { AlertTriangle, Copy, RefreshCw } from 'lucide-react';
 import { useUiStore } from '@/stores/uiStore';
 import { cn } from '@/lib/cn';
 import type { ChatAction, ChatSource, ChatTurn } from '@/lib/chat-types';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
 import { RobotAvatar, type RobotAvatarState } from './RobotAvatar';
 
 interface Props {
@@ -17,6 +24,15 @@ interface Props {
   groupedWithPrev?: boolean;
   /** Click → re-send the previous user message and remove the error. */
   onRetry?: () => void;
+  /**
+   * R36-polish — `prompt`-kind action callback. Fills composer; does NOT send.
+   */
+  onSelectPrompt?: (text: string) => void;
+  /**
+   * R36-polish — `tool`-kind action callback. Sends a synthetic user message
+   * (label-derived natural-language prompt; ChatPanel maps).
+   */
+  onInvokeTool?: (action: ChatAction) => void;
 }
 
 function formatTime(iso: string): string {
@@ -37,7 +53,13 @@ function copyToClipboard(text: string) {
   }
 }
 
-export function MessageBubble({ turn, groupedWithPrev, onRetry }: Props) {
+export function MessageBubble({
+  turn,
+  groupedWithPrev,
+  onRetry,
+  onSelectPrompt,
+  onInvokeTool,
+}: Props) {
   const isUser = turn.role === 'USER';
   const isSystem = turn.role === 'SYSTEM';
   const isError = turn.status === 'error';
@@ -71,9 +93,13 @@ export function MessageBubble({ turn, groupedWithPrev, onRetry }: Props) {
   }
 
   // Assistant turn — branch by status.
+  // While pending we may still have streaming `content` already accumulating;
+  // treat any non-empty content as "speaking" instead of the dot animation so
+  // the user sees text grow in real-time.
+  const hasStreamedText = isPending && turn.content.length > 0;
   const avatarState: RobotAvatarState = isError
     ? 'error'
-    : isPending
+    : isPending && !hasStreamedText
       ? 'thinking'
       : 'speaking';
 
@@ -85,12 +111,17 @@ export function MessageBubble({ turn, groupedWithPrev, onRetry }: Props) {
         ) : null}
       </div>
       <div className="flex max-w-[85%] flex-col gap-1">
-        {isPending ? (
+        {isPending && !hasStreamedText ? (
           <ThinkingBubble />
         ) : isError ? (
           <ErrorBubble turn={turn} onRetry={onRetry} />
         ) : (
-          <AssistantBubble turn={turn} />
+          <AssistantBubble
+            turn={turn}
+            onSelectPrompt={onSelectPrompt}
+            onInvokeTool={onInvokeTool}
+            streaming={hasStreamedText}
+          />
         )}
         <div className="flex items-center gap-2 text-[11px] text-fg-subtle">
           <span>{formatTime(turn.createdAt)}</span>
@@ -167,7 +198,17 @@ function ErrorBubble({ turn, onRetry }: { turn: ChatTurn; onRetry?: () => void }
   );
 }
 
-function AssistantBubble({ turn }: { turn: ChatTurn }) {
+function AssistantBubble({
+  turn,
+  onSelectPrompt,
+  onInvokeTool,
+  streaming,
+}: {
+  turn: ChatTurn;
+  onSelectPrompt?: (text: string) => void;
+  onInvokeTool?: (action: ChatAction) => void;
+  streaming?: boolean;
+}) {
   return (
     <div
       className={cn(
@@ -175,18 +216,33 @@ function AssistantBubble({ turn }: { turn: ChatTurn }) {
         'animate-panel-enter',
       )}
     >
-      <div className="whitespace-pre-wrap break-words">{turn.content}</div>
+      <div className="whitespace-pre-wrap break-words">
+        {turn.content}
+        {streaming ? (
+          <span
+            aria-hidden
+            className="ml-0.5 inline-block h-3 w-1.5 -translate-y-px animate-pulse bg-fg-muted/60"
+          />
+        ) : null}
+      </div>
       {turn.sources && turn.sources.length > 0 ? (
         <SourcesRow sources={turn.sources} />
       ) : null}
       {turn.actions && turn.actions.length > 0 ? (
-        <ActionsRow actions={turn.actions} />
+        <ActionsRow
+          actions={turn.actions}
+          onSelectPrompt={onSelectPrompt}
+          onInvokeTool={onInvokeTool}
+        />
       ) : null}
     </div>
   );
 }
 
 function SourcesRow({ sources }: { sources: ChatSource[] }) {
+  // R36-polish — clicking a citation chip opens a modal with the excerpt.
+  const [openSource, setOpenSource] = React.useState<ChatSource | null>(null);
+
   return (
     <div className="mt-2 border-t border-border/60 pt-2">
       <div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-fg-subtle">
@@ -195,13 +251,27 @@ function SourcesRow({ sources }: { sources: ChatSource[] }) {
       <div className="flex flex-wrap gap-1">
         {sources.map((s) => {
           const high = s.similarity >= 0.8;
+          const hasExcerpt = !!s.excerpt && s.excerpt.length > 0;
           return (
-            <span
+            <button
               key={s.chunkId}
-              title={`${s.source}: ${s.title} · 유사도 ${s.similarity.toFixed(2)}`}
+              type="button"
+              onClick={() => {
+                if (hasExcerpt) setOpenSource(s);
+              }}
+              disabled={!hasExcerpt}
+              title={
+                hasExcerpt
+                  ? `${s.title} 출처 미리보기`
+                  : `${s.source}: ${s.title} · 유사도 ${s.similarity.toFixed(2)}`
+              }
+              aria-label={`${s.title} 출처 미리보기`}
               className={cn(
                 'inline-flex h-6 items-center gap-1 rounded bg-bg-muted px-2 text-[11px] font-medium text-fg-muted',
-                'hover:bg-bg-subtle hover:text-fg',
+                'transition-colors',
+                hasExcerpt
+                  ? 'hover:bg-bg-subtle hover:text-fg cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring'
+                  : 'cursor-not-allowed opacity-70',
               )}
             >
               {high ? (
@@ -209,17 +279,69 @@ function SourcesRow({ sources }: { sources: ChatSource[] }) {
               ) : null}
               <span className="font-semibold uppercase">{s.source}</span>
               <span className="truncate max-w-[140px]">{s.title}</span>
-            </span>
+            </button>
           );
         })}
       </div>
+
+      <Dialog
+        open={!!openSource}
+        onOpenChange={(next) => {
+          if (!next) setOpenSource(null);
+        }}
+      >
+        <DialogContent className="sm:max-w-xl">
+          <DialogHeader>
+            <DialogTitle>
+              <span className="mr-2 inline-flex items-center rounded bg-bg-muted px-1.5 py-0.5 text-[11px] font-semibold uppercase tracking-wide text-fg-muted">
+                {openSource?.source}
+              </span>
+              <span className="align-middle">{openSource?.title}</span>
+            </DialogTitle>
+            <DialogDescription>
+              {openSource
+                ? `유사도 ${(openSource.similarity * 100).toFixed(0)}%`
+                : ''}
+            </DialogDescription>
+          </DialogHeader>
+          {openSource?.excerpt ? (
+            <pre
+              className={cn(
+                'max-h-[60vh] overflow-y-auto rounded-md bg-bg-subtle p-3 text-sm leading-relaxed text-fg',
+                'whitespace-pre-wrap break-words font-sans',
+              )}
+            >
+              {openSource.excerpt}
+            </pre>
+          ) : null}
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
 
-function ActionsRow({ actions }: { actions: ChatAction[] }) {
+function ActionsRow({
+  actions,
+  onSelectPrompt,
+  onInvokeTool,
+}: {
+  actions: ChatAction[];
+  onSelectPrompt?: (text: string) => void;
+  onInvokeTool?: (action: ChatAction) => void;
+}) {
   const router = useRouter();
   const setPaletteOpen = useUiStore((s) => s.setPaletteOpen);
+
+  const isDisabled = (a: ChatAction) => {
+    if (a.kind === 'navigate') return !a.href;
+    if (a.kind === 'palette') return false;
+    if (a.kind === 'prompt') {
+      const text = a.promptText ?? a.label;
+      return !text || !onSelectPrompt;
+    }
+    if (a.kind === 'tool') return !a.toolName || !onInvokeTool;
+    return true;
+  };
 
   const dispatch = (a: ChatAction) => {
     if (a.kind === 'navigate' && a.href) {
@@ -230,9 +352,15 @@ function ActionsRow({ actions }: { actions: ChatAction[] }) {
       setPaletteOpen(true);
       return;
     }
-    // tool/prompt actions inside a finished message bubble are non-trivial
-    // (would need composer access via callback); R36 keeps them no-op visual.
-    // The empty-state QuickActions row covers prompt/tool cases.
+    if (a.kind === 'prompt') {
+      const text = a.promptText ?? a.label;
+      if (text) onSelectPrompt?.(text);
+      return;
+    }
+    if (a.kind === 'tool') {
+      onInvokeTool?.(a);
+      return;
+    }
   };
 
   return (
@@ -246,11 +374,11 @@ function ActionsRow({ actions }: { actions: ChatAction[] }) {
             key={`${a.label}-${i}`}
             type="button"
             onClick={() => dispatch(a)}
-            disabled={a.kind === 'tool' || a.kind === 'prompt'}
+            disabled={isDisabled(a)}
             className={cn(
               'inline-flex h-7 items-center gap-1 rounded-md border border-border bg-bg px-2 text-[11px] font-medium text-fg',
               'transition-colors hover:border-brand hover:text-brand',
-              'disabled:cursor-not-allowed disabled:opacity-50',
+              'disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:border-border disabled:hover:text-fg',
               'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
             )}
           >
