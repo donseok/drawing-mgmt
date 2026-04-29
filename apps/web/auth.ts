@@ -35,8 +35,10 @@ import { z } from 'zod';
 
 import { prisma } from '@/lib/prisma';
 import { authConfig } from '@/auth.config';
-import { verifySamlBridgeToken } from '@/lib/saml';
-import { mintMfaBridgeToken, verifyMfaBridgeToken } from '@/lib/mfa-bridge';
+import { decodeSamlBridgeToken } from '@/lib/saml';
+import { mintMfaBridgeToken } from '@/lib/mfa-bridge';
+import { decodeMfaBridgeToken } from '@/lib/totp';
+import { consumeBridgeJti } from '@/lib/bridge-token-store';
 import { rateLimit, RateLimitConfig } from '@/lib/rate-limit';
 // R48 / FIND-018 — LOGIN_SUCCESS / LOGIN_FAIL ActivityLog rows.
 import { extractRequestMeta, logActivity } from '@/lib/audit';
@@ -229,11 +231,19 @@ async function recordLoginSuccess(
  * login page can surface a stable error.
  */
 async function authorizeSamlBridge(token: string, meta: LoginAuditMeta) {
-  const userId = verifySamlBridgeToken(token);
-  if (!userId) {
+  const payload = decodeSamlBridgeToken(token);
+  if (!payload) {
     await recordLoginFail(meta, 'saml_bridge_invalid', null, null);
     throw new InvalidSamlBridgeError();
   }
+  // 60s SAML bridge TTL; consume jti so the same token cannot be replayed
+  // even within the window (defense against captured proxy logs / browser
+  // history disclosure of the post-ACS callback URL).
+  if (!(await consumeBridgeJti(payload.jti, 60))) {
+    await recordLoginFail(meta, 'saml_bridge_invalid', null, payload.uid);
+    throw new InvalidSamlBridgeError();
+  }
+  const userId = payload.uid;
 
   const user = await prisma.user.findUnique({ where: { id: userId } });
   if (!user || user.deletedAt) {
@@ -268,11 +278,18 @@ async function authorizeSamlBridge(token: string, meta: LoginAuditMeta) {
  * the same shape the password path returns.
  */
 async function authorizeMfaBridge(token: string, meta: LoginAuditMeta) {
-  const userId = verifyMfaBridgeToken(token);
-  if (!userId) {
+  const payload = decodeMfaBridgeToken(token);
+  if (!payload) {
     await recordLoginFail(meta, 'mfa_bridge_invalid', null, null);
     throw new InvalidCredentialsError();
   }
+  // 5-min MFA bridge TTL; consume jti so the post-MFA bridge token cannot
+  // be replayed by a captured copy.
+  if (!(await consumeBridgeJti(payload.jti, 5 * 60))) {
+    await recordLoginFail(meta, 'mfa_bridge_invalid', null, payload.uid);
+    throw new InvalidCredentialsError();
+  }
+  const userId = payload.uid;
   const user = await prisma.user.findUnique({ where: { id: userId } });
   if (!user || user.deletedAt) {
     await recordLoginFail(meta, 'mfa_bridge_invalid', null, userId);

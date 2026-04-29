@@ -38,6 +38,31 @@ export async function logActivity(input: ActivityInput): Promise<void> {
 }
 
 /**
+ * Bulk variant — single `createMany` for N audit rows. Use in bulk endpoints
+ * where the per-row ordering doesn't matter (the createdAt timestamp orders
+ * them deterministically) but the wall time of N sequential round-trips
+ * does. Errors are swallowed identically to `logActivity`.
+ */
+export async function logActivityBatch(rows: readonly ActivityInput[]): Promise<void> {
+  if (rows.length === 0) return;
+  try {
+    await prisma.activityLog.createMany({
+      data: rows.map((r) => ({
+        userId: r.userId,
+        action: r.action,
+        objectId: r.objectId ?? null,
+        ipAddress: r.ipAddress ?? null,
+        userAgent: r.userAgent ?? null,
+        metadata: r.metadata ?? Prisma.JsonNull,
+      })),
+    });
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.error('[audit] failed to write activity log batch', err);
+  }
+}
+
+/**
  * Pull request metadata (IP + UA) from a Headers/Request-like object.
  * Centralized so all routes log consistently.
  */

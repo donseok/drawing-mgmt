@@ -39,7 +39,6 @@ const ObjectState = z.enum([
   'CHECKED_OUT',
   'IN_APPROVAL',
   'APPROVED',
-  'RELEASED',
   'DELETED',
 ]);
 

@@ -31,12 +31,12 @@ import type { NextResponse } from 'next/server';
 import { z } from 'zod';
 import { prisma } from '@/lib/prisma';
 import { ok, error, ErrorCode } from '@/lib/api-response';
-import {
-  mintMfaToken,
-  verifyMfaToken,
-} from '@/lib/mfa-bridge';
-import { findMatchingRecoveryCode, verifyTotp } from '@/lib/totp';
+import { mintMfaToken } from '@/lib/mfa-bridge';
+import { decodeMfaBridgeToken, findMatchingRecoveryCode, verifyTotp } from '@/lib/totp';
+import { consumeBridgeJti } from '@/lib/bridge-token-store';
 import { extractRequestMeta, logActivity } from '@/lib/audit';
+import { withApi } from '@/lib/api-helpers';
+import { rateLimit, RateLimitConfig } from '@/lib/rate-limit';
 
 const bodySchema = z
   .object({
@@ -48,7 +48,7 @@ const bodySchema = z
     message: 'TOTP 코드 또는 복구 코드가 필요합니다.',
   });
 
-export async function POST(req: Request): Promise<NextResponse> {
+async function verifyHandler(req: Request): Promise<NextResponse> {
   let body: unknown;
   try {
     body = await req.json();
@@ -67,15 +67,34 @@ export async function POST(req: Request): Promise<NextResponse> {
   }
   const { mfaToken, code, recoveryCode } = parsed.data;
 
-  // 1) Bridge token verify (HMAC + ttl).
-  const userId = verifyMfaToken(mfaToken);
-  if (!userId) {
+  // 1) Bridge token verify (HMAC + ttl). Single-use consume on the *outbound*
+  //    leg only (after the second factor lands) so legitimate retries on the
+  //    wrong code aren't punished by the jti store.
+  const inboundBridge = decodeMfaBridgeToken(mfaToken);
+  if (!inboundBridge) {
     return error(
       ErrorCode.E_AUTH,
       'MFA 토큰이 만료되었거나 유효하지 않습니다. 다시 로그인해 주세요.',
       401,
       { code: 'MFA_BRIDGE_INVALID' },
     );
+  }
+  const userId = inboundBridge.uid;
+
+  // Per-user TOTP-attempt budget (LOGIN policy: 5/min). Without this the bridge
+  // token's 5-min TTL would otherwise admit unlimited brute force of the
+  // 6-digit TOTP keyspace + 10 bcrypt comparisons per recovery-code attempt.
+  const rl = await rateLimit({
+    key: `mfa-verify:user:${userId}`,
+    ...RateLimitConfig.LOGIN,
+  });
+  if (!rl.allowed) {
+    const resp = error(
+      ErrorCode.E_RATE_LIMIT,
+      '너무 많은 인증 시도가 감지되었습니다. 잠시 후 다시 시도해 주세요.',
+    );
+    resp.headers.set('Retry-After', String(rl.retryAfter));
+    return resp;
   }
 
   const user = await prisma.user.findUnique({
@@ -146,7 +165,19 @@ export async function POST(req: Request): Promise<NextResponse> {
     });
   }
 
-  // 4) Mint a *fresh* bridge token to hand to the credentials provider's
+  // 4) Verify succeeded — consume the inbound bridge jti so a captured copy
+  //    of it (paired with the user's correct code) can't be replayed against
+  //    this endpoint to mint additional session bridges.
+  if (!(await consumeBridgeJti(inboundBridge.jti, 5 * 60))) {
+    return error(
+      ErrorCode.E_AUTH,
+      'MFA 토큰이 이미 사용되었습니다. 다시 로그인해 주세요.',
+      401,
+      { code: 'MFA_BRIDGE_INVALID' },
+    );
+  }
+
+  // 5) Mint a *fresh* bridge token to hand to the credentials provider's
   //    `mfaBridge` mode. We don't reuse the inbound token because by here
   //    its remaining ttl is unknown; minting a new one resets the 5-min
   //    window for the second leg of the round-trip.
@@ -163,3 +194,9 @@ export async function POST(req: Request): Promise<NextResponse> {
 
   return ok({ mfaBridgeToken: sessionBridge });
 }
+
+// CSRF is intentionally skipped: this endpoint runs pre-session during the
+// MFA login bridge round-trip. The bridge token (HMAC + 5-min TTL) is the
+// proof, not a session cookie. Rate limit at the IP level (api scope) and
+// per-userId (LOGIN policy, applied inside the handler).
+export const POST = withApi({ skipCsrf: true, rateLimit: 'api' }, verifyHandler);

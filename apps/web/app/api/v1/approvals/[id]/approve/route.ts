@@ -17,6 +17,7 @@ import { ok, error, ErrorCode } from '@/lib/api-response';
 import { extractRequestMeta, logActivity } from '@/lib/audit';
 import { enqueueNotification } from '@/lib/notifications';
 import { withApi } from '@/lib/api-helpers';
+import { canTransition } from '@/lib/state-machine';
 
 const bodySchema = z.object({
   comment: z.string().max(2000).optional(),
@@ -86,6 +87,13 @@ export async function approveHandler(
   const isLast =
     approval.steps.filter((s) => s.status === StepStatus.PENDING).length === 1;
 
+  let nextObjectState: ObjectState | null = null;
+  if (isLast) {
+    const t = canTransition(approval.revision.object.state, 'approve', { userId: user.id });
+    if (!t.ok || !t.next) return error(ErrorCode.E_STATE_CONFLICT, t.message);
+    nextObjectState = t.next;
+  }
+
   const now = new Date();
 
   const result = await prisma.$transaction(async (tx) => {
@@ -146,7 +154,7 @@ export async function approveHandler(
     await tx.objectEntity.update({
       where: { id: obj.id },
       data: {
-        state: ObjectState.APPROVED,
+        state: nextObjectState!,
         currentRevision: nextRev,
         currentVersion: new Prisma.Decimal('0.0'),
         lockedById: null,
@@ -170,7 +178,7 @@ export async function approveHandler(
 
     return {
       approvalStatus: ApprovalStatus.APPROVED,
-      objectState: ObjectState.APPROVED,
+      objectState: nextObjectState!,
     };
   });
 

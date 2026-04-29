@@ -43,7 +43,7 @@ import {
 import { ok, error, ErrorCode } from '@/lib/api-response';
 import type { ApiErrorCode } from '@/lib/api-errors';
 import { canTransition } from '@/lib/state-machine';
-import { extractRequestMeta, logActivity } from '@/lib/audit';
+import { extractRequestMeta, logActivityBatch } from '@/lib/audit';
 import { withApi } from '@/lib/api-helpers';
 
 const MAX_BATCH = 50;
@@ -157,10 +157,10 @@ async function handlePost(req: Request): Promise<NextResponse> {
   const meta = extractRequestMeta(req);
   const successes: SuccessRow[] = [];
   const failures: FailureRow[] = [];
+  const auditRows: Parameters<typeof logActivityBatch>[0][number][] = [];
 
   // Process each id sequentially. Parallel `$transaction` calls would race
-  // on the per-revision approval uniqueness check; sequential keeps the audit
-  // log ordered too.
+  // on the per-revision approval uniqueness check.
   for (const id of uniqueIds) {
     const obj = byId.get(id);
     if (!obj) {
@@ -246,9 +246,9 @@ async function handlePost(req: Request): Promise<NextResponse> {
         return { approvalId: approval.id };
       });
 
-      // Audit log lives outside the transaction so a slow log write doesn't
-      // hold the row lock; the matching approval already exists by then.
-      await logActivity({
+      // Defer the audit row to the end-of-batch createMany — keeps the
+      // request path off N round-trips while preserving per-row metadata.
+      auditRows.push({
         userId: user.id,
         action: 'OBJECT_RELEASE',
         objectId: obj.id,
@@ -282,6 +282,8 @@ async function handlePost(req: Request): Promise<NextResponse> {
       });
     }
   }
+
+  await logActivityBatch(auditRows);
 
   return ok({ successes, failures });
 }

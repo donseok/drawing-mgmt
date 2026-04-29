@@ -30,6 +30,7 @@ import {
   toPermissionUser,
 } from '@/lib/permissions';
 import { ok, error, ErrorCode } from '@/lib/api-response';
+import { collectFolderSubtreeIds } from '@/lib/folders';
 
 const FACET_CANDIDATE_CAP = 1000;
 
@@ -244,28 +245,6 @@ export async function GET(req: Request): Promise<NextResponse> {
   );
 }
 
-/** Same helper used by /objects — kept duplicated to avoid touching shared lib. */
-async function collectFolderSubtreeIds(rootId: string): Promise<string[]> {
-  const all = await prisma.folder.findMany({
-    select: { id: true, parentId: true },
-  });
-  const childrenByParent = new Map<string, string[]>();
-  for (const f of all) {
-    if (!f.parentId) continue;
-    const arr = childrenByParent.get(f.parentId) ?? [];
-    arr.push(f.id);
-    childrenByParent.set(f.parentId, arr);
-  }
-  const out: string[] = [];
-  const stack = [rootId];
-  while (stack.length > 0) {
-    const id = stack.pop()!;
-    out.push(id);
-    const kids = childrenByParent.get(id);
-    if (kids) stack.push(...kids);
-  }
-  return out;
-}
 
 function parseDateRange(s: string): { from: Date; to: Date } | null {
   const range = s.split('..');

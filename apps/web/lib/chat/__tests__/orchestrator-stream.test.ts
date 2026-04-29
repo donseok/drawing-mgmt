@@ -115,7 +115,13 @@ async function consume(
   return events;
 }
 
-const USER = { id: 'user-1', role: 'DESIGNER', securityLevel: 3 };
+const USER = {
+  id: 'user-1',
+  role: 'DESIGNER',
+  securityLevel: 3,
+  organizationId: null,
+  groupIds: [] as string[],
+};
 
 beforeEach(() => {
   insertedMessages.length = 0;

@@ -71,11 +71,42 @@ const detailInclude = {
     },
   },
   revisions: {
+    // Most-recent slice only — older revisions are paginated via
+    // /api/v1/objects/{id}/revisions when the FE's history tab opens.
+    take: 20,
     orderBy: { rev: 'desc' as const },
     include: {
       versions: {
         orderBy: { ver: 'desc' as const },
-        include: { attachments: true },
+        include: {
+          // Explicit select: omit Attachment.contentText (extracted PDF body,
+          // KB-MB per row) which the detail page never reads. Trims payloads
+          // by orders of magnitude on revisions × versions × attachments.
+          attachments: {
+            select: {
+              id: true,
+              versionId: true,
+              filename: true,
+              storagePath: true,
+              mimeType: true,
+              size: true,
+              isMaster: true,
+              checksumSha256: true,
+              pdfPath: true,
+              dxfPath: true,
+              svgPath: true,
+              thumbnailPath: true,
+              conversionStatus: true,
+              createdAt: true,
+              virusScanStatus: true,
+              virusScanSig: true,
+              virusScanAt: true,
+              pdfExtractStatus: true,
+              pdfExtractAt: true,
+              pdfExtractError: true,
+            },
+          },
+        },
       },
     },
   },

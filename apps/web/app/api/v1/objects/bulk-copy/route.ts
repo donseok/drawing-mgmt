@@ -30,7 +30,7 @@ import {
 } from '@/lib/permissions';
 import { ok, error, ErrorCode } from '@/lib/api-response';
 import type { ApiErrorCode } from '@/lib/api-errors';
-import { extractRequestMeta, logActivity } from '@/lib/audit';
+import { extractRequestMeta, logActivityBatch } from '@/lib/audit';
 import { withApi } from '@/lib/api-helpers';
 
 const MAX_BATCH = 200;
@@ -125,18 +125,32 @@ async function handlePost(req: Request): Promise<NextResponse> {
     );
   }
 
-  // Pre-load existing numbers so we can derive collision-free copy numbers
-  // without per-row catch loops. The BE still catches P2002 as a safety net
-  // in case another writer slips a number in mid-batch.
-  const existingNumbers = new Set<string>(
-    (
-      await prisma.objectEntity.findMany({ select: { number: true } })
-    ).map((r) => r.number),
+  // Pre-load only numbers that could collide with `<base>-COPY[N]` for the
+  // sources we're about to copy. Previously this loaded the entire
+  // ObjectEntity table just to derive non-colliding suffixes (~2MB at 100k
+  // drawings). The BE still catches P2002 as a safety net if another writer
+  // slips a number in mid-batch.
+  const sourcePrefixes = Array.from(
+    new Set(
+      uniqueIds
+        .map((id) => byId.get(id)?.number)
+        .filter((n): n is string => Boolean(n))
+        .map((n) => `${n}-COPY`),
+    ),
   );
+  const existingNumbers = new Set<string>();
+  if (sourcePrefixes.length > 0) {
+    const rows = await prisma.objectEntity.findMany({
+      where: { OR: sourcePrefixes.map((p) => ({ number: { startsWith: p } })) },
+      select: { number: true },
+    });
+    for (const r of rows) existingNumbers.add(r.number);
+  }
 
   const meta = extractRequestMeta(req);
   const successes: SuccessRow[] = [];
   const failures: FailureRow[] = [];
+  const auditRows: Parameters<typeof logActivityBatch>[0][number][] = [];
 
   for (const id of uniqueIds) {
     const src = byId.get(id);
@@ -188,7 +202,7 @@ async function handlePost(req: Request): Promise<NextResponse> {
         }
         return row;
       });
-      await logActivity({
+      auditRows.push({
         userId: user.id,
         action: 'OBJECT_COPY',
         objectId: created.id,
@@ -225,6 +239,8 @@ async function handlePost(req: Request): Promise<NextResponse> {
       });
     }
   }
+
+  await logActivityBatch(auditRows);
 
   return ok({ successes, failures });
 }

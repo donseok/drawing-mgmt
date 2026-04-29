@@ -37,7 +37,7 @@ import {
 } from '@/lib/permissions';
 import { ok, error, ErrorCode } from '@/lib/api-response';
 import type { ApiErrorCode } from '@/lib/api-errors';
-import { extractRequestMeta, logActivity } from '@/lib/audit';
+import { extractRequestMeta, logActivityBatch } from '@/lib/audit';
 import { withApi } from '@/lib/api-helpers';
 import { getStorage } from '@/lib/storage';
 import {
@@ -394,11 +394,11 @@ async function handlePost(req: Request): Promise<NextResponse> {
     );
   }
 
-  // 7) Audit log per row (kind: PDF_MERGE_REQUEST). Sequential so the
-  //    activity feed reads in selection order.
+  // 7) Audit log per row (kind: PDF_MERGE_REQUEST). Single createMany so the
+  //    response doesn't pay N round-trips on a 50-row click.
   const reqMeta = extractRequestMeta(req);
-  for (const id of uniqueIds) {
-    await logActivity({
+  await logActivityBatch(
+    uniqueIds.map((id) => ({
       userId: user.id,
       action: 'OBJECT_PRINT',
       objectId: id,
@@ -412,8 +412,8 @@ async function handlePost(req: Request): Promise<NextResponse> {
         bulk: true,
         objectCount: uniqueIds.length,
       },
-    });
-  }
+    })),
+  );
 
   return ok({
     jobId: jobRowId,

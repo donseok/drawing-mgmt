@@ -29,7 +29,17 @@ import { ensureApprovalDemoSeed } from '@/lib/demo-seed';
 
 const querySchema = z.object({
   box: z.enum(['waiting', 'done', 'sent', 'recall', 'trash']).default('waiting'),
+  /**
+   * Cursor — last seen approval id from the previous page. The page advances
+   * in `createdAt DESC, id DESC` order; the cursor is positioned just past
+   * that row (Prisma `cursor` + `skip:1`).
+   */
+  cursor: z.string().optional(),
+  /** Page size. Default 50; cap 200. */
+  limit: z.coerce.number().int().min(1).max(200).optional(),
 });
+
+const DEFAULT_PAGE_SIZE = 50;
 
 export async function GET(req: Request): Promise<NextResponse> {
   let user;
@@ -43,11 +53,17 @@ export async function GET(req: Request): Promise<NextResponse> {
   const url = new URL(req.url);
   const parsed = querySchema.safeParse({
     box: url.searchParams.get('box') ?? 'waiting',
+    cursor: url.searchParams.get('cursor') ?? undefined,
+    limit: url.searchParams.get('limit') ?? undefined,
   });
   if (!parsed.success) {
     return error(ErrorCode.E_VALIDATION, undefined, undefined, parsed.error.flatten());
   }
-  const { box } = parsed.data;
+  const { box, cursor, limit } = parsed.data;
+  const take = limit ?? DEFAULT_PAGE_SIZE;
+  const cursorOpts: { cursor?: { id: string }; skip?: number } = cursor
+    ? { cursor: { id: cursor }, skip: 1 }
+    : {};
 
   const baseInclude = {
     requester: { select: { id: true, username: true, fullName: true } },
@@ -88,8 +104,10 @@ export async function GET(req: Request): Promise<NextResponse> {
           ],
         },
       },
-      orderBy: { createdAt: 'desc' },
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
       include: baseInclude,
+      take,
+      ...cursorOpts,
     });
     return ok(data);
   }
@@ -100,8 +118,10 @@ export async function GET(req: Request): Promise<NextResponse> {
         requesterId: user.id,
         status: ApprovalStatus.CANCELLED,
       },
-      orderBy: { createdAt: 'desc' },
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
       include: baseInclude,
+      take,
+      ...cursorOpts,
     });
     return ok(data);
   }
@@ -113,8 +133,10 @@ export async function GET(req: Request): Promise<NextResponse> {
           object: { deletedAt: { not: null }, state: ObjectState.DELETED },
         },
       },
-      orderBy: { createdAt: 'desc' },
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
       include: baseInclude,
+      take,
+      ...cursorOpts,
     });
     return ok(data);
   }
@@ -129,37 +151,45 @@ export async function GET(req: Request): Promise<NextResponse> {
           },
         },
       },
-      orderBy: { createdAt: 'desc' },
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
       include: baseInclude,
+      take,
+      ...cursorOpts,
     });
     return ok(data);
   }
 
-  // waiting
-  // Approvals that are PENDING and where the current user has a PENDING step
-  // at the *lowest* PENDING order (i.e. it's their turn).
+  // waiting — approvals where it's the user's turn (their step is the
+  // lowest-order PENDING). The "lowest pending order" derivation can't be
+  // expressed in pure Prisma, so we over-fetch by `take * 2` then JS-filter
+  // to the active-for-me rows. Bounded read instead of the unbounded scan
+  // we had before.
   const candidates = await prisma.approval.findMany({
     where: {
       status: ApprovalStatus.PENDING,
       steps: { some: { approverId: user.id, status: StepStatus.PENDING } },
     },
     include: baseInclude,
-    orderBy: { createdAt: 'desc' },
+    orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+    take: take * 2,
+    ...cursorOpts,
   });
 
-  const data = candidates.filter((a) => {
-    const pendingOrders = a.steps
-      .filter((s) => s.status === StepStatus.PENDING)
-      .map((s) => s.order);
-    if (pendingOrders.length === 0) return false;
-    const minOrder = Math.min(...pendingOrders);
-    return a.steps.some(
-      (s) =>
-        s.order === minOrder &&
-        s.approverId === user.id &&
-        s.status === StepStatus.PENDING,
-    );
-  });
+  const data = candidates
+    .filter((a) => {
+      const pendingOrders = a.steps
+        .filter((s) => s.status === StepStatus.PENDING)
+        .map((s) => s.order);
+      if (pendingOrders.length === 0) return false;
+      const minOrder = Math.min(...pendingOrders);
+      return a.steps.some(
+        (s) =>
+          s.order === minOrder &&
+          s.approverId === user.id &&
+          s.status === StepStatus.PENDING,
+      );
+    })
+    .slice(0, take);
 
   return ok(data);
 }

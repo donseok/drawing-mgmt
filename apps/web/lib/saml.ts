@@ -315,9 +315,18 @@ function getBridgeKey(): Buffer {
   return crypto.createHash('sha256').update(`saml-bridge:${secret}`).digest();
 }
 
+export interface SamlBridgePayload {
+  uid: string;
+  jti: string;
+}
+
 /** Mint a single-use, short-lived bridge token referencing a provisioned User.id. */
 export function mintSamlBridgeToken(userId: string): string {
-  const payload = JSON.stringify({ uid: userId, exp: Date.now() + BRIDGE_TTL_MS });
+  const payload = JSON.stringify({
+    uid: userId,
+    jti: crypto.randomUUID(),
+    exp: Date.now() + BRIDGE_TTL_MS,
+  });
   const body = Buffer.from(payload, 'utf8').toString('base64url');
   const sig = crypto
     .createHmac('sha256', getBridgeKey())
@@ -327,10 +336,11 @@ export function mintSamlBridgeToken(userId: string): string {
 }
 
 /**
- * Verify a bridge token; returns userId on success or null on any failure
- * (bad signature, expired, malformed). Constant-time comparison.
+ * Decode + verify HMAC + `exp`. Returns the full payload (uid + jti) or null
+ * on any failure. Pure — does not consume the jti; pair with
+ * `consumeBridgeJti(payload.jti, …)` to enforce single-use.
  */
-export function verifySamlBridgeToken(token: string): string | null {
+export function decodeSamlBridgeToken(token: string): SamlBridgePayload | null {
   const parts = token.split('.');
   if (parts.length !== 2) return null;
   const [body, sig] = parts as [string, string];
@@ -340,7 +350,6 @@ export function verifySamlBridgeToken(token: string): string | null {
     .update(body)
     .digest('base64url');
 
-  // Constant-time compare. Lengths must match for timingSafeEqual.
   let sigBuf: Buffer;
   let expBuf: Buffer;
   try {
@@ -356,13 +365,24 @@ export function verifySamlBridgeToken(token: string): string | null {
     const decoded = JSON.parse(Buffer.from(body, 'base64url').toString('utf8')) as {
       uid?: unknown;
       exp?: unknown;
+      jti?: unknown;
     };
     if (typeof decoded.uid !== 'string' || typeof decoded.exp !== 'number') {
       return null;
     }
     if (decoded.exp < Date.now()) return null;
-    return decoded.uid;
+    const jti = typeof decoded.jti === 'string' ? decoded.jti : '';
+    return { uid: decoded.uid, jti };
   } catch {
     return null;
   }
+}
+
+/**
+ * Sync wrapper — returns userId on a valid HMAC+exp match. Does NOT enforce
+ * jti single-use; callers needing replay protection should use
+ * `decodeSamlBridgeToken` + `consumeBridgeJti`.
+ */
+export function verifySamlBridgeToken(token: string): string | null {
+  return decodeSamlBridgeToken(token)?.uid ?? null;
 }

@@ -93,19 +93,29 @@ export const POST = withApi<{ params: { id: string } }>(
     }
   }
 
-  // Pre-compute used folderCodes so we can derive non-colliding codes for
-  // descendant copies in one pass instead of catching unique-violation
-  // exceptions per row.
-  const existingCodes = new Set<string>(
-    (
-      await prisma.folder.findMany({ select: { folderCode: true } })
-    ).map((f) => f.folderCode),
-  );
-
   // Build descendant subtree once.
   const descendants = includeChildren
     ? await loadSubtree(source.id)
     : { nodes: [], edges: [] };
+
+  // Pre-load only folderCodes that could collide with this copy operation:
+  //   - the user-supplied root code (exact match),
+  //   - the `<base>-COPY[N]` family for the source root and every descendant.
+  // Previously this loaded the entire Folder table.
+  const codePrefixes = Array.from(
+    new Set([source.folderCode, ...descendants.nodes.map((n) => n.folderCode)].map((c) => `${c}-COPY`)),
+  );
+  const existingCodes = new Set<string>();
+  const collisionRows = await prisma.folder.findMany({
+    where: {
+      OR: [
+        { folderCode: dto.folderCode },
+        ...codePrefixes.map((p) => ({ folderCode: { startsWith: p } })),
+      ],
+    },
+    select: { folderCode: true },
+  });
+  for (const r of collisionRows) existingCodes.add(r.folderCode);
 
   type CreatedRow = { oldId: string; newId: string };
   const created: CreatedRow[] = [];

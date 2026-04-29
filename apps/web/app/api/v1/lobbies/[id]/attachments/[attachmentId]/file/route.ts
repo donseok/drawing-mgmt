@@ -18,6 +18,7 @@ import { Readable } from 'node:stream';
 import { prisma } from '@/lib/prisma';
 import { requireUser } from '@/lib/auth-helpers';
 import { error, ErrorCode } from '@/lib/api-response';
+import { isInfected } from '@/lib/scan-guard';
 
 const STORAGE_ROOT = path.resolve(process.env.FILE_STORAGE_ROOT ?? './.data/files');
 
@@ -58,6 +59,22 @@ export async function GET(
   });
   if (!attachment || attachment.lobbyId !== lobby.id) {
     return error(ErrorCode.E_NOT_FOUND);
+  }
+
+  // R47/H-5 — virus-scan gate. The lobby attachment row mirrors the source
+  // attachment's storagePath; if any source row with that path is INFECTED we
+  // refuse to stream the bytes, matching the policy on /attachments/[id]/file.
+  // This prevents the lobby flow from being a malware proxy when ClamAV flags
+  // a file post-upload.
+  const sourceScan = await prisma.attachment.findFirst({
+    where: { storagePath: attachment.storagePath },
+    select: { virusScanStatus: true, virusScanSig: true },
+  });
+  if (sourceScan && isInfected(sourceScan.virusScanStatus)) {
+    return error(
+      ErrorCode.E_FORBIDDEN,
+      `바이러스 감염 — 다운로드 차단 (${sourceScan.virusScanSig ?? '시그니처 미상'})`,
+    );
   }
 
   // The storagePath in R18 is the source attachment's `storagePath` field —

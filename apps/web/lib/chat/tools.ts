@@ -7,18 +7,16 @@
 //   - get_recent_activity    — recent ActivityLog rows for an object
 //   - get_help               — short stub returning a topic snippet
 //
-// Each tool runs server-side with the *caller's* security level applied.
-// We rely on `securityLevel <= user.securityLevel` as the access filter
-// (lower number = higher clearance, see PRD §4) plus `deletedAt IS NULL`.
-// Folder-level permission checks are NOT done here — search results are
-// always restricted to the caller's clearance, and individual fetches link
-// to the proper detail page where full permission gating lives.
+// Each tool runs server-side with the caller's full permission context
+// applied: securityLevel + role + organizationId + groupIds drive the same
+// `canAccess` evaluation used by `/api/v1/objects` and friends, so the chat
+// surface can never expose drawings that FolderPermission denies.
 //
 // Inputs are zod-parsed (the schemas already exist in shared). Output is a
 // stable JSON-serializable shape consumed by either the LLM (tool_call
 // results) or the orchestrator (when the FE clicks an action chip).
 
-import { Prisma, type ObjectState } from '@prisma/client';
+import { Prisma, type ObjectState, type Role } from '@prisma/client';
 import { prisma } from '@/lib/prisma';
 import {
   SearchDrawingsInputSchema,
@@ -28,11 +26,25 @@ import {
   GetHelpInputSchema,
   type ChatToolName,
 } from '@drawing-mgmt/shared';
+import { canAccess, loadFolderPermissions } from '@/lib/permissions';
+import type { PermissionUser } from '@drawing-mgmt/shared/permissions';
 
 export interface ToolUserCtx {
   id: string;
   securityLevel: number;
   role: string;
+  organizationId: string | null;
+  groupIds: string[];
+}
+
+function toPermissionUserFromCtx(user: ToolUserCtx): PermissionUser {
+  return {
+    id: user.id,
+    role: user.role as Role,
+    securityLevel: user.securityLevel,
+    organizationId: user.organizationId,
+    groupIds: user.groupIds,
+  };
 }
 
 export interface ToolResult {
@@ -120,18 +132,34 @@ async function runSearchDrawings(args: unknown, user: ToolUserCtx): Promise<Tool
       state: true,
       currentRevision: true,
       currentVersion: true,
+      ownerId: true,
+      folderId: true,
+      securityLevel: true,
       updatedAt: true,
       class: { select: { code: true, name: true } },
       folder: { select: { id: true, name: true, folderCode: true } },
     },
   });
 
+  const pUser = toPermissionUserFromCtx(user);
+  const folderIds = Array.from(new Set(rows.map((r) => r.folderId)));
+  const perms = await loadFolderPermissions(folderIds);
+  const visible = rows.filter(
+    (r) =>
+      canAccess(
+        pUser,
+        { id: r.id, folderId: r.folderId, ownerId: r.ownerId, securityLevel: r.securityLevel },
+        perms,
+        'VIEW',
+      ).allowed,
+  );
+
   return {
     ok: true,
     toolName: 'search_drawings',
     data: {
-      count: rows.length,
-      items: rows.map((r) => ({
+      count: visible.length,
+      items: visible.map((r) => ({
         id: r.id,
         number: r.number,
         name: r.name,
@@ -179,6 +207,8 @@ async function runGetDrawing(args: unknown, user: ToolUserCtx): Promise<ToolResu
       currentRevision: true,
       currentVersion: true,
       securityLevel: true,
+      ownerId: true,
+      folderId: true,
       updatedAt: true,
       owner: { select: { id: true, fullName: true } },
       class: { select: { code: true, name: true } },
@@ -187,6 +217,22 @@ async function runGetDrawing(args: unknown, user: ToolUserCtx): Promise<ToolResu
   });
 
   if (!row) {
+    return {
+      ok: false,
+      toolName: 'get_drawing',
+      error: { code: 'NOT_FOUND', message: '해당 도면을 찾을 수 없거나 권한이 없습니다.' },
+    };
+  }
+
+  const pUser = toPermissionUserFromCtx(user);
+  const perms = await loadFolderPermissions([row.folderId]);
+  const decision = canAccess(
+    pUser,
+    { id: row.id, folderId: row.folderId, ownerId: row.ownerId, securityLevel: row.securityLevel },
+    perms,
+    'VIEW',
+  );
+  if (!decision.allowed) {
     return {
       ok: false,
       toolName: 'get_drawing',

@@ -23,6 +23,7 @@ import { z } from 'zod';
 import { requireUser } from '@/lib/auth-helpers';
 import { ok, error, ErrorCode } from '@/lib/api-response';
 import { withApi } from '@/lib/api-helpers';
+import { prisma } from '@/lib/prisma';
 import {
   handleChatTurn,
   handleChatTurnStream,
@@ -59,7 +60,17 @@ async function handlePost(req: Request): Promise<NextResponse> {
     return error(ErrorCode.E_VALIDATION, undefined, undefined, parsed.error.flatten());
   }
 
-  const userCtx = { id: user.id, role: user.role, securityLevel: user.securityLevel };
+  const memberships = await prisma.userGroup.findMany({
+    where: { userId: user.id },
+    select: { groupId: true },
+  });
+  const userCtx = {
+    id: user.id,
+    role: user.role,
+    securityLevel: user.securityLevel,
+    organizationId: user.organizationId,
+    groupIds: memberships.map((m) => m.groupId),
+  };
 
   if (wantsStreamingResponse(req)) {
     // NextResponse extends Response — both share the (body, init) constructor
@@ -90,7 +101,13 @@ async function handlePost(req: Request): Promise<NextResponse> {
 }
 
 interface StreamingArgs {
-  user: { id: string; role: string; securityLevel: number };
+  user: {
+    id: string;
+    role: string;
+    securityLevel: number;
+    organizationId: string | null;
+    groupIds: string[];
+  };
   message: string;
   sessionId: string | undefined;
 }

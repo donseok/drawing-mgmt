@@ -198,9 +198,15 @@ function getMfaBridgeKey(): Buffer {
   return crypto.createHash('sha256').update(`mfa-bridge:${secret}`).digest();
 }
 
+export interface MfaBridgePayload {
+  uid: string;
+  jti: string;
+}
+
 export function mintMfaBridgeToken(userId: string): string {
   const payload = JSON.stringify({
     uid: userId,
+    jti: crypto.randomUUID(),
     exp: Date.now() + MFA_BRIDGE_TTL_MS,
   });
   const body = Buffer.from(payload, 'utf8').toString('base64url');
@@ -212,10 +218,11 @@ export function mintMfaBridgeToken(userId: string): string {
 }
 
 /**
- * Verify a bridge token; returns userId on success or null on any failure.
- * Constant-time signature comparison.
+ * Decode + verify HMAC + check `exp`. Returns the full payload (uid + jti)
+ * or null on any failure. Pure — does not consume the jti; pair with
+ * `consumeBridgeJti(payload.jti, …)` to enforce single-use.
  */
-export function verifyMfaBridgeToken(token: string): string | null {
+export function decodeMfaBridgeToken(token: string): MfaBridgePayload | null {
   const parts = token.split('.');
   if (parts.length !== 2) return null;
   const [body, sig] = parts as [string, string];
@@ -240,13 +247,27 @@ export function verifyMfaBridgeToken(token: string): string | null {
     const decoded = JSON.parse(Buffer.from(body, 'base64url').toString('utf8')) as {
       uid?: unknown;
       exp?: unknown;
+      jti?: unknown;
     };
     if (typeof decoded.uid !== 'string' || typeof decoded.exp !== 'number') {
       return null;
     }
     if (decoded.exp < Date.now()) return null;
-    return decoded.uid;
+    // `jti` was added later; legacy tokens minted before the field existed
+    // still verify but yield empty jti — `consumeBridgeJti('')` returns false
+    // so they can't be replayed once any consume runs.
+    const jti = typeof decoded.jti === 'string' ? decoded.jti : '';
+    return { uid: decoded.uid, jti };
   } catch {
     return null;
   }
+}
+
+/**
+ * Sync compatibility wrapper — returns userId on a valid HMAC+exp match.
+ * Does NOT enforce jti single-use; callers that need replay protection
+ * should use `decodeMfaBridgeToken` + `consumeBridgeJti`.
+ */
+export function verifyMfaBridgeToken(token: string): string | null {
+  return decodeMfaBridgeToken(token)?.uid ?? null;
 }

@@ -22,6 +22,7 @@ import { ok, error, ErrorCode } from '@/lib/api-response';
 import { extractRequestMeta, logActivity } from '@/lib/audit';
 import { evaluateNumberRule } from '@/lib/db-helpers';
 import { withApi } from '@/lib/api-helpers';
+import { collectFolderSubtreeIds } from '@/lib/folders';
 
 const SORT_FIELDS = ['registeredAt', 'number', 'name', 'revision', 'state'] as const;
 const SORT_DIRS = ['asc', 'desc'] as const;
@@ -717,32 +718,6 @@ function parseDateRange(s: string): { from: Date; to: Date } | null {
   const to = parseDate(s, true);
   if (!from || !to) return null;
   return { from, to };
-}
-
-/**
- * Walk the Folder tree from `rootId` downward and return all reachable folder
- * ids (including the root). Used so a folder click filters descendants too.
- */
-async function collectFolderSubtreeIds(rootId: string): Promise<string[]> {
-  const all = await prisma.folder.findMany({
-    select: { id: true, parentId: true },
-  });
-  const childrenByParent = new Map<string, string[]>();
-  for (const f of all) {
-    if (!f.parentId) continue;
-    const arr = childrenByParent.get(f.parentId) ?? [];
-    arr.push(f.id);
-    childrenByParent.set(f.parentId, arr);
-  }
-  const out: string[] = [];
-  const stack = [rootId];
-  while (stack.length > 0) {
-    const id = stack.pop()!;
-    out.push(id);
-    const kids = childrenByParent.get(id);
-    if (kids) stack.push(...kids);
-  }
-  return out;
 }
 
 function parseDate(s: string, end = false): Date | null {

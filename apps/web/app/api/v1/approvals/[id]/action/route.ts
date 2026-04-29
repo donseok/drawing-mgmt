@@ -21,12 +21,13 @@
 
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
-import { ApprovalStatus, ObjectState, StepStatus } from '@prisma/client';
+import { ApprovalStatus, StepStatus } from '@prisma/client';
 import { prisma } from '@/lib/prisma';
 import { requireUser } from '@/lib/auth-helpers';
 import { ok, error, ErrorCode } from '@/lib/api-response';
 import { extractRequestMeta, logActivity } from '@/lib/audit';
 import { withApi } from '@/lib/api-helpers';
+import { canTransition } from '@/lib/state-machine';
 import { approveHandler } from '@/app/api/v1/approvals/[id]/approve/route';
 import { rejectHandler } from '@/app/api/v1/approvals/[id]/reject/route';
 
@@ -197,16 +198,19 @@ async function handleRecall(
 
   const now = new Date();
 
+  const t = canTransition(approval.revision.object.state, 'recall', { userId });
+  const nextObjectState = t.ok && t.next ? t.next : approval.revision.object.state;
+
   await prisma.$transaction(async (tx) => {
     await tx.approval.update({
       where: { id: approval.id },
       data: { status: ApprovalStatus.CANCELLED, completedAt: now },
     });
     // Release the underlying object lock so the requester can revise.
-    if (approval.revision.object.state === ObjectState.IN_APPROVAL) {
+    if (t.ok && t.next) {
       await tx.objectEntity.update({
         where: { id: approval.revision.object.id },
-        data: { state: ObjectState.CHECKED_IN, lockedById: null },
+        data: { state: t.next, lockedById: null },
       });
     }
   });
@@ -224,9 +228,6 @@ async function handleRecall(
   return ok({
     approvalId,
     approvalStatus: ApprovalStatus.CANCELLED,
-    objectState:
-      approval.revision.object.state === ObjectState.IN_APPROVAL
-        ? ObjectState.CHECKED_IN
-        : approval.revision.object.state,
+    objectState: nextObjectState,
   });
 }

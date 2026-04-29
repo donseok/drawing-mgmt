@@ -7,13 +7,14 @@
 
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
-import { ApprovalStatus, ObjectState, StepStatus } from '@prisma/client';
+import { ApprovalStatus, StepStatus } from '@prisma/client';
 import { prisma } from '@/lib/prisma';
 import { requireUser } from '@/lib/auth-helpers';
 import { ok, error, ErrorCode } from '@/lib/api-response';
 import { extractRequestMeta, logActivity } from '@/lib/audit';
 import { enqueueNotification } from '@/lib/notifications';
 import { withApi } from '@/lib/api-helpers';
+import { canTransition } from '@/lib/state-machine';
 
 const bodySchema = z.object({
   comment: z.string().min(1).max(2000),
@@ -66,6 +67,10 @@ export async function rejectHandler(
     return error(ErrorCode.E_FORBIDDEN, '본인 차례의 결재가 아닙니다.');
   }
 
+  const t = canTransition(approval.revision.object.state, 'reject', { userId: user.id });
+  if (!t.ok || !t.next) return error(ErrorCode.E_STATE_CONFLICT, t.message);
+  const nextObjectState = t.next;
+
   const now = new Date();
 
   await prisma.$transaction(async (tx) => {
@@ -84,7 +89,7 @@ export async function rejectHandler(
     });
     await tx.objectEntity.update({
       where: { id: approval.revision.object.id },
-      data: { state: ObjectState.CHECKED_IN, lockedById: null },
+      data: { state: nextObjectState, lockedById: null },
     });
 
     // R29 / N-1 — notify the requester of the rejection. Comment is short
@@ -119,7 +124,7 @@ export async function rejectHandler(
     approvalId: approval.id,
     stepId: activeStep.id,
     approvalStatus: ApprovalStatus.REJECTED,
-    objectState: ObjectState.CHECKED_IN,
+    objectState: nextObjectState,
   });
 }
 

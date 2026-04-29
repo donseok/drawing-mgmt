@@ -10,6 +10,7 @@
 //   CHECKED_IN   ─ release        ─→ IN_APPROVAL
 //   IN_APPROVAL  ─ approve        ─→ APPROVED
 //   IN_APPROVAL  ─ reject         ─→ CHECKED_IN
+//   IN_APPROVAL  ─ recall         ─→ CHECKED_IN  (requester only)
 //   APPROVED     ─ newRevision    ─→ CHECKED_OUT
 //   *            ─ delete         ─→ DELETED
 //   DELETED      ─ restore        ─→ (previous state — handled by caller)
@@ -23,6 +24,7 @@ export type ObjectAction =
   | 'release'
   | 'approve'
   | 'reject'
+  | 'recall'
   | 'newRevision'
   | 'delete'
   | 'restore';
@@ -55,6 +57,9 @@ const ALLOWED: Record<ObjectAction, Partial<Record<ObjectState, ObjectState>>> =
     [ObjectState.IN_APPROVAL]: ObjectState.APPROVED,
   },
   reject: {
+    [ObjectState.IN_APPROVAL]: ObjectState.CHECKED_IN,
+  },
+  recall: {
     [ObjectState.IN_APPROVAL]: ObjectState.CHECKED_IN,
   },
   newRevision: {
