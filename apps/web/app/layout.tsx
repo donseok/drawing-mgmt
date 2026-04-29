@@ -1,4 +1,5 @@
 import type { Metadata } from 'next';
+import { headers } from 'next/headers';
 import { Suspense } from 'react';
 import { Toaster } from 'sonner';
 import { ThemeProvider } from '@/components/providers/ThemeProvider';
@@ -18,6 +19,11 @@ export const viewport = {
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
+  // R-CSP / FIND-015 — middleware sets `x-nonce` per request. We forward it
+  // to next-themes so its inline bootstrap script carries `nonce={...}` that
+  // matches the CSP `'nonce-...'` token. Calling `headers()` makes this
+  // layout dynamic, but it already is via `auth()` callsites downstream.
+  const nonce = headers().get('x-nonce') ?? undefined;
   return (
     <html lang="ko" suppressHydrationWarning>
       <head>
@@ -28,7 +34,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         />
       </head>
       <body className="bg-bg font-sans text-fg antialiased">
-        <ThemeProvider>
+        <ThemeProvider nonce={nonce}>
           <QueryProvider>
             <Suspense fallback={null}>{children}</Suspense>
             <Toaster
