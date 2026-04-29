@@ -10,29 +10,55 @@
  * Collapsible — when closed, the canvas claims the full width.
  */
 
-import { Eye, EyeOff, Trash2, X } from 'lucide-react';
+import * as React from 'react';
+import { Eye, EyeOff, Save, Trash2, X } from 'lucide-react';
+import { useMutation, useQueryClient } from '@tanstack/react-query';
 
 import { Button } from '@/components/ui/button';
+import { toast } from '@/components/ui/toast';
+import { api, ApiError } from '@/lib/api-client';
 import { cn } from '@/lib/cn';
 import {
   formatArea,
   formatLength,
 } from '@/lib/viewer/measurements';
-import type { AttachmentMeta, SidebarTab } from '@/lib/viewer/types';
+import type {
+  AttachmentMeta,
+  Measurement,
+  SidebarTab,
+} from '@/lib/viewer/types';
 import { useViewerStore } from '@/lib/viewer/use-viewer-state';
+
+import { MarkupSaveDialog } from './MarkupSaveDialog';
+import { SavedMarkupsList } from './SavedMarkupsList';
 
 export interface ViewerSidebarProps {
   meta: AttachmentMeta | null;
+  /**
+   * Attachment id this sidebar is bound to. Required for the markup
+   * save/load section (R-MARKUP). Defaults to `meta?.id` when omitted —
+   * see ViewerShell for the canonical wiring.
+   */
+  attachmentId?: string;
   /** Called when the user clicks a page in the Pages tab. */
   onSelectPage?: (page: number) => void;
 }
 
-export function ViewerSidebar({ meta, onSelectPage }: ViewerSidebarProps) {
+export function ViewerSidebar({
+  meta,
+  attachmentId,
+  onSelectPage,
+}: ViewerSidebarProps) {
   const open = useViewerStore((s) => s.sidebarOpen);
   const setOpen = useViewerStore((s) => s.setSidebarOpen);
   const tab = useViewerStore((s) => s.sidebarTab);
   const setTab = useViewerStore((s) => s.setSidebarTab);
   const mode = useViewerStore((s) => s.mode);
+
+  // Resolve the effective attachment id from the prop (preferred — set by
+  // ViewerShell) or fall back to the meta payload. The fallback handles dev
+  // / sample-fixture flows where meta is the synthetic stub.
+  const effectiveAttachmentId = attachmentId ?? meta?.id ?? null;
 
   if (!open) return null;
 
@@ -58,7 +84,9 @@ export function ViewerSidebar({ meta, onSelectPage }: ViewerSidebarProps) {
       <div className="flex-1 overflow-y-auto">
         {tab === 'layers' ? <LayersTab /> : null}
         {tab === 'pages' ? <PagesTab onSelect={onSelectPage} /> : null}
-        {tab === 'measurements' ? <MeasurementsTab /> : null}
+        {tab === 'measurements' ? (
+          <MeasurementsTab attachmentId={effectiveAttachmentId} mode={mode} />
+        ) : null}
         {tab === 'properties' ? <PropertiesTab meta={meta} /> : null}
       </div>
     </aside>
@@ -238,84 +266,198 @@ function PagesTab({ onSelect }: { onSelect?: (n: number) => void }) {
 // Measurements
 // ---------------------------------------------------------------------------
 
-function MeasurementsTab() {
+function MeasurementsTab({
+  attachmentId,
+  mode,
+}: {
+  attachmentId: string | null;
+  mode: 'pdf' | 'dxf';
+}) {
   const measurements = useViewerStore((s) => s.measurements);
   const removeMeasurement = useViewerStore((s) => s.removeMeasurement);
   const clearMeasurements = useViewerStore((s) => s.clearMeasurements);
+  const queryClient = useQueryClient();
 
-  if (measurements.length === 0) {
-    return (
-      <div className="space-y-2 p-4 text-sm text-fg-muted">
-        <p>
-          툴바의 <span className="text-fg">측정</span> 메뉴 또는{' '}
-          <kbd className="rounded border border-border bg-bg px-1.5 py-0.5 font-mono text-[11px]">
-            M
-          </kbd>{' '}
-          단축키로 시작하세요.
-        </p>
-        <ul className="list-inside list-disc space-y-1 text-xs">
-          <li>2점 거리 — 두 지점 클릭</li>
-          <li>다중점 거리 — 클릭으로 점 추가, ESC/Enter로 종료</li>
-          <li>면적 — 점 추가 후 더블클릭/ESC로 닫기</li>
-        </ul>
-      </div>
-    );
-  }
+  const [saveOpen, setSaveOpen] = React.useState(false);
+
+  // Derive a representative unit label from the measurements when present;
+  // fall back to the natural default for the active mode. The cap-paid
+  // payload sent to the BE uses this as a display-only annotation.
+  const unitLabel = measurements[0]?.unitLabel ?? (mode === 'pdf' ? 'pt' : 'mm');
+
+  const saveMutation = useMutation({
+    mutationFn: async (input: { name: string; isShared: boolean }) => {
+      if (!attachmentId) throw new Error('attachmentId가 없어 저장할 수 없습니다');
+      // Snapshot store at submit time so concurrent edits during the
+      // dialog roundtrip don't bleed into the saved payload.
+      const snapshot = buildPayload(measurements, mode, unitLabel);
+      return api.post<unknown>(
+        `/api/v1/attachments/${encodeURIComponent(attachmentId)}/markups`,
+        {
+          name: input.name,
+          isShared: input.isShared,
+          payload: snapshot,
+        },
+      );
+    },
+    onSuccess: () => {
+      if (attachmentId) {
+        queryClient.invalidateQueries({
+          queryKey: ['markups', attachmentId],
+        });
+      }
+      toast.success('마크업이 저장되었습니다');
+      setSaveOpen(false);
+    },
+    onError: (err) => {
+      const msg =
+        err instanceof ApiError
+          ? err.message
+          : err instanceof Error
+            ? err.message
+            : '마크업 저장에 실패했습니다';
+      toast.error('마크업 저장에 실패했습니다', { description: msg });
+      // Re-throw so the dialog's local error state surfaces too.
+      throw err;
+    },
+  });
+
+  const hasMeasurements = measurements.length > 0;
+  const canSave = hasMeasurements && !!attachmentId;
 
   return (
     <div>
+      {/* Action bar — visible whether or not measurements exist, so the user
+          always knows where the save / saved-markups affordances live. */}
       <div className="flex items-center justify-between border-b border-border px-3 py-1.5">
-        <span className="text-xs text-fg-muted">{measurements.length}개</span>
-        <Button
-          size="sm"
-          variant="ghost"
-          onClick={clearMeasurements}
-          className="h-6 text-xs"
-        >
-          <Trash2 className="size-3" /> 모두 삭제
-        </Button>
-      </div>
-      <ul className="divide-y divide-border" role="list">
-        {measurements.map((m) => (
-          <li
-            key={m.id}
-            className="flex items-start justify-between gap-2 px-3 py-2 text-xs"
+        <span className="text-xs text-fg-muted">
+          {hasMeasurements ? `${measurements.length}개` : '측정 없음'}
+        </span>
+        <div className="flex items-center gap-1">
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={!canSave}
+            onClick={() => setSaveOpen(true)}
+            className="h-6 text-xs"
+            title={
+              !attachmentId
+                ? '첨부 정보를 불러오는 중입니다'
+                : !hasMeasurements
+                  ? '저장할 측정이 없습니다'
+                  : '현재 측정을 마크업으로 저장'
+            }
           >
-            <div className="min-w-0">
-              <div className="font-medium text-fg">
-                {m.kind === 'distance'
-                  ? '2점 거리'
-                  : m.kind === 'polyline'
-                    ? '다중점 거리'
-                    : '면적'}
-              </div>
-              <div className="font-mono text-fg-muted">
-                {m.kind === 'area'
-                  ? formatArea(m.value, m.unitLabel)
-                  : formatLength(m.value, m.unitLabel)}
-              </div>
-              {m.perimeter != null ? (
-                <div className="font-mono text-[11px] text-fg-subtle">
-                  둘레 {formatLength(m.perimeter, m.unitLabel)}
-                </div>
-              ) : null}
-              <div className="text-[11px] text-fg-subtle">
-                점 {m.points.length}개
-              </div>
-            </div>
-            <button
-              type="button"
-              onClick={() => removeMeasurement(m.id)}
-              aria-label="측정 삭제"
-              className="shrink-0 rounded p-1 text-fg-muted hover:bg-bg-muted hover:text-danger focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            <Save className="size-3" /> 저장
+          </Button>
+          {hasMeasurements ? (
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={clearMeasurements}
+              className="h-6 text-xs"
             >
-              <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
-            </button>
-          </li>
-        ))}
-      </ul>
+              <Trash2 className="size-3" /> 모두 삭제
+            </Button>
+          ) : null}
+        </div>
+      </div>
+
+      {hasMeasurements ? (
+        <ul className="divide-y divide-border" role="list">
+          {measurements.map((m) => (
+            <li
+              key={m.id}
+              className="flex items-start justify-between gap-2 px-3 py-2 text-xs"
+            >
+              <div className="min-w-0">
+                <div className="font-medium text-fg">
+                  {m.kind === 'distance'
+                    ? '2점 거리'
+                    : m.kind === 'polyline'
+                      ? '다중점 거리'
+                      : '면적'}
+                </div>
+                <div className="font-mono text-fg-muted">
+                  {m.kind === 'area'
+                    ? formatArea(m.value, m.unitLabel)
+                    : formatLength(m.value, m.unitLabel)}
+                </div>
+                {m.perimeter != null ? (
+                  <div className="font-mono text-[11px] text-fg-subtle">
+                    둘레 {formatLength(m.perimeter, m.unitLabel)}
+                  </div>
+                ) : null}
+                <div className="text-[11px] text-fg-subtle">
+                  점 {m.points.length}개
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => removeMeasurement(m.id)}
+                aria-label="측정 삭제"
+                className="shrink-0 rounded p-1 text-fg-muted hover:bg-bg-muted hover:text-danger focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
+              </button>
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <div className="space-y-2 p-4 text-sm text-fg-muted">
+          <p>
+            툴바의 <span className="text-fg">측정</span> 메뉴 또는{' '}
+            <kbd className="rounded border border-border bg-bg px-1.5 py-0.5 font-mono text-[11px]">
+              M
+            </kbd>{' '}
+            단축키로 시작하세요.
+          </p>
+          <ul className="list-inside list-disc space-y-1 text-xs">
+            <li>2점 거리 — 두 지점 클릭</li>
+            <li>다중점 거리 — 클릭으로 점 추가, ESC/Enter로 종료</li>
+            <li>면적 — 점 추가 후 더블클릭/ESC로 닫기</li>
+          </ul>
+        </div>
+      )}
+
+      {attachmentId ? (
+        <SavedMarkupsList
+          attachmentId={attachmentId}
+          mode={mode}
+          unitLabel={unitLabel}
+        />
+      ) : null}
+
+      {attachmentId ? (
+        <MarkupSaveDialog
+          open={saveOpen}
+          onOpenChange={setSaveOpen}
+          measurementCount={measurements.length}
+          onSave={async (name, isShared) => {
+            // The mutation re-throws on error so the dialog can surface its
+            // own inline error. Toast is also fired by onError for visibility.
+            await saveMutation.mutateAsync({ name, isShared });
+          }}
+        />
+      ) : null}
     </div>
   );
+}
+
+// Build the payload sent to POST /attachments/{id}/markups. Kept inline (not
+// in viewer/measurements) because it's tightly coupled to the BE schema and
+// has no other call site.
+function buildPayload(
+  measurements: Measurement[],
+  mode: 'pdf' | 'dxf',
+  unitLabel: string,
+) {
+  return {
+    schemaVersion: 1 as const,
+    mode,
+    unitLabel,
+    measurements,
+  };
 }
 
 // ---------------------------------------------------------------------------

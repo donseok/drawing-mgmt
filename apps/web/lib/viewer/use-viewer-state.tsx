@@ -70,6 +70,15 @@ export interface ViewerStoreState {
   addMeasurement: (m: Measurement) => void;
   removeMeasurement: (id: string) => void;
   clearMeasurements: () => void;
+  /**
+   * Replace the entire measurements array (R-MARKUP).
+   *
+   * Used by the saved-markup loader: a saved markup payload contains the full
+   * `measurements[]` array, and loading it should atomically swap the in-memory
+   * list (rather than appending). The caller is responsible for confirming the
+   * overwrite when current measurements are non-empty — see SavedMarkupsList.
+   */
+  loadMeasurements: (measurements: Measurement[]) => void;
   setSearchQuery: (q: string) => void;
   setSearchOpen: (b: boolean) => void;
   setSearchHits: (count: number) => void;
@@ -154,6 +163,10 @@ export function createViewerStore(
         measurements: s.measurements.filter((m) => m.id !== id),
       })),
     clearMeasurements: () => set({ measurements: [] }),
+    loadMeasurements: (measurements) =>
+      // Spread defensively so the caller can hold onto its own copy of the
+      // array without us mutating it under them, and vice-versa.
+      set({ measurements: [...measurements] }),
     setSearchQuery: (q) => set({ searchQuery: q }),
     setSearchOpen: (b) => set({ searchOpen: b }),
     setSearchHits: (count) => set({ searchHits: count }),

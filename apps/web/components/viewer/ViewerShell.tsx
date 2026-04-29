@@ -329,7 +329,11 @@ function ViewerShellInner({ attachmentId }: ViewerShellProps) {
           <MiniMap />
         </div>
 
-        <ViewerSidebar meta={meta} onSelectPage={(p) => setPage(p)} />
+        <ViewerSidebar
+          meta={meta}
+          attachmentId={attachmentId}
+          onSelectPage={(p) => setPage(p)}
+        />
       </div>
 
       <PrintLayout meta={meta} captureFrame={captureFrame} />
