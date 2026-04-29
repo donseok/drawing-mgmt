@@ -75,6 +75,13 @@ export const ACTIVITY_LABELS: Record<string, string> = {
   VIRUS_SCAN_RETRY: '바이러스 재스캔',
   // R41 / A — admin re-enqueued a FAILED/SKIPPED PDF body-text extraction.
   PDF_EXTRACT_RETRY: 'PDF 본문 재추출',
+  // R-MARKUP / V-6 — viewer measurement markup save/share lifecycle. The
+  // attachment id + markup id ride in `metadata`; we don't link to an
+  // ObjectEntity directly because Markup hangs off Attachment, not Object,
+  // and most consumers want the file/viewer route anyway.
+  MARKUP_SAVE: '마크업 저장',
+  MARKUP_UPDATE: '마크업 수정',
+  MARKUP_DELETE: '마크업 삭제',
 };
 
 /**
