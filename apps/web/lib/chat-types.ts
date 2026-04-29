@@ -22,6 +22,11 @@ export interface ChatSource {
   source: string;
   title: string;
   similarity: number;
+  /**
+   * Short preview of the source chunk (≤600 chars). Used by the FE
+   * citation modal (P3). BE caps and trims; absent for RULE mode.
+   */
+  excerpt?: string;
 }
 
 export interface ChatAction {
@@ -115,3 +120,22 @@ export interface QuickAction {
   toolArgs?: Record<string, unknown>;
   promptText?: string;
 }
+
+/**
+ * R36-polish — NDJSON streaming event union mirrored from
+ * `packages/shared/src/chat.ts` `ChatStreamEventSchema`. The BE emits
+ * one JSON object per `\n`-terminated line; FE accumulates by `type`.
+ *
+ * Invariants (contract §2.2):
+ *  1. First event is always `meta`.
+ *  2. `delta` events carry incremental text — concat in order.
+ *  3. `sources` / `actions` arrive at most once each, before `done`.
+ *  4. Final event is always `done` (or `error` followed by `done`).
+ */
+export type ChatStreamEvent =
+  | { type: 'meta'; sessionId: string; messageId: string; mode: ChatMode }
+  | { type: 'delta'; text: string }
+  | { type: 'sources'; sources: ChatSource[] }
+  | { type: 'actions'; actions: ChatAction[] }
+  | { type: 'error'; code: string; message: string }
+  | { type: 'done' };
